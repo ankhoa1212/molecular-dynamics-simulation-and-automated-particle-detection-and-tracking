@@ -169,17 +169,21 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        """Create the toolbar, canvas, and status bar."""
+        """Create the toolbar (two rows), canvas, and status bar."""
         self._status = tk.StringVar(value="Open a folder to begin.")
         self.progress_bar = ttk.Progressbar(self.root, mode="indeterminate")
 
-        # Toolbar
-        toolbar = tk.Frame(self.root, bd=1, relief=tk.RAISED)
-        toolbar.pack(side=tk.TOP, fill=tk.X)
+        # ── Toolbar container (holds two rows) ───────────────────────────────
+        toolbar_container = tk.Frame(self.root, bd=1, relief=tk.RAISED)
+        toolbar_container.pack(side=tk.TOP, fill=tk.X)
+
+        # ── Row 1: Mode | File | Navigation | Zoom | Help ────────────────────
+        row1 = tk.Frame(toolbar_container)
+        row1.pack(side=tk.TOP, fill=tk.X)
 
         # Mode Selector
-        mode_frame = tk.Frame(toolbar, bg="#333333", padx=2)
-        mode_frame.pack(side=tk.LEFT, padx=5)
+        mode_frame = tk.Frame(row1, bg="#333333", padx=2)
+        mode_frame.pack(side=tk.LEFT, padx=5, pady=2)
 
         self._btn_mode_lodestar = tk.Button(
             mode_frame,
@@ -196,119 +200,132 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
             font=("Helvetica", 9, "bold"),
         )
         self._btn_mode_yolo.pack(side=tk.LEFT, padx=1, pady=2)
-        _sep(toolbar)
+        _sep(row1)
 
-        self._btn_open = tk.Button(toolbar, text="Open Folder", command=self.open_folder)
+        # File
+        self._btn_open = tk.Button(row1, text="Open Folder", command=self.open_folder)
         self._btn_open.pack(side=tk.LEFT, padx=4, pady=3)
         ToolTip(self._btn_open, "Select a folder containing extracted PNG/TIFF frames")
-        _sep(toolbar)
+        _sep(row1)
 
+        # Navigation
         self._btn_prev = tk.Button(
-            toolbar, text="← Prev", command=self.prev_image, state=tk.DISABLED
+            row1, text="← Prev", command=self.prev_image, state=tk.DISABLED
         )
         self._btn_prev.pack(side=tk.LEFT, padx=2, pady=3)
+        ToolTip(self._btn_prev, "Go to previous image (Left Arrow)")
 
-        self._lbl_counter = tk.Label(toolbar, text="No images", width=14)
+        self._lbl_counter = tk.Label(row1, text="No images", width=14)
         self._lbl_counter.pack(side=tk.LEFT, padx=4)
 
         self._btn_next = tk.Button(
-            toolbar, text="Next →", command=self.next_image, state=tk.DISABLED
+            row1, text="Next →", command=self.next_image, state=tk.DISABLED
         )
         self._btn_next.pack(side=tk.LEFT, padx=2, pady=3)
-        _sep(toolbar)
+        ToolTip(self._btn_next, "Go to next image (Right Arrow)")
+        _sep(row1)
 
-        self._btn_zoom_in = tk.Button(toolbar, text="Zoom In (+)", command=self.zoom_in)
+        # Zoom
+        self._btn_zoom_in = tk.Button(row1, text="Zoom In (+)", command=self.zoom_in)
         self._btn_zoom_in.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_zoom_in, "Increase magnification")
 
-        self._btn_zoom_out = tk.Button(toolbar, text="Zoom Out (−)", command=self.zoom_out)
+        self._btn_zoom_out = tk.Button(row1, text="Zoom Out (−)", command=self.zoom_out)
         self._btn_zoom_out.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_zoom_out, "Decrease magnification")
 
-        self._btn_reset = tk.Button(toolbar, text="Reset Zoom (R)", command=self.reset_transform)
+        self._btn_reset = tk.Button(row1, text="Reset Zoom (R)", command=self.reset_transform)
         self._btn_reset.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_reset, "Fit image to window (R)")
-        _sep(toolbar)
 
-        tk.Button(toolbar, text="Undo (Ctrl+Z)", command=self.undo_last_crop).pack(
-            side=tk.LEFT, padx=2, pady=3
+        # Help (anchored to the right of row 1)
+        tk.Button(row1, text="Help (?)", command=self.show_help, bg="#2d5a27", fg="white").pack(
+            side=tk.RIGHT, padx=4, pady=3
         )
-        _sep(toolbar)
 
+        # ── Row 2: Edit actions | YOLO / crops toggles | Advanced ────────────
+        row2 = tk.Frame(toolbar_container, bg=toolbar_container.cget("bg"))
+        row2.pack(side=tk.TOP, fill=tk.X)
+
+        # Undo
+        tk.Button(row2, text="Undo (Ctrl+Z)", command=self.undo_last_crop).pack(
+            side=tk.LEFT, padx=4, pady=3
+        )
+        _sep(row2)
+
+        # Edit Mode + Delete
         self._btn_edit_mode = tk.Button(
-            toolbar, text="Edit Mode (E)", command=self.toggle_edit_mode, relief=tk.RAISED
+            row2, text="Edit Mode (E)", command=self.toggle_edit_mode, relief=tk.RAISED
         )
         self._btn_edit_mode.pack(side=tk.LEFT, padx=2, pady=3)
+        ToolTip(
+            self._btn_edit_mode,
+            "Switch between drawing new boxes and editing existing ones (E)",
+        )
 
         self._btn_delete = tk.Button(
-            toolbar,
+            row2,
             text="Delete Selected (Del)",
             command=self.delete_selected_crop,
             state=tk.DISABLED,
         )
         self._btn_delete.pack(side=tk.LEFT, padx=2, pady=3)
-        _sep(toolbar)
+        ToolTip(self._btn_delete, "Remove the selected box (Delete)")
+        _sep(row2)
 
+        # YOLO view cycle (always visible — relevant in both modes)
         self._btn_yolo_mode = tk.Button(
-            toolbar, text="YOLO: Box (Y)", command=self.toggle_yolo_view_mode
+            row2, text="YOLO: Box (Y)", command=self.toggle_yolo_view_mode
         )
         self._btn_yolo_mode.pack(side=tk.LEFT, padx=2, pady=3)
+        ToolTip(self._btn_yolo_mode, "Cycle through different ways to see computer detections (Y)")
 
+        # Crops toggle (LodeSTAR-specific; hidden in YOLO mode)
         self._btn_save_crops = tk.Button(
-            toolbar, text="Crops: Off (C)", command=self.toggle_save_crops_mode
+            row2, text="Crops: Off (C)", command=self.toggle_save_crops_mode
         )
-        self._btn_save_crops.pack(side=tk.LEFT, padx=2, pady=3)
-        _sep(toolbar)
+        ToolTip(
+            self._btn_save_crops,
+            "Enable this to save PNG files automatically while drawing (C)",
+        )
+        _sep(row2)
 
+        # Fixed Size
         self._btn_fixed_size = tk.Button(
-            toolbar, text="Fixed Size: Off (F)", command=self.toggle_fixed_size
+            row2, text="Fixed Size: Off (F)", command=self.toggle_fixed_size
         )
         self._btn_fixed_size.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_fixed_size, "Force clicks/drags to a fixed square size (F)")
-        _sep(toolbar)
+        _sep(row2)
 
+        # Convert (always visible for use in Edit Mode)
         self._btn_convert = tk.Button(
-            toolbar, text="Convert to Crop (T)", command=self.convert_selected, state=tk.DISABLED
+            row2, text="Convert to Crop (T)", command=self.convert_selected, state=tk.DISABLED
         )
         self._btn_convert.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_convert, "Convert selected detection into a LodeSTAR crop PNG")
 
+        # Accept All Detections (YOLO-specific; hidden in LodeSTAR mode)
         self._btn_accept_all = tk.Button(
-            toolbar, text="Accept All Detections", command=self.convert_all_yolo
+            row2, text="Accept All Detections", command=self.convert_all_yolo
         )
-        self._btn_accept_all.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(
-            self._btn_accept_all, "Turn all computer detections on this frame into manual labels"
+            self._btn_accept_all,
+            "Turn all computer detections on this frame into manual labels",
         )
 
+        # Export Dataset (YOLO-specific; anchored right so it stays prominent)
         self._btn_export = tk.Button(
-            toolbar,
+            row2,
             text="Export YOLO Dataset",
             command=self.export_yolo_dataset,
             bg="#005a9e",
             fg="white",
         )
-        self._btn_export.pack(side=tk.LEFT, padx=4, pady=3)
         ToolTip(
             self._btn_export,
             "Finalize all labeled images into a ready-to-train YOLO dataset folder",
         )
-
-        tk.Button(toolbar, text="Help (?)", command=self.show_help, bg="#2d5a27", fg="white").pack(
-            side=tk.RIGHT, padx=4, pady=3
-        )
-
-        # Apply more tooltips
-        ToolTip(self._btn_prev, "Go to previous image (Left Arrow)")
-        ToolTip(self._btn_next, "Go to next image (Right Arrow)")
-        ToolTip(
-            self._btn_edit_mode, "Switch between drawing new boxes and editing existing ones (E)"
-        )
-        ToolTip(self._btn_yolo_mode, "Cycle through different ways to see computer detections (Y)")
-        ToolTip(
-            self._btn_save_crops, "Enable this to save PNG files automatically while drawing (C)"
-        )
-        ToolTip(self._btn_delete, "Remove the selected box (Delete)")
 
         # Canvas
         self.canvas = tk.Canvas(self.root, bg="#1e1e1e", cursor="none", highlightthickness=0)
@@ -420,15 +437,21 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         self._redraw()
 
     def _update_ui_visibility(self) -> None:
-        """Hide/Show buttons based on current project mode."""
+        """Hide/Show mode-specific buttons in row 2 based on current project mode.
+
+        LodeSTAR mode: show "Crops: On/Off" toggle; hide YOLO-only actions.
+        YOLO mode:     hide crop toggle; show "Accept All" and "Export Dataset".
+        """
         if self.project_mode == "lodestar":
-            self._btn_save_crops.pack(side=tk.LEFT, padx=2, pady=3)
+            # Insert the Crops toggle right after the YOLO-view button (its natural neighbour)
+            self._btn_save_crops.pack(after=self._btn_yolo_mode, side=tk.LEFT, padx=2, pady=3)
             self._btn_accept_all.pack_forget()
             self._btn_export.pack_forget()
         else:
             self._btn_save_crops.pack_forget()
-            self._btn_accept_all.pack(side=tk.LEFT, padx=2, pady=3)
-            self._btn_export.pack(side=tk.LEFT, padx=4, pady=3)
+            # Accept All sits after the YOLO-view separator; Export is right-anchored
+            self._btn_accept_all.pack(after=self._btn_yolo_mode, side=tk.LEFT, padx=2, pady=3)
+            self._btn_export.pack(side=tk.RIGHT, padx=4, pady=3)
 
     def toggle_yolo_view_mode(self) -> None:
         """Cycle the display format of YOLO labels (box, point, both, or none)."""
