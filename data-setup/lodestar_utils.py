@@ -1,4 +1,4 @@
-"""Label images using a saved LodeSTAR model, producing YOLO .txt files."""
+"""LodeSTAR utility functions and helpers for dataset autolabeling."""
 
 import argparse
 import dataclasses
@@ -18,9 +18,9 @@ logging.getLogger("pint").setLevel(logging.ERROR)
 
 
 def parse_args():
-    """Parse command-line arguments for the LodeSTAR YOLO labeling script."""
+    """Parse command-line arguments for running standalone inference."""
     parser = argparse.ArgumentParser(
-        description="Run LodeSTAR inference and write YOLO label files."
+        description="Run LodeSTAR inference on images and write YOLO labels (Utility)."
     )
     parser.add_argument("--input-dir", type=str, help="Directory containing input images.")
     parser.add_argument("--input-file", type=str, help="Path to a single input image.")
@@ -100,51 +100,7 @@ def parse_args():
         action="store_true",
         help="Overlay bounding boxes on the input image and save as PNG.",
     )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to a JSON configuration file containing these arguments.",
-    )
     return parser.parse_args()
-
-
-def _load_config(args):
-    """Load from config file if provided."""
-    if not args.config:
-        return args
-
-    if not os.path.exists(args.config):
-        raise FileNotFoundError(f"Config file not found: {args.config}")
-
-    with open(args.config, "r", encoding="utf-8") as f:
-        config_data = json.load(f)
-
-    # List of keys and their defaults to check for overrides
-    defaults = {
-        "box_size": 40,
-        "alpha": 0.5,
-        "cutoff": 0.5,
-        "detect_mode": "ratio",
-        "nms_distance": 0.0,
-        "radius_scale": 1.0,
-        "min_box_size": 0.0,
-        "detect_batch_size": 4,
-        "plot": False,
-        "use_radius": False,
-    }
-
-    for key, value in config_data.items():
-        current_val = getattr(args, key, None)
-        # If the current value is the default or None, overwrite it with JSON value
-        if current_val is None or (key in defaults and current_val == defaults[key]):
-            setattr(args, key, value)
-
-    # Bridge config 'model' to 'model_path' if needed
-    if "model" in config_data and not args.model_path:
-        args.model_path = config_data["model"]
-
-    return args
 
 
 def _load_and_normalise(image_files):
@@ -174,19 +130,10 @@ def _collect_image_files(args):
 
 def _load_model(args):
     """Load the saved LodeSTAR model, reading architecture from companion JSON."""
-    weights_path = args.model_path
-
-    # If path is a directory, look for model.pt and model.json inside
-    if os.path.isdir(weights_path):
-        config_path = os.path.join(weights_path, "model.json")
-        weights_path = os.path.join(weights_path, "model.pt")
-    else:
-        # Legacy: assume companion JSON next to .pt file
-        config_path = os.path.splitext(weights_path)[0] + ".json"
-
+    config_path = os.path.splitext(args.model_path)[0] + ".json"
     if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as config_file:
-            config = json.load(config_file)
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
         n_transforms = config.get("n_transforms", 8)
         num_outputs = config.get("num_outputs", 3)
         args.num_outputs = num_outputs
@@ -200,15 +147,12 @@ def _load_model(args):
         num_outputs = 3
         args.num_outputs = num_outputs
 
-    if not os.path.exists(weights_path):
-        raise FileNotFoundError(f"Weights file not found at {weights_path}")
-
     lodestar = dl.LodeSTAR(
         n_transforms=n_transforms, num_outputs=num_outputs, optimizer=dl.Adam(lr=1e-3)
     ).build()
-    lodestar.load_state_dict(torch.load(weights_path, map_location="cpu"))
+    lodestar.load_state_dict(torch.load(args.model_path, map_location="cpu"))
     lodestar.eval()
-    print(f"Model loaded from {weights_path}")
+    print(f"Model loaded from {args.model_path}")
     return lodestar
 
 
@@ -245,11 +189,11 @@ def _nms(detections, min_dist):
         if suppressed[idx_i]:
             continue
         keep.append(det_i)
-        target_y, target_x = arr[idx_i, 0], arr[idx_i, 1]
+        yi, xi = arr[idx_i, 0], arr[idx_i, 1]
         for idx_j in range(idx_i + 1, len(arr)):
             if suppressed[idx_j]:
                 continue
-            dist = np.sqrt((arr[idx_j, 0] - target_y) ** 2 + (arr[idx_j, 1] - target_x) ** 2)
+            dist = np.sqrt((arr[idx_j, 0] - yi) ** 2 + (arr[idx_j, 1] - xi) ** 2)
             if dist < min_dist:
                 suppressed[idx_j] = True
     return keep
@@ -417,7 +361,6 @@ def _print_detection_summary(all_detections):
 def main():
     """Main entry point for running LodeSTAR YOLO labeling from the command line."""
     args = parse_args()
-    args = _load_config(args)
 
     if not args.input_dir and not args.input_file:
         raise ValueError("Either --input-dir or --input-file must be provided.")
@@ -455,7 +398,7 @@ def main():
     min_box_px = args.min_box_size if args.min_box_size > 0 else float(args.box_size)
     cfg = _SaveConfig(
         output_dir=args.output_dir,
-        frame_shape=(data.shape[1], data.shape[2]),  # pylint: disable=unsubscriptable-object
+        frame_shape=(data.shape[1], data.shape[2]),
         use_radius=args.use_radius,
         radius_scale=args.radius_scale,
         min_box_px=min_box_px,
