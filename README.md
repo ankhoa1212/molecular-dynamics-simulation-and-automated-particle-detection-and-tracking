@@ -77,7 +77,7 @@ pip install -r lammps-scripts/requirements.txt
 
 ### 2. Auto-Labeling with LodeSTAR (`data-setup/`)
 
-Unsupervised particle detection pipeline. Trains a LodeSTAR model on particle crops and uses it to produce YOLO-format `.txt` label files for downstream detection model training.
+Cascade labeling pipeline: hand-label a few particle crops → train a LodeSTAR model → auto-label thousands of frames → human-verify in the GUI → export for RF-DETR/YOLO training.
 
 **Install dependencies:**
 
@@ -86,7 +86,7 @@ cd data-setup
 pip install -r requirements.txt
 ```
 
-**Workflow: Extract → Crop → Train → Label**
+**Workflow: Crop → Train → Auto-label → Verify → Export**
 
 **Step 1 — Extract frames from TIFF:**
 
@@ -94,11 +94,12 @@ pip install -r requirements.txt
 python extract_frames.py video.tif frames/ --nth 5
 ```
 
-**Step 2 — Create crops for training (GUI tool):**
+**Step 2 — Draw a few training crops (GUI, Crop Mode):**
 
 ```bash
 python crop_tool.py frames/
 ```
+Draw 3–10 bounding boxes around representative particles. That's all LodeSTAR needs.
 
 **Step 3 — Train LodeSTAR model:**
 
@@ -115,7 +116,7 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db
 # Open http://localhost:5000
 ```
 
-**Step 4 — Batch-label images:**
+**Step 4 — Batch-label images with the trained model:**
 
 ```bash
 python lodestar_autolabeler.py \
@@ -127,9 +128,17 @@ python lodestar_autolabeler.py \
   --plot
 ```
 
-Outputs YOLO `.txt` label files alongside images in a RoboFlow-compatible directory structure.
+Outputs YOLO `.txt` label files alongside images in an `images/` + `labels/` directory structure.
 
-Pre-tuned configs are available in `data-setup/configs/` for different particle sizes. Pass `--config configs/autolabel_2um_lodestar_model_15.json` to use one.
+**Step 5 — Review & export (GUI, Label Mode):**
+
+```bash
+python crop_tool.py path/to/<name>_dataset/images/
+```
+
+Open in **Label Mode**. Click **[Accept All]** on frames where the model was accurate, fix any mistakes with **Edit Mode**, then click **[Export COCO]** or **[Export YOLO]** to build the final training set.
+
+Pre-tuned configs are available in `data-setup/configs/`. Pass `--config configs/autolabel_2um_lodestar_model_15.json` to use one.
 
 See [`data-setup/README.md`](data-setup/README.md) for full argument reference and configuration details.
 
@@ -218,13 +227,22 @@ See [`particle-tracking/README.md`](particle-tracking/README.md) for the full se
 Raw microscopy TIFFs
        │
        ▼
-[data-setup] Extract frames, crop particles, train LodeSTAR
-       │ YOLO-format labels
+[data-setup — Crop Mode]  Draw 3-10 particle crops in crop_tool.py
+       │
        ▼
-[rf-detr] Train RF-DETR detection model on labeled data
+[data-setup]              Train LodeSTAR model on those crops (train_lodestar.py)
+       │
+       ▼
+[data-setup]              Auto-label thousands of frames (lodestar_autolabeler.py)
+       │ images/ + YOLO labels/
+       ▼
+[data-setup — Label Mode] Review & verify in crop_tool.py (Accept All / Edit Mode)
+       │ Export COCO JSON or YOLO dataset
+       ▼
+[rf-detr]                 Train RF-DETR detection model on verified labels
        │ Trained checkpoint (.pth)
        ▼
-[particle-tracking] Detect + track particles across frames
+[particle-tracking]       Detect + track particles across frames
        │
        ▼
 tracks.csv  +  annotated video

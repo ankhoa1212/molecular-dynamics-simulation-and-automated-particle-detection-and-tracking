@@ -17,8 +17,8 @@ import cv2  # pylint: disable=no-member
 import tifffile
 from tqdm import tqdm
 
-# Reuse shared utilities from label_images
-from label_images import _nms, _load_model, _SaveConfig, _write_frame
+# Reuse shared utilities from lodestar_utils
+from lodestar_utils import _nms, _load_model, _SaveConfig, _write_frame
 
 # Suppress pint logging
 logging.getLogger("pint").setLevel(logging.ERROR)
@@ -117,7 +117,11 @@ def parse_args():
         "--png-frames",
         type=str,
         default=None,
-        help=("Directory containing PNG frames to label " "(alternative to --input for TIFFs)."),
+        help=(
+            "PNG file or directory of PNG frames to label "
+            "(alternative to --input for TIFFs). "
+            "Pass a single file path to label just that image."
+        ),
     )
     parser.add_argument(
         "--num-workers",
@@ -463,7 +467,7 @@ def main():
     if not args.input and not args.png_frames:
         raise ValueError("Either --input or --png-frames must be provided.")
 
-    # Bridge: _load_model() from label_images expects args.model_path
+    # Bridge: _load_model() from lodestar_utils expects args.model_path
     args.model_path = args.model
     args.detect_mode = "ratio"
     # _load_model sets args.num_outputs from the companion JSON
@@ -487,12 +491,19 @@ def main():
             print(f"Warning: Model compilation failed: {e}. Falling back to standard mode.")
 
     if args.png_frames:
-        png_dir = args.png_frames
-        png_files = sorted(glob.glob(os.path.join(png_dir, "*.png")))
-        if not png_files:
-            print(f"No PNG files found in {png_dir}")
-            return
-        print(f"Found {len(png_files)} PNG files in {png_dir}.")
+        png_path = args.png_frames
+        if os.path.isfile(png_path):
+            # Single-image mode: wrap in a list, use the parent directory as the base
+            png_files = [png_path]
+            png_dir = os.path.dirname(os.path.abspath(png_path))
+            print(f"Single-image mode: {png_path}")
+        else:
+            png_dir = png_path
+            png_files = sorted(glob.glob(os.path.join(png_dir, "*.png")))
+            if not png_files:
+                print(f"No PNG files found in {png_dir}")
+                return
+            print(f"Found {len(png_files)} PNG files in {png_dir}.")
         process_png_frames(png_files, lodestar, args, png_dir)
         print("Done.")
         return

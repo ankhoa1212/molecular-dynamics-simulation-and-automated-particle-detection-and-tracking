@@ -1,18 +1,40 @@
-# Data Setup — LodeSTAR Auto-Labeling
+# Data Setup — LodeSTAR → RF-DETR Cascade Labeling Pipeline
 
-Unsupervised particle detection pipeline using [LodeSTAR](https://github.com/softmatterlab/DeepTrack2).
-Detects particles in microscopy images and outputs YOLO-format `.txt` label files.
+Full pipeline for auto-labeling microscopy data using [LodeSTAR](https://github.com/softmatterlab/DeepTrack2).
+The core idea is a **cascade**: you hand-label a handful of particle crops, train a lightweight LodeSTAR model on them, then use that model to automatically generate YOLO-format labels across thousands of frames — which you then verify and export for RF-DETR training.
+
+```
+[Crop Mode in crop_tool.py]
+  Draw 3–10 particle crops
+        │
+        ▼
+[train_lodestar.py]
+  Train LodeSTAR on your crops (fast — minutes)
+        │
+        ▼
+[lodestar_autolabeler.py]
+  Auto-label thousands of frames → images/ + labels/ (YOLO format)
+        │
+        ▼
+[Label Mode in crop_tool.py]
+  Open the autolabeler output → review each frame
+  Accept All (good frames) | Fix mistakes with Edit Mode
+        │
+        ▼
+[Export COCO / Export YOLO]
+  Build the final verified dataset for RF-DETR or YOLOv12 training
+```
 
 ## Scripts
 
 | Script | Purpose |
 |---|---|
 | `extract_frames.py` | Extract individual PNG frames from multi-page TIFF (or JPG) files |
-| `crop_tool.py` | GUI tool to manually select crops from frames for training |
+| `crop_tool.py` | GUI tool — draw training crops (Crop Mode) and verify autolabeler output (Label Mode) |
 | `train_lodestar.py` | Train a LodeSTAR model on crops and save it for reuse |
-| `label_images.py` | Run inference with a saved model to produce YOLO labels |
-| `lodestar_autolabeler.py` | Batch label raw TIFF stacks or PNG frames with a saved model |
+| `lodestar_autolabeler.py` | Run a saved model on TIFF stacks, PNG directories, or a single PNG image |
 | `preview_augmentations.py` | Visualize how brightness, contrast, and noise affect your training crops |
+| `lodestar_utils.py` | *(Internal utility)* Shared helpers imported by `lodestar_autolabeler.py` — not intended for direct use |
 
 For help on script usage:
 ```bash
@@ -28,25 +50,35 @@ pip install -r requirements.txt
 
 ---
 
-## Recommended Workflow: Extract → Crop → Train → Label
+## Recommended Workflow
 
-### 1. Extract Frames from TIFF
-LodeSTAR training and manual cropping work best with individual image files. Convert your raw TIFF stacks into PNG frames first:
+### Step 1 — Extract Frames from TIFF
+LodeSTAR training works best with individual PNG files. Convert your raw TIFF stacks first:
 
 ```bash
 python extract_frames.py video.tif frames/ --nth 5
 ```
-This will save every 5th frame into the `frames/` directory.
+This saves every 5th frame into `frames/`.
 
-### 2. Create Crops for Training
-Use `crop_tool.py` to open your extracted PNG frames and draw bounding boxes around representative particles.
+---
+
+### Step 2 — Draw Training Crops (`crop_tool.py` — Crop Mode)
+Open the extracted frames and draw a few bounding boxes around clear, representative particles.
 
 ```bash
 python crop_tool.py frames/
 ```
-Crops are saved to a `crops/` subdirectory inside the frame folder. These will be used for training.
 
-### 3. Train Autolabeler
+- The tool starts in **Crop Mode** automatically.
+- Draw boxes around **3–10 particles** across a few different frames.
+- Crops are saved automatically as PNG patches in a `crops/` subdirectory.
+- **Quality over quantity** — a handful of clean, representative crops is all LodeSTAR needs.
+
+> **Tip:** Use `Fit (R)` to see the whole frame, scroll to zoom into a particle, then draw.
+
+---
+
+### Step 3 — Train LodeSTAR (`train_lodestar.py`)
 
 ```bash
 python train_lodestar.py \
@@ -54,8 +86,7 @@ python train_lodestar.py \
   --model-path models/lodestar_model_15/
 ```
 
-Accepts one or more `--input-dir` paths. Each directory is searched directly and inside its
-`crops/` subdirectory. Pass multiple folders to train on a combined dataset:
+Trains on the crops you drew and saves a model. Takes a few minutes. Accepts multiple `--input-dir` paths:
 
 ```bash
 python train_lodestar.py \
@@ -63,55 +94,65 @@ python train_lodestar.py \
   --model-path models/lodestar_model_15/
 ```
 
-Saves a model directory containing:
+Saves:
 - `models/lodestar_model_15/model.pt` — model weights
-- `models/lodestar_model_15/model.json` — architecture config + training parameters (see below)
-- `models/lodestar_model_15/crops/` — a copy of the source images used to train this model
+- `models/lodestar_model_15/model.json` — architecture config
+- `models/lodestar_model_15/crops/` — copy of the source crops
 
-If `--model-path` is omitted, the model is saved as `model.pt` in a folder `lodestar_model_` + number inside `models/`.
+Training is logged to MLflow automatically (see [MLflow](#mlflow)).
 
-Example `model.json`:
-```json
-{
-  "n_transforms": 8,
-  "num_outputs": 3,
-  "training_params": {
-    "epochs": 100,
-    "batch_size": 8,
-    "seed": 42,
-    "source_crops": ["/path/to/frame1_crop.png", "..."]
-  }
-}
-```
+---
 
-Training uses early stopping and is logged to MLflow automatically (see [MLflow](#mlflow) below).
-
-### 4. Label Images (Test Inference)
-
-```bash
-python label_images.py \
-  --input-dir frames/ \
-  --model-path models/lodestar_model_15/ \
-  --output-dir labels/
-```
-
-Writes one `.txt` YOLO label file per input image.
-
-
-### 5. Run Autolabeler (Production)
-
-To batch-label a folder of PNG frames using a trained model, run:
+### Step 4 — Auto-Label Frames (`lodestar_autolabeler.py`)
+Run the trained model across all your frames. This produces a YOLO-format dataset ready for human review.
 
 ```bash
 python lodestar_autolabeler.py \
-  --model models/lodestar_model_10/ \
-  --input "/folder/path/of/tif/file" \
+  --model models/lodestar_model_15/ \
+  --input data/raw_tiffs/ \
   --use-radius \
   --alpha 0.9 --cutoff 0.001 \
-  --nms-distance 35
+  --nms-distance 35 \
+  --plot
 ```
 
-This will label all PNG frames in the specified directory using the provided model, with radius-based bounding boxes and the given detection parameters.
+Outputs a `<name>_dataset/` folder with:
+```
+<name>_dataset/
+├── images/     ← PNG frames
+└── labels/     ← YOLO .txt label files (one per image)
+```
+
+Pre-tuned configs are in `data-setup/configs/`. Pass `--config configs/autolabel_2um_lodestar_model_15.json` to use one.
+
+---
+
+### Step 5 — Human Review (`crop_tool.py` — Label Mode)
+Open the autolabeler's output folder to review and verify the model's predictions before exporting.
+
+```bash
+python crop_tool.py path/to/<name>_dataset/images/
+# or, using a config file:
+python crop_tool.py --config configs/autolabel_2um.json
+```
+
+Switch to **Label Mode** using the mode buttons in the top-left corner.
+
+**Per-frame workflow:**
+1. Look at the frame — are the purple overlay boxes accurate?
+2. **If the model got it right:** click **[Accept All]** to lock in all its predictions as verified manual labels.
+3. **If there are mistakes:** use **Edit Mode (E)** to select and delete bad boxes, or draw new ones manually.
+4. Navigate to the next frame with the **→** arrow or the Right key.
+
+> **Tip:** Cycle the detection overlay with **Y** (Box → Point → Both → None) to see the predictions more clearly.
+
+---
+
+### Step 6 — Export for Training
+Once you've reviewed your frames, export the verified dataset:
+
+- **[Export COCO]** — generates `rf_detr_dataset/images/` + `annotations.json` for RF-DETR.
+- **[Export YOLO]** — generates a standard YOLOv8 folder with `images/`, `labels/`, and `data.yaml`.
 
 ---
 
@@ -147,7 +188,7 @@ This will label all PNG frames in the specified directory using the provided mod
 | `--flip-ud` | `0.5` | Probability of up-down flip |
 | `--config` | — | Path to a JSON configuration file |
 
-### `label_images.py`
+### `lodestar_utils.py` (Inference Engine)
 
 | Argument | Default | Description |
 |---|---|---|
@@ -223,42 +264,91 @@ python lodestar_autolabeler.py \
 
 ## Configuring with JSON
 
-Most scripts in this pipeline support a `--config` flag to simplify command-line usage. This is especially useful for maintaining reproducible training runs or specific inference settings for different experiments.
+Both `train_lodestar.py` and `lodestar_autolabeler.py` accept a `--config` flag. CLI arguments always override JSON values, so configs set your defaults and you can tweak individual values on the command line.
 
-### 1. Training Configuration
-You can define all hyperparameters for `train_lodestar.py` in a JSON file. This is the recommended way to manage complex augmentation ranges.
+### Training config — `configs/default_lodestar.json`
+
+Used with `train_lodestar.py`:
 
 ```bash
 python train_lodestar.py --config configs/default_lodestar.json --input-dir frames/
 ```
 
-Example `configs/default_lodestar.json` (partial):
 ```json
 {
-  "n_transforms": 8,
-  "num_outputs": 3,
+  "n_transforms": 8,       // Equivariance transforms (higher = more rotation-robust)
+  "num_outputs": 3,        // 2 = (x,y) only; 3 = (x,y,radius) — needed for --use-radius
   "training_params": {
     "epochs": 100,
     "batch_size": 8,
+    "crop_size": 64,
     "brightness": [-0.05, 0.05],
     "contrast": [0.25, 1.0],
-    "noise": [0.001, 0.01]
+    "noise": [0.001, 0.01],
+    "rotation": [0, 6.283185307179586],  // Full 360° rotation
+    "scale": [0.8, 1.2],
+    "translate": [-0.1, 0.1],
+    "flip_lr": 0.5,
+    "flip_ud": 0.5,
+    "patience": 15,         // Early stopping: epochs without improvement
+    "min_delta": 0.005,
+    "seed": 42,
+    "experiment": "lodestar"
   }
 }
 ```
 
-### 2. Autolabeling Configuration
-For batch processing, you can save your model path and detection thresholds (`cutoff`, `alpha`, etc.) in a config file.
+---
+
+### Autolabeling configs — `configs/`
+
+Used with `lodestar_autolabeler.py`. Two pre-tuned configs are provided for 2 µm particles:
+
+**`configs/autolabel_2um_lodestar_model_15.json`** — recommended starting point:
 
 ```bash
 python lodestar_autolabeler.py --config configs/autolabel_2um_lodestar_model_15.json
 ```
 
-We provide several pre-tuned configs in the `configs/` directory:
-- `configs/autolabel_2um_lodestar_model_10.json`: Optimized for Model 10 on 2um particles.
-- `configs/autolabel_2um_lodestar_model_15.json`: Optimized for Model 15 on 2um particles.
+```json
+{
+  "model": "models/lodestar_model_15",
+  "input": "/path/to/tiff/data/",
+  "alpha": 0.9,               // High alpha = weight detection score over equivariance score
+  "cutoff": 0.1,              // Keep detections scoring >= 10% of max score (ratio mode)
+  "nth": 5,                   // Label every 5th frame from TIFF stacks
+  "nms_distance": 30,         // Suppress duplicate detections within 30 px of each other
+  "plot": true,               // Save overlay PNGs to visually verify detections
+  "detect_batch_size": 4,
+  "num_workers": 4,
+  "fp16": true,               // Faster inference on modern GPUs (halves memory use)
+  "compile": true             // torch.compile — requires PyTorch 2.0+; skip if it errors
+}
+```
 
-> **Tip:** CLI arguments always override JSON values. For example, `python lodestar_autolabeler.py --config configs/autolabel_2um.json --cutoff 0.01` will use the JSON settings but apply a different cutoff.
+**`configs/autolabel_2um_lodestar_model_10.json`** — legacy model, uses fixed box size:
+
+```json
+{
+  "model": "models/lodestar_model_10.pt",
+  "input": "/path/to/tiff/data/",
+  "use_radius": true,         // Use per-detection radius from model (needs num_outputs=3)
+  "alpha": 0.9,
+  "cutoff": 0.001,            // Very low cutoff — keeps almost everything; filter with NMS
+  "nms_distance": 35,
+  "plot": true,
+  "detect_batch_size": 4,
+  "num_workers": 4
+}
+```
+
+> **Tip:** Start with `cutoff: 0.1` and `--plot`. Check the overlay PNGs — increase `cutoff` if you see too many false positives, decrease it if real particles are being missed. Adjust `nms_distance` to roughly your particle diameter.
+
+> **Tip:** CLI arguments always override JSON. For example:
+> ```bash
+> python lodestar_autolabeler.py --config configs/autolabel_2um_lodestar_model_15.json --cutoff 0.05
+> ```
+
 
 ---
 
@@ -282,9 +372,9 @@ By default every detection gets a square box of `--box-size` pixels.
 To use the model's own radius estimate instead:
 
 ```bash
-python label_images.py \
-  --model-path models/exp1.pt \
-  --input-dir frames/ \
+python lodestar_autolabeler.py \
+  --model models/exp1.pt \
+  --png-frames frames/ \
   --use-radius \
   --radius-scale 2.0 \
   --min-box-size 10
@@ -294,34 +384,39 @@ Run once with `--plot` to inspect the overlay and calibrate `--radius-scale`.
 
 ---
 
-## Manual Verification & Correction
+## Manual Verification & Correction — `crop_tool.py` (Label Mode)
 
-You can use the `crop_tool.py` to inspect and correct the autolabeler's output. 
+After running the autolabeler, open its output in **Label Mode** to review and correct predictions before exporting to your training framework.
 
-**Using a configuration file:**
-If you have an autolabeler config, you can use it to automatically open the generated images:
 ```bash
+# Open autolabeler output directly
+python crop_tool.py path/to/<name>_dataset/images/
+
+# Or use a config file to auto-open the correct folder
 python crop_tool.py --config configs/autolabel_2um.json
 ```
-This will automatically open the `images/` folder inside your specified `output_dir`.
 
-**Manual Folder Mode:**
-```bash
-python crop_tool.py path/to/your/images_dataset/images
-```
+Click **Label Mode** in the top-left. The purple overlay boxes are the model's predictions.
 
-### `crop_tool.py`
+**Efficient per-frame review:**
 
-| Argument | Default | Description |
-|---|---|---|
-| `folder` | — | Positional: folder containing images to browse |
-| `--config` | — | Path to a JSON configuration file (autolabeler config supported) |
+| Situation | Action |
+|---|---|
+| Model got everything right | Click **[Accept All]** |
+| A few boxes are wrong | **Edit Mode (E)** → click a bad box → Del |
+| A particle was missed | Draw a new box manually |
+| Hard to see overlaps | Press **Y** to cycle overlay style (Box / Point / Both / None) |
 
-**Advanced Controls:**
-*   **Edit Mode (E)**: Toggle to select and modify existing boxes.
-*   **Multi-Select**: Hold **Control** while clicking to select multiple boxes.
-*   **Batch Move**: Dragging any selected box moves the entire selection.
-*   **Bulk Actions**: `Delete` and `Convert` (T) work on all selected boxes at once.
+**Keyboard shortcuts in Label Mode:**
+
+| Key | Action |
+|---|---|
+| `E` | Toggle Edit Mode (select / move / resize boxes) |
+| `Del` / `Backspace` | Delete selected box |
+| `T` | Convert selected detection into a permanent manual label |
+| `Y` | Cycle detection overlay display style |
+| `←` / `→` | Previous / next image |
+| `Ctrl+Z` | Undo |
 
 ---
 
@@ -395,7 +490,7 @@ always `0` (single particle class).
 
 - Inspect detections with `--plot` before committing to full labeling runs.
 - Set `--nms-distance` to roughly your expected particle diameter to suppress duplicate detections.
-- If detections are too many / too few, adjust `--cutoff` in `label_images.py` without retraining.
+- If detections are too many / too few, adjust `--cutoff` in your autolabeler command or config without retraining.
 - Use `--detect-mode ratio --cutoff 0.3` as a good starting point for crowded frames.
 - On large microscopy frames (2048px+), inference is GPU-accelerated but peak-finding runs on CPU — this is normal. If it seems slow, lower `--detect-batch-size` to `1`.
 - GPU OOM: reduce `--detect-batch-size`. The script falls back to CPU automatically if needed.

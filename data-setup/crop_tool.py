@@ -1,31 +1,56 @@
-"""Manual crop tool — Optimized for LodeSTAR Training & YOLO Dataset Building.
+"""Manual crop & label tool — supports the full LodeSTAR → RF-DETR cascade pipeline.
 
-Usage:
-    python crop_tool.py [folder]
+═══════════════════════════════════════════════════════════════════════════════
+ WHERE THIS TOOL FITS IN THE PIPELINE
+═══════════════════════════════════════════════════════════════════════════════
 
-Workflow Modes:
-    [LodeSTAR]  Focus on creating PNG snippets for model training. (Crops: ON by default)
-    [YOLO]      Focus on full-frame bounding boxes for datasets. (Crops: OFF by default)
+  Step 1 ── CROP MODE  (this tool)
+      Draw a handful of bounding boxes around representative particles.
+      Crops are saved as PNG patches → used to train a LodeSTAR model.
 
-Core Controls:
-    Left-click-drag   Draw a new crop rectangle
-    Right-click-drag  Pan the image
-    Scroll wheel      Zoom in / out (centered on cursor)
-    Left / Right      Previous / next image
-    R                 Reset zoom and pan to fit
-    Ctrl+Z            Undo last action
-    + / -             Zoom in / out (keyboard)
-    ?                 Open Help & Shortcut dialog
+  Step 2 ── train_lodestar.py
+      Train LodeSTAR on your hand-picked crops.
 
-Advanced Features:
-    E                 Toggle EDIT MODE (move/resize existing boxes)
-    Y                 Cycle YOLO VIEW (Box -> Point -> Both -> None)
-    T                 Convert selected detection to LodeSTAR crop
-    Delete/Backspace  Delete selected crop (in Edit Mode)
+  Step 3 ── lodestar_autolabeler.py
+      Run the trained LodeSTAR model across thousands of frames.
+      Outputs YOLO-format .txt label files (images/ + labels/ folders).
 
-Export:
-    [Accept All]      Convert all computer detections on frame to manual labels.
-    [Export Dataset]  Generate a standard YOLOv8 folder with images and data.yaml.
+  Step 4 ── LABEL MODE  (this tool)
+      Open the autolabeler output folder.  Review each frame:
+        • If the model nailed it → click  [Accept All]  to lock in its boxes.
+        • Fix any mistakes with  Edit Mode  (E), then delete or move bad boxes.
+
+  Step 5 ── Export for RF-DETR / YOLO
+      Click  [Export COCO]  or  [Export YOLO]  to build the final training set.
+
+═══════════════════════════════════════════════════════════════════════════════
+ MODES
+═══════════════════════════════════════════════════════════════════════════════
+
+  Crop Mode  — draw rectangles to save tiny PNG patches for LodeSTAR training.
+               You only need 3-10 good crops. Quality beats quantity here.
+
+  Label Mode — review and verify full-frame bounding boxes. Designed to work
+               on the output of lodestar_autolabeler.py. Use Accept All on
+               frames where the model was accurate, then correct mistakes.
+
+═══════════════════════════════════════════════════════════════════════════════
+ CONTROLS
+═══════════════════════════════════════════════════════════════════════════════
+
+  Left-click-drag   Draw a new bounding box
+  Right-click-drag  Pan the image
+  Scroll wheel      Zoom in / out (centred on cursor)
+  ← / →             Previous / next image
+  R                 Fit image to window
+  Ctrl+Z            Undo last action
+  E                 Toggle Edit Mode (select, move, resize boxes)
+  Del / Backspace   Delete selected box (in Edit Mode)
+  Y                 Cycle detection overlay: Box → Point → Both → None
+  T                 Convert selected detection into a manual label
+  C                 Toggle auto-save crops (Crop Mode only)
+  F                 Toggle fixed square draw size
+  ?                 Open the Help & Shortcuts dialog
 """
 
 # pylint: disable=too-many-lines
@@ -59,6 +84,28 @@ ZOOM_MIN = 0.05
 ZOOM_MAX = 30.0
 HANDLE_RADIUS = 6  # display half-size of corner handle squares (canvas px)
 HANDLE_HIT = 12  # hit-detection half-size for corner handles (canvas px)
+
+# Preferences file — persists last-opened directory across sessions
+_PREFS_PATH = Path.home() / ".config" / "crop_tool" / "prefs.json"
+
+
+def _load_prefs() -> dict:
+    """Load saved preferences; return empty dict on any error."""
+    try:
+        with open(_PREFS_PATH, "r", encoding="utf-8") as prefs_file:
+            return json.load(prefs_file)
+    except Exception:  # pylint: disable=broad-except
+        return {}
+
+
+def _save_prefs(prefs: dict) -> None:
+    """Persist preferences to disk, silently ignoring write errors."""
+    try:
+        _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_PREFS_PATH, "w", encoding="utf-8") as prefs_file:
+            json.dump(prefs, prefs_file, indent=2)
+    except Exception:  # pylint: disable=broad-except
+        pass
 
 
 class ToolTip:
@@ -113,6 +160,16 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         self.current_index: int = -1
         self.pil_image: Optional[Image.Image] = None
         self.cv_image: Optional[np.ndarray] = None
+
+        # ── Preferences ──────────────────────────────────────────────────────
+        prefs = _load_prefs()
+        raw_last = prefs.get("last_dir")
+        # Fall back: last_dir → CWD → home
+        self._last_dir: Path = (
+            Path(raw_last)
+            if raw_last and Path(raw_last).is_dir()
+            else Path.cwd()
+        )
         self._image_cache: dict[Path, Image.Image] = {}
         self._cache_size: int = 10
 
@@ -169,146 +226,146 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        """Create the toolbar, canvas, and status bar."""
+        """Create the toolbar (two scrollable rows), canvas, and status bar."""
         self._status = tk.StringVar(value="Open a folder to begin.")
         self.progress_bar = ttk.Progressbar(self.root, mode="indeterminate")
 
-        # Toolbar
-        toolbar = tk.Frame(self.root, bd=1, relief=tk.RAISED)
-        toolbar.pack(side=tk.TOP, fill=tk.X)
+        # ── Toolbar container (holds two scrollable rows) ─────────────────────
+        toolbar_container = tk.Frame(self.root, bd=1, relief=tk.RAISED)
+        toolbar_container.pack(side=tk.TOP, fill=tk.X)
+
+        # ── Row 1: Mode | File | Navigation | Zoom | Help ────────────────────
+        row1_outer, row1 = _make_scrollable_row(toolbar_container)
+        row1_outer.pack(side=tk.TOP, fill=tk.X)
 
         # Mode Selector
-        mode_frame = tk.Frame(toolbar, bg="#333333", padx=2)
-        mode_frame.pack(side=tk.LEFT, padx=5)
+        mode_frame = tk.Frame(row1, bg="#333333", padx=2)
+        mode_frame.pack(side=tk.LEFT, padx=5, pady=2)
 
         self._btn_mode_lodestar = tk.Button(
             mode_frame,
-            text="LodeSTAR Mode",
+            text="Crop Mode",
             command=lambda: self.switch_project_mode("lodestar"),
             font=("Helvetica", 9, "bold"),
         )
         self._btn_mode_lodestar.pack(side=tk.LEFT, padx=1, pady=2)
+        ToolTip(self._btn_mode_lodestar, "Crop Mode — draw rectangles to save PNG patches for LodeSTAR training")
 
         self._btn_mode_yolo = tk.Button(
             mode_frame,
-            text="YOLO Mode",
+            text="Label Mode",
             command=lambda: self.switch_project_mode("yolo"),
             font=("Helvetica", 9, "bold"),
         )
         self._btn_mode_yolo.pack(side=tk.LEFT, padx=1, pady=2)
-        _sep(toolbar)
+        ToolTip(self._btn_mode_yolo, "Label Mode — draw bounding boxes on full frames for YOLO / RF-DETR training")
+        _sep(row1)
 
-        self._btn_open = tk.Button(toolbar, text="Open Folder", command=self.open_folder)
+        # File
+        self._btn_open = tk.Button(row1, text="Open Folder", command=self.open_folder)
         self._btn_open.pack(side=tk.LEFT, padx=4, pady=3)
         ToolTip(self._btn_open, "Select a folder containing extracted PNG/TIFF frames")
-        _sep(toolbar)
+        _sep(row1)
 
+        # Navigation
         self._btn_prev = tk.Button(
-            toolbar, text="← Prev", command=self.prev_image, state=tk.DISABLED
+            row1, text="← Prev", command=self.prev_image, state=tk.DISABLED
         )
         self._btn_prev.pack(side=tk.LEFT, padx=2, pady=3)
+        ToolTip(self._btn_prev, "Go to previous image (Left Arrow)")
 
-        self._lbl_counter = tk.Label(toolbar, text="No images", width=14)
+        self._lbl_counter = tk.Label(row1, text="No images", width=10)
         self._lbl_counter.pack(side=tk.LEFT, padx=4)
 
         self._btn_next = tk.Button(
-            toolbar, text="Next →", command=self.next_image, state=tk.DISABLED
+            row1, text="Next →", command=self.next_image, state=tk.DISABLED
         )
         self._btn_next.pack(side=tk.LEFT, padx=2, pady=3)
-        _sep(toolbar)
+        ToolTip(self._btn_next, "Go to next image (Right Arrow)")
+        _sep(row1)
 
-        self._btn_zoom_in = tk.Button(toolbar, text="Zoom In (+)", command=self.zoom_in)
-        self._btn_zoom_in.pack(side=tk.LEFT, padx=2, pady=3)
-        ToolTip(self._btn_zoom_in, "Increase magnification")
-
-        self._btn_zoom_out = tk.Button(toolbar, text="Zoom Out (−)", command=self.zoom_out)
-        self._btn_zoom_out.pack(side=tk.LEFT, padx=2, pady=3)
-        ToolTip(self._btn_zoom_out, "Decrease magnification")
-
-        self._btn_reset = tk.Button(toolbar, text="Reset Zoom (R)", command=self.reset_transform)
+        # Fit-to-window button (scroll wheel = zoom, R key = fit)
+        self._btn_reset = tk.Button(row1, text="Fit (R)", command=self.reset_transform)
         self._btn_reset.pack(side=tk.LEFT, padx=2, pady=3)
-        ToolTip(self._btn_reset, "Fit image to window (R)")
-        _sep(toolbar)
+        ToolTip(self._btn_reset, "Fit image to window  (R)\nScroll wheel to zoom in/out")
 
-        tk.Button(toolbar, text="Undo (Ctrl+Z)", command=self.undo_last_crop).pack(
-            side=tk.LEFT, padx=2, pady=3
-        )
-        _sep(toolbar)
-
-        self._btn_edit_mode = tk.Button(
-            toolbar, text="Edit Mode (E)", command=self.toggle_edit_mode, relief=tk.RAISED
-        )
-        self._btn_edit_mode.pack(side=tk.LEFT, padx=2, pady=3)
-
-        self._btn_delete = tk.Button(
-            toolbar,
-            text="Delete Selected (Del)",
-            command=self.delete_selected_crop,
-            state=tk.DISABLED,
-        )
-        self._btn_delete.pack(side=tk.LEFT, padx=2, pady=3)
-        _sep(toolbar)
-
-        self._btn_yolo_mode = tk.Button(
-            toolbar, text="YOLO: Box (Y)", command=self.toggle_yolo_view_mode
-        )
-        self._btn_yolo_mode.pack(side=tk.LEFT, padx=2, pady=3)
-
-        self._btn_save_crops = tk.Button(
-            toolbar, text="Crops: Off (C)", command=self.toggle_save_crops_mode
-        )
-        self._btn_save_crops.pack(side=tk.LEFT, padx=2, pady=3)
-        _sep(toolbar)
-
-        self._btn_fixed_size = tk.Button(
-            toolbar, text="Fixed Size: Off (F)", command=self.toggle_fixed_size
-        )
-        self._btn_fixed_size.pack(side=tk.LEFT, padx=2, pady=3)
-        ToolTip(self._btn_fixed_size, "Force clicks/drags to a fixed square size (F)")
-        _sep(toolbar)
-
-        self._btn_convert = tk.Button(
-            toolbar, text="Convert to Crop (T)", command=self.convert_selected, state=tk.DISABLED
-        )
-        self._btn_convert.pack(side=tk.LEFT, padx=2, pady=3)
-        ToolTip(self._btn_convert, "Convert selected detection into a LodeSTAR crop PNG")
-
-        self._btn_accept_all = tk.Button(
-            toolbar, text="Accept All Detections", command=self.convert_all_yolo
-        )
-        self._btn_accept_all.pack(side=tk.LEFT, padx=2, pady=3)
-        ToolTip(
-            self._btn_accept_all, "Turn all computer detections on this frame into manual labels"
-        )
-
-        self._btn_export = tk.Button(
-            toolbar,
-            text="Export YOLO Dataset",
-            command=self.export_yolo_dataset,
-            bg="#005a9e",
-            fg="white",
-        )
-        self._btn_export.pack(side=tk.LEFT, padx=4, pady=3)
-        ToolTip(
-            self._btn_export,
-            "Finalize all labeled images into a ready-to-train YOLO dataset folder",
-        )
-
-        tk.Button(toolbar, text="Help (?)", command=self.show_help, bg="#2d5a27", fg="white").pack(
+        # Help — right-anchored so it never scrolls away
+        tk.Button(row1, text="?", width=3, command=self.show_help, bg="#2d5a27", fg="white").pack(
             side=tk.RIGHT, padx=4, pady=3
         )
 
-        # Apply more tooltips
-        ToolTip(self._btn_prev, "Go to previous image (Left Arrow)")
-        ToolTip(self._btn_next, "Go to next image (Right Arrow)")
-        ToolTip(
-            self._btn_edit_mode, "Switch between drawing new boxes and editing existing ones (E)"
+        # ── Row 2: Undo | Edit | [mode-specific] ─────────────────────────────
+        row2_outer, row2 = _make_scrollable_row(toolbar_container)
+        row2_outer.pack(side=tk.TOP, fill=tk.X)
+        self._row2 = row2
+
+        # Undo (always visible)
+        tk.Button(row2, text="Undo", command=self.undo_last_crop).pack(
+            side=tk.LEFT, padx=4, pady=3
         )
-        ToolTip(self._btn_yolo_mode, "Cycle through different ways to see computer detections (Y)")
-        ToolTip(
-            self._btn_save_crops, "Enable this to save PNG files automatically while drawing (C)"
+        _sep(row2)
+
+        # Edit Mode toggle (always visible)
+        # Delete is keyboard-only (Del / Backspace) — no button needed
+        self._btn_edit_mode = tk.Button(
+            row2, text="Edit", command=self.toggle_edit_mode, relief=tk.RAISED
         )
-        ToolTip(self._btn_delete, "Remove the selected box (Delete)")
+        self._btn_edit_mode.pack(side=tk.LEFT, padx=2, pady=3)
+        ToolTip(
+            self._btn_edit_mode,
+            "Toggle Edit Mode — move/resize existing boxes  (E)\n"
+            "Delete selected box with  Del / Backspace",
+        )
+        _sep(row2)
+
+        # ── Mode-specific buttons (none packed here; _update_ui_visibility manages them) ──
+
+        # Crop Mode only
+        self._btn_save_crops = tk.Button(
+            row2, text="Crops: Off", command=self.toggle_save_crops_mode
+        )
+        ToolTip(self._btn_save_crops, "Save PNG crop files automatically while drawing  (C)")
+
+        # Label Mode only — detection overlay cycle
+        self._btn_yolo_mode = tk.Button(
+            row2, text="YOLO: Box", command=self.toggle_yolo_view_mode
+        )
+        ToolTip(self._btn_yolo_mode, "Cycle detection overlay: Box → Point → Both → None  (Y)")
+
+        # Label Mode only — accept computer detections
+        self._btn_accept_all = tk.Button(
+            row2, text="Accept All", command=self.convert_all_yolo
+        )
+        ToolTip(self._btn_accept_all, "Accept all computer detections on this frame as manual labels")
+
+        # Separator between detection controls and export (Label Mode only; stored for show/hide)
+        self._mode_sep = tk.Frame(row2, width=2, bd=1, relief=tk.SUNKEN)
+
+        # Label Mode only — convert a selected detection to a manual label
+        self._btn_convert = tk.Button(
+            row2, text="Convert", command=self.convert_selected, state=tk.DISABLED
+        )
+        ToolTip(self._btn_convert, "Convert selected detection into a manual label  (T)")
+
+        # Label Mode only — export buttons
+        self._btn_export = tk.Button(
+            row2, text="Export YOLO", command=self.export_yolo_dataset, bg="#005a9e", fg="white"
+        )
+        ToolTip(self._btn_export, "Export all labeled images into a YOLOv8 dataset folder")
+
+        self._btn_export_coco = tk.Button(
+            row2, text="Export COCO", command=self.export_coco_dataset, bg="#7b2d8b", fg="white"
+        )
+        ToolTip(
+            self._btn_export_coco,
+            "Export annotations as COCO JSON (annotations.json + images/) for RF-DETR training",
+        )
+
+        # ── Hidden keyboard-only widgets — kept so .config() calls elsewhere don't break ──
+        self._btn_delete = tk.Button(
+            row2, text="Delete", command=self.delete_selected_crop, state=tk.DISABLED
+        )
+        self._btn_fixed_size = tk.Button(row2, text="Fixed: Off", command=self.toggle_fixed_size)
 
         # Canvas
         self.canvas = tk.Canvas(self.root, bg="#1e1e1e", cursor="none", highlightthickness=0)
@@ -404,7 +461,7 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         self._update_status()
 
     def switch_project_mode(self, mode: str) -> None:
-        """Switch between LodeSTAR (crop-focused) and YOLO (box-focused) workflows."""
+        """Switch between Crop Mode (patch-focused) and Label Mode (box-focused) workflows."""
         self.project_mode = mode
         if mode == "lodestar":
             self._save_crops_mode = True
@@ -420,15 +477,31 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         self._redraw()
 
     def _update_ui_visibility(self) -> None:
-        """Hide/Show buttons based on current project mode."""
+        """Show the correct set of mode-specific buttons in row 2.
+
+        Crop Mode:  Crops toggle only.
+        Label Mode: detection overlay, Accept All, Convert, and export buttons.
+        """
+        for widget in (
+            self._btn_save_crops,
+            self._btn_yolo_mode,
+            self._btn_accept_all,
+            self._mode_sep,
+            self._btn_convert,
+            self._btn_export,
+            self._btn_export_coco,
+        ):
+            widget.pack_forget()
+
         if self.project_mode == "lodestar":
             self._btn_save_crops.pack(side=tk.LEFT, padx=2, pady=3)
-            self._btn_accept_all.pack_forget()
-            self._btn_export.pack_forget()
         else:
-            self._btn_save_crops.pack_forget()
+            self._btn_yolo_mode.pack(side=tk.LEFT, padx=2, pady=3)
             self._btn_accept_all.pack(side=tk.LEFT, padx=2, pady=3)
+            self._mode_sep.pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=2)
+            self._btn_convert.pack(side=tk.LEFT, padx=2, pady=3)
             self._btn_export.pack(side=tk.LEFT, padx=4, pady=3)
+            self._btn_export_coco.pack(side=tk.LEFT, padx=4, pady=3)
 
     def toggle_yolo_view_mode(self) -> None:
         """Cycle the display format of YOLO labels (box, point, both, or none)."""
@@ -697,13 +770,16 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
     def open_folder(self) -> None:
         """Prompt the user to select an image folder."""
         path = filedialog.askdirectory(
-            title="Select image folder", initialdir=str(self.folder or Path.home())
+            title="Select image folder", initialdir=str(self.folder or self._last_dir)
         )
         if path:
             self._open_folder_path(Path(path))
 
     def _open_folder_path(self, folder: Path) -> None:
         self.folder = folder
+        # Persist so the next session opens in the same place
+        self._last_dir = folder
+        _save_prefs({"last_dir": str(folder)})
         self._status.set(f"Scanning directory {folder.name}...")
         self.progress_bar.config(mode="determinate", value=0, maximum=100)
         self.progress_bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -1062,6 +1138,111 @@ names:
             f"Exported {exported_count} labeled images to:\n{export_path}\n\nReady for YOLO training!",
         )
         self._status.set(f"Dataset exported to {export_path.name}")
+
+    def export_coco_dataset(self) -> None:  # pylint: disable=too-many-locals
+        """Export all labeled images as a COCO JSON dataset for RF-DETR training.
+
+        Output structure matches what rf-detr/dataset.py expects:
+            <dest>/rf_detr_dataset/
+                images/          ← copies of every labeled image
+                annotations.json ← single COCO JSON covering all images
+        """
+        if not self.folder or not self.image_paths:
+            messagebox.showwarning("Export", "No images loaded to export.")
+            return
+
+        dest = filedialog.askdirectory(title="Select Export Destination for COCO JSON")
+        if not dest:
+            return
+
+        export_path = Path(dest) / "rf_detr_dataset"
+        img_dir = export_path / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        coco_images: list[dict] = []
+        coco_annotations: list[dict] = []
+        image_id = 1
+        annotation_id = 1
+
+        for img_path in self.image_paths:
+            stem = img_path.stem
+            src_lbl = self.labels_dir / f"{stem}.txt" if self.labels_dir else None
+            if not (src_lbl and src_lbl.exists()):
+                continue
+
+            # Read image dimensions without loading the full pixel data
+            try:
+                with Image.open(img_path) as probe:
+                    img_width, img_height = probe.size
+            except Exception:  # pylint: disable=broad-except
+                continue
+
+            coco_images.append(
+                {
+                    "id": image_id,
+                    "file_name": img_path.name,
+                    "width": img_width,
+                    "height": img_height,
+                }
+            )
+
+            # Convert YOLO normalised format → COCO absolute [x, y, w, h]
+            try:
+                with open(src_lbl, "r", encoding="utf-8") as lbl_file:
+                    for line in lbl_file:
+                        parts = line.strip().split()
+                        if len(parts) < 5:
+                            continue
+                        _cls_id = int(parts[0])  # always 0 (particle) — category_id is 1 in COCO
+                        cx_n, cy_n, w_n, h_n = map(float, parts[1:5])
+
+                        abs_w = round(w_n * img_width, 2)
+                        abs_h = round(h_n * img_height, 2)
+                        abs_x = round(cx_n * img_width - abs_w / 2, 2)  # top-left x
+                        abs_y = round(cy_n * img_height - abs_h / 2, 2)  # top-left y
+
+                        coco_annotations.append(
+                            {
+                                "id": annotation_id,
+                                "image_id": image_id,
+                                "category_id": 1,
+                                "bbox": [abs_x, abs_y, abs_w, abs_h],
+                                "area": round(abs_w * abs_h, 2),
+                                "iscrowd": 0,
+                            }
+                        )
+                        annotation_id += 1
+            except Exception:  # pylint: disable=broad-except
+                continue
+
+            shutil.copy2(img_path, img_dir / img_path.name)
+            image_id += 1
+
+        exported_count = image_id - 1  # images successfully processed
+
+        if exported_count == 0:
+            messagebox.showinfo("Export", "No labels found to export. Start labeling first!")
+            return
+
+        coco_json = {
+            "info": {"description": "Exported by Crop Tool", "version": "1.0"},
+            "licenses": [],
+            "categories": [{"id": 1, "name": "particle", "supercategory": "none"}],
+            "images": coco_images,
+            "annotations": coco_annotations,
+        }
+
+        annotations_path = export_path / "annotations.json"
+        with open(annotations_path, "w", encoding="utf-8") as json_file:
+            json.dump(coco_json, json_file, indent=2)
+
+        messagebox.showinfo(
+            "COCO Export Successful",
+            f"Exported {exported_count} images with {annotation_id - 1} annotations to:\n"
+            f"{export_path}\n\n"
+            "Point rf-detr/config.yaml → dataset.path at this folder.",
+        )
+        self._status.set(f"COCO dataset exported → {export_path.name}/annotations.json")
 
     def _draw_welcome_screen(self) -> None:
         """Show instructions on a blank canvas."""
@@ -1935,6 +2116,70 @@ TIPS:
             print(f"Warning: {target_folder} is not a valid directory.")
 
         self.root.mainloop()
+
+
+def _make_scrollable_row(parent: tk.Widget) -> tuple[tk.Frame, tk.Frame]:
+    """Create a horizontally-scrollable toolbar row.
+
+    Returns (outer_frame, inner_frame).
+    • outer_frame  — pack this into the toolbar container.
+    • inner_frame  — add buttons here exactly as you would a plain tk.Frame.
+
+    A thin horizontal scrollbar appears automatically when the inner content is
+    wider than the visible area, and disappears when it fits.  Shift+scroll
+    also pans horizontally so users without a scrollbar can still reach all buttons.
+    """
+    outer = tk.Frame(parent)
+
+    canvas = tk.Canvas(outer, height=36, highlightthickness=0, bd=0)
+    scrollbar = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
+    canvas.configure(xscrollcommand=scrollbar.set)
+
+    inner = tk.Frame(canvas)
+    win_id = canvas.create_window(0, 0, anchor=tk.NW, window=inner)
+
+    def _sync_scroll(_event=None) -> None:
+        """Resize the canvas window and show/hide scrollbar as needed."""
+        canvas.update_idletasks()
+        req_w = inner.winfo_reqwidth()
+        req_h = inner.winfo_reqheight()
+        visible_w = canvas.winfo_width()
+
+        # Keep canvas height in sync with inner content
+        if req_h > 0:
+            canvas.configure(height=req_h)
+
+        # Expand inner window to at least the canvas width so left-items fill
+        canvas.itemconfigure(win_id, width=max(req_w, visible_w))
+        canvas.configure(scrollregion=(0, 0, req_w, req_h))
+
+        # Auto-show scrollbar only when content overflows
+        if req_w > visible_w:
+            scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        else:
+            scrollbar.pack_forget()
+
+    inner.bind("<Configure>", _sync_scroll)
+    canvas.bind("<Configure>", _sync_scroll)
+
+    # Shift+scroll → horizontal pan (works on all platforms)
+    def _hscroll(event: tk.Event) -> None:
+        if event.num == 4:   # Linux scroll-up
+            canvas.xview_scroll(-1, "units")
+        elif event.num == 5:  # Linux scroll-down
+            canvas.xview_scroll(1, "units")
+        elif event.delta:     # Windows / macOS
+            canvas.xview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    for widget in (canvas, inner):
+        widget.bind("<Shift-MouseWheel>", _hscroll)
+        widget.bind("<Shift-Button-4>", _hscroll)
+        widget.bind("<Shift-Button-5>", _hscroll)
+
+    canvas.pack(side=tk.TOP, fill=tk.X, expand=True)
+    # Scrollbar starts hidden; _sync_scroll will show it if needed
+
+    return outer, inner
 
 
 def _sep(parent: tk.Frame) -> None:
