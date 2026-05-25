@@ -14,6 +14,7 @@ model:
   # Only used when model.type is rf-detr
   variant: large  # nano | small | medium | large
   num_classes: 2  # number of classes in the checkpoint (2 = particle/background)
+  num_queries: 6000  # max detections per frame; must match the trained checkpoint
 
   device: "0"  # "0" for first GPU, "cpu" for CPU-only
 
