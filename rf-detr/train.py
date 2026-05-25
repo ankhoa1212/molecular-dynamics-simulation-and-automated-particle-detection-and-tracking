@@ -25,6 +25,18 @@ def flatten_config(config: dict, prefix: str = "") -> dict[str, str]:
     return flat
 
 
+_MODEL_CONSTRUCTOR_KEYS = {"num_queries", "amp", "gradient_checkpointing", "resolution"}
+_OPTIONAL_TRAIN_KEYS = {"prefetch_factor", "persistent_workers"}
+
+
+def build_model_kwargs(model_cfg: dict) -> dict:
+    return {
+        k: model_cfg[k]
+        for k in _MODEL_CONSTRUCTOR_KEYS
+        if k in model_cfg and model_cfg[k] is not None
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train RF-DETR particle detector")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
@@ -66,9 +78,7 @@ def main() -> None:
         log_epoch_metrics(metrics, step=trainer.epoch)
 
     variant = model_cfg["variant"].lower()
-    model_kwargs = {}
-    if "num_queries" in model_cfg:
-        model_kwargs["num_queries"] = model_cfg["num_queries"]
+    model_kwargs = build_model_kwargs(model_cfg)
 
     if variant == "base":
         from rfdetr import RFDETRBase
@@ -84,21 +94,25 @@ def main() -> None:
     checkpoint_dir = Path(train_cfg["checkpoint_dir"])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    model.train(
-        dataset_dir=str(dataset_dir),
-        epochs=train_cfg["epochs"],
-        batch_size=train_cfg["batch_size"],
-        grad_accum_steps=train_cfg["grad_accum_steps"],
-        lr=train_cfg["learning_rate"],
-        num_workers=train_cfg.get("num_workers", 0),
-        pin_memory=train_cfg.get("pin_memory", False),
-        output_dir=str(checkpoint_dir),
-        callbacks=callbacks,
-        early_stopping=train_cfg.get("early_stopping", False),
-        early_stopping_patience=train_cfg.get("early_stopping_patience", 10),
-        early_stopping_min_delta=train_cfg.get("early_stopping_min_delta", 0.001),
-        early_stopping_use_ema=train_cfg.get("early_stopping_use_ema", False),
-    )
+    train_kwargs: dict = {
+        "dataset_dir": str(dataset_dir),
+        "epochs": train_cfg["epochs"],
+        "batch_size": train_cfg["batch_size"],
+        "grad_accum_steps": train_cfg["grad_accum_steps"],
+        "lr": train_cfg["learning_rate"],
+        "num_workers": train_cfg.get("num_workers", 0),
+        "pin_memory": train_cfg.get("pin_memory", False),
+        "output_dir": str(checkpoint_dir),
+        "callbacks": callbacks,
+        "early_stopping": train_cfg.get("early_stopping", False),
+        "early_stopping_patience": train_cfg.get("early_stopping_patience", 10),
+        "early_stopping_min_delta": train_cfg.get("early_stopping_min_delta", 0.001),
+        "early_stopping_use_ema": train_cfg.get("early_stopping_use_ema", False),
+    }
+    for key in _OPTIONAL_TRAIN_KEYS:
+        if train_cfg.get(key) is not None:
+            train_kwargs[key] = train_cfg[key]
+    model.train(**train_kwargs)
 
     for ckpt in sorted(checkpoint_dir.glob("*.pth")):
         log_artifact(str(ckpt))
