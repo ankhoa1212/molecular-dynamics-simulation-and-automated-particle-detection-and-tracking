@@ -1,7 +1,7 @@
 # Data Setup — LodeSTAR → RF-DETR Cascade Labeling Pipeline
 
 Full pipeline for auto-labeling microscopy data using [LodeSTAR](https://github.com/softmatterlab/DeepTrack2).
-The core idea is a **cascade**: you hand-label a handful of particle crops, train a lightweight LodeSTAR model on them, then use that model to automatically generate YOLO-format labels across thousands of frames — which you then verify and export for RF-DETR training.
+The core idea is a **cascade**: a handful of particle crops are hand-labeled to train a lightweight LodeSTAR model, which then automatically generates YOLO-format labels across thousands of frames — verified and exported for RF-DETR training.
 
 ```
 [Crop Mode in crop_tool.py]
@@ -86,7 +86,7 @@ python train_lodestar.py \
   --model-path models/lodestar_model_15/
 ```
 
-Trains on the crops you drew and saves a model. Takes a few minutes. Accepts multiple `--input-dir` paths:
+Trains on the crops drawn in Step 2 and saves a model. Takes a few minutes. Accepts multiple `--input-dir` paths:
 
 ```bash
 python train_lodestar.py \
@@ -149,7 +149,7 @@ Switch to **Label Mode** using the mode buttons in the top-left corner.
 ---
 
 ### Step 6 — Export for Training
-Once you've reviewed your frames, export the verified dataset:
+Once frames are reviewed, export the verified dataset:
 
 - **[Export COCO]** — generates `rf_detr_dataset/images/` + `annotations.json` for RF-DETR.
 - **[Export YOLO]** — generates a standard YOLOv8 folder with `images/`, `labels/`, and `data.yaml`.
@@ -254,7 +254,7 @@ python lodestar_autolabeler.py \
 
 ## Configuring with JSON
 
-`lodestar_autolabeler.py` accepts a `--config` flag. CLI arguments always override JSON values, so configs set your defaults and you can tweak individual values on the command line.
+`lodestar_autolabeler.py` accepts a `--config` flag. CLI arguments always override JSON values — configs set the defaults and individual values can be tweaked on the command line.
 
 ### Autolabeling configs — `configs/`
 
@@ -298,7 +298,7 @@ python lodestar_autolabeler.py --config configs/autolabel_2um_lodestar_model_15.
 }
 ```
 
-> **Tip:** Start with `cutoff: 0.1` and `--plot`. Check the overlay PNGs — increase `cutoff` if you see too many false positives, decrease it if real particles are being missed. Adjust `nms_distance` to roughly your particle diameter.
+> **Tip:** Start with `cutoff: 0.1` and `--plot`. Check the overlay PNGs — increase `cutoff` if there are too many false positives, decrease it if real particles are being missed. Set `nms_distance` to roughly the particle diameter.
 
 > **Tip:** CLI arguments always override JSON. For example:
 > ```bash
@@ -378,7 +378,7 @@ Click **Label Mode** in the top-left. The purple overlay boxes are the model's p
 
 ## MLflow
 
-Training runs are automatically tracked with MLflow to help you compare different models and augmentation settings.
+Training runs are automatically tracked with MLflow for comparing different models and augmentation settings.
 
 ### Viewing Runs Locally
 To start the MLflow dashboard and inspect your training history:

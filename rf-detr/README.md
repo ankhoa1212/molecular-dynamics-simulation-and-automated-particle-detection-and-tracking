@@ -114,7 +114,7 @@ Open [http://127.0.0.1:5000](http://127.0.0.1:5000) in your browser to view all 
 
 ## Evaluation
 
-Evaluate on the test split after training. You can either:
+Evaluate on the test split after training. Two options:
 
 **Option A — use the most recent local checkpoint:**
 

@@ -17,7 +17,8 @@ yolov12/
 ├── train.py             # Training logic
 ├── evaluate.py          # Evaluation logic
 ├── process.py           # Data preprocessing (train/val split)
-├── data/
+├── config.yaml          # Training configuration
+├── data/                # Your labeled dataset (create this before running)
 │   ├── data.yaml        # Dataset config (paths + class names)
 │   └── images/          # Raw labeled images (.jpg/.png) + YOLO .txt labels
 ├── processed_data/      # Auto-generated train/val splits (created by process stage)
@@ -48,6 +49,18 @@ val: validation/images
 nc: 1
 names: ["particle"]
 ```
+
+## Data Setup
+
+Before running, create the `data/` directory and populate it:
+
+```
+data/
+├── data.yaml          # Dataset config (see format above)
+└── images/            # Your labeled images (.jpg/.png) + matching YOLO .txt files
+```
+
+The `process` stage reads from `data/images/` and writes 80/20 splits to `processed_data/`. If `processed_data/` already contains split data, the process stage skips automatically.
 
 ## Usage
 
