@@ -28,8 +28,7 @@ particle-tracking/
 ├── track.py                 # Main entry point
 ├── config.yaml              # Configuration file (edit this before running)
 ├── pyproject.toml           # Python dependencies (managed with uv)
-├── models/
-│   └── legacy/              # Archived YOLOv5/YOLOv11 experiments
+├── models/                  # Local model weights (optional)
 ├── data/
 │   └── raw/                 # Raw input TIFF/video files
 └── evaluation/
@@ -144,7 +143,7 @@ uv run python track.py \
   --output-dir evaluation/results/simulation/
 
 # Use a different config file
-uv run python track.py --config configs/lodestar_trial2.yaml
+uv run python track.py --config lodestar_config.yaml
 ```
 
 ---

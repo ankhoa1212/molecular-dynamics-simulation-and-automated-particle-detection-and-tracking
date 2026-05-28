@@ -15,7 +15,7 @@ cd rf-detr
 uv sync
 ```
 
-This installs all dependencies including PyTorch with CUDA 12.1 support into a local `.venv`.
+This installs all dependencies including PyTorch with CUDA 13.0 support into a local `.venv`.
 
 ---
 

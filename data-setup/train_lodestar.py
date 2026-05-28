@@ -127,7 +127,7 @@ def parse_args():
     parser.add_argument(
         "--mlflow-uri",
         type=str,
-        default="mlruns",
+        default="sqlite:///mlflow.db",
         help="MLflow tracking URI (local path or remote).",
     )
     parser.add_argument(

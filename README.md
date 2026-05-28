@@ -30,7 +30,7 @@ molecular-dynamics-simulation/
 └── particle-tracking/       # Particle tracking pipeline
     ├── track.py             # Unified tracker (RF-DETR, YOLOv12, or LodeSTAR)
     ├── config.yaml          # Tracking configuration
-    ├── models/legacy/       # Archived YOLOv5/YOLOv11 experiments
+    ├── models/              # Local model weights (optional)
     ├── data/raw/            # Raw input TIFF files
     └── evaluation/results/  # Tracking outputs (tracks.csv, annotated video)
 ```
@@ -53,16 +53,14 @@ export PATH=/path/to/lammps/bin:$PATH
 
 ```bash
 cd lammps-scripts
-python3 run.py --input continuous_force.in --output results --molecules 1000
-# or via config file:
 python3 run.py --config config/continuous_force_test.json
 ```
 
 **Analyze results:**
 
 ```bash
-python3 velocity_graph.py results/    # velocity distribution plots
-python3 temp_graph.py results/        # temperature vs. time
+python3 velocity_graph.py --filename results/simulation.lammpstrj   # velocity distribution plots
+python3 temp_graph.py --filename results/simulation.lammpstrj        # temperature vs. time
 python3 phase_diagram.py results/     # phase diagram
 python3 hexatic_order_analysis.py     # hexatic order parameter
 ```
