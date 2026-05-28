@@ -12,7 +12,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from model_comparison import ModelSpec, build_comparison_figure, default_device, parse_model_spec
+from model_comparison import (
+    ModelSpec,
+    _build_rfdetr_script,
+    build_comparison_figure,
+    default_device,
+    parse_model_spec,
+)
 
 
 class TestParseModelSpec:
@@ -120,3 +126,19 @@ class TestBuildComparisonFigure:
         ax = fig.axes[1]
         assert len(ax.patches) == 2
         plt.close(fig)
+
+
+class TestBuildRfdetrScript:
+    def test_build_rfdetr_script_includes_num_queries_when_set(self):
+        script = _build_rfdetr_script("RFDETRLarge", Path("ckpt.pth"), "/tmp/frame.npy", 0.5, 6000)
+        assert "num_queries=6000" in script
+
+    def test_build_rfdetr_script_omits_num_queries_when_none(self):
+        script = _build_rfdetr_script("RFDETRLarge", Path("ckpt.pth"), "/tmp/frame.npy", 0.5, None)
+        assert "num_queries" not in script
+
+    def test_build_rfdetr_script_uses_correct_class_and_checkpoint(self):
+        script = _build_rfdetr_script(
+            "RFDETRBase", Path("weights/best.pth"), "/tmp/f.npy", 0.25, None
+        )
+        assert "RFDETRBase(pretrain_weights='weights/best.pth')" in script

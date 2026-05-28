@@ -25,11 +25,13 @@ python3 run.py -h
 Usage examples:
 
 ```bash
-python3 run.py --input test.in --output results --molecules 1000
+python3 run.py --config config/continuous_force_test.json
 ```
 
+Or with positional arguments:
+
 ```bash
-python3 run.py --config test/test.json
+python3 run.py test.in results 1000 1000 100 5.0 10.0 1.0
 ```
 
 This will execute a LAMMPS simulation with the specified input file, number of molecules, and epsilon value, storing results in the output directory.
@@ -41,15 +43,15 @@ This will execute a LAMMPS simulation with the specified input file, number of m
 The `velocity_graph.py` script generates velocity distribution plots from simulation data. To use it:
 
 ```bash
-python3 velocity_graph.py <output_dir>
+python3 velocity_graph.py --filename <path_to_lammpstrj_file>
 ```
 
-- `<output_dir>`: Directory containing simulation output files
+- `--filename / -f`: Path to a `.lammpstrj` trajectory file
 
 For example:
 
 ```bash
-python3 velocity_graph.py results
+python3 velocity_graph.py --filename results/simulation.lammpstrj
 ```
 
 This will analyze the velocity data and produce velocity distribution plots.
@@ -61,15 +63,15 @@ This will analyze the velocity data and produce velocity distribution plots.
 The `temp_graph.py` script generates temperature plots from simulation data. To use it:
 
 ```bash
-python3 temp_graph.py <output_dir>
+python3 temp_graph.py --filename <path_to_file>
 ```
 
-- `<output_dir>`: Directory containing simulation output files
+- `--filename / -f`: Path to a `.lammpstrj` or log file
 
 For example:
 
 ```bash
-python3 temp_graph.py results
+python3 temp_graph.py --filename results/simulation.lammpstrj
 ```
 
 This will analyze the temperature data and produce a temperature vs. time plot.

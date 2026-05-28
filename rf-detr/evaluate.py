@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 import supervision as sv
 from supervision.metrics import ConfusionMatrix, MeanAveragePrecision
+from tqdm import tqdm
 import yaml
 
 from dataset import split_by_experiment
@@ -35,15 +36,18 @@ def resolve_checkpoint(config: dict, run_id: str | None) -> Path:
     return candidates[0]
 
 
-def load_model(variant: str, checkpoint: Path):
+def load_model(variant: str, checkpoint: Path, num_queries: int | None = None):
+    kwargs = {"pretrain_weights": str(checkpoint)}
+    if num_queries is not None:
+        kwargs["num_queries"] = num_queries
     if variant == "base":
         from rfdetr import RFDETRBase
 
-        return RFDETRBase(pretrain_weights=str(checkpoint))
+        return RFDETRBase(**kwargs)
     elif variant == "large":
         from rfdetr import RFDETRLarge
 
-        return RFDETRLarge(pretrain_weights=str(checkpoint))
+        return RFDETRLarge(**kwargs)
     raise ValueError(f"Unknown model variant {variant!r}. Choose 'base' or 'large'.")
 
 
@@ -71,7 +75,8 @@ def main() -> None:
     )
 
     checkpoint = resolve_checkpoint(config, args.run_id)
-    model = load_model(model_cfg["variant"].lower(), checkpoint)
+    num_queries = model_cfg.get("num_queries")
+    model = load_model(model_cfg["variant"].lower(), checkpoint, num_queries=num_queries)
 
     with open(splits.test_dir / "_annotations.coco.json") as annotation_file:
         coco = json.load(annotation_file)

@@ -9,15 +9,20 @@ dataset:
 
 model:
   variant: large                   # base | large
-  num_queries: 1000                # max detections per frame (default 300); must retrain to change
+  num_queries: 6000                # max detections per frame (default 300); must retrain to change
+  amp: true                        # mixed precision: auto-selects bf16 (Ampere+) or fp16; set false for fp32
+  gradient_checkpointing: false    # trade ~20% speed for lower VRAM; enable on ≤12 GB GPUs
+  resolution: null                 # input resolution in px (null = rfdetr default: 704 for large, 560 for base)
 
 training:
   epochs: 50
-  batch_size: 4
-  grad_accum_steps: 4
+  batch_size: 4                    # set to "auto" to let rfdetr tune for available VRAM
+  grad_accum_steps: 4              # effective_batch = batch_size * grad_accum_steps; drop to 1 on large GPUs
   learning_rate: 1.0e-4
   num_workers: 4
   pin_memory: true
+  prefetch_factor: null            # prefetch batches per worker (null = PyTorch default 2); increase to 4 on fast SSDs
+  persistent_workers: null         # keep workers alive between epochs (null = false); set true if num_workers > 0
   checkpoint_dir: checkpoints
   early_stopping: true
   early_stopping_patience: 10    # epochs with no improvement before stopping

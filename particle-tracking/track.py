@@ -68,7 +68,7 @@ def _normalize_device(device):
     return s
 
 
-def get_rfdetr_model(variant, checkpoint, device, num_classes=None):
+def get_rfdetr_model(variant, checkpoint, device, num_classes=None, num_queries=None):
     """Load RF-DETR from the venv in rf-detr/."""
     rf_detr_venv = SCRIPT_DIR / ".." / "rf-detr" / ".venv"
     site_packages = list(rf_detr_venv.glob("lib/python*/site-packages"))
@@ -110,6 +110,8 @@ def get_rfdetr_model(variant, checkpoint, device, num_classes=None):
             kwargs["device"] = normalized
         if num_classes is not None:
             kwargs["num_classes"] = num_classes
+        if num_queries is not None:
+            kwargs["num_queries"] = num_queries
         model = cls(**kwargs)
         if hasattr(model, "optimize_for_inference"):
             print("Optimizing RF-DETR model for inference...")
@@ -518,6 +520,7 @@ def main():
     )
     variant = args.variant or cfg_get(cfg, "model", "variant", default="large")
     num_classes = cfg_get(cfg, "model", "num_classes")
+    num_queries = cfg_get(cfg, "model", "num_queries")
     device = _normalize_device(args.device or cfg_get(cfg, "model", "device", default="0")) or "cpu"
     threshold = args.threshold or cfg_get(cfg, "detection", "threshold", default=0.25)
     input_path = args.input or cfg_get(cfg, "input")
@@ -660,7 +663,9 @@ def main():
     # Initialize detection model before loading frames so import/checkpoint
     # errors surface immediately rather than after a potentially long load.
     if model_type == "rf-detr":
-        model = get_rfdetr_model(variant, checkpoint, device, num_classes=num_classes)
+        model = get_rfdetr_model(
+            variant, checkpoint, device, num_classes=num_classes, num_queries=num_queries
+        )
     elif model_type == "yolo":
         model = get_yolo_model(checkpoint)
     elif model_type == "lodestar":

@@ -1,7 +1,7 @@
 # Data Setup — LodeSTAR → RF-DETR Cascade Labeling Pipeline
 
 Full pipeline for auto-labeling microscopy data using [LodeSTAR](https://github.com/softmatterlab/DeepTrack2).
-The core idea is a **cascade**: you hand-label a handful of particle crops, train a lightweight LodeSTAR model on them, then use that model to automatically generate YOLO-format labels across thousands of frames — which you then verify and export for RF-DETR training.
+The core idea is a **cascade**: a handful of particle crops are hand-labeled to train a lightweight LodeSTAR model, which then automatically generates YOLO-format labels across thousands of frames — verified and exported for RF-DETR training.
 
 ```
 [Crop Mode in crop_tool.py]
@@ -86,7 +86,7 @@ python train_lodestar.py \
   --model-path models/lodestar_model_15/
 ```
 
-Trains on the crops you drew and saves a model. Takes a few minutes. Accepts multiple `--input-dir` paths:
+Trains on the crops drawn in Step 2 and saves a model. Takes a few minutes. Accepts multiple `--input-dir` paths:
 
 ```bash
 python train_lodestar.py \
@@ -133,7 +133,7 @@ Open the autolabeler's output folder to review and verify the model's prediction
 ```bash
 python crop_tool.py path/to/<name>_dataset/images/
 # or, using a config file:
-python crop_tool.py --config configs/autolabel_2um.json
+python crop_tool.py --config configs/autolabel_2um_lodestar_model_15.json
 ```
 
 Switch to **Label Mode** using the mode buttons in the top-left corner.
@@ -149,7 +149,7 @@ Switch to **Label Mode** using the mode buttons in the top-left corner.
 ---
 
 ### Step 6 — Export for Training
-Once you've reviewed your frames, export the verified dataset:
+Once frames are reviewed, export the verified dataset:
 
 - **[Export COCO]** — generates `rf_detr_dataset/images/` + `annotations.json` for RF-DETR.
 - **[Export YOLO]** — generates a standard YOLOv8 folder with `images/`, `labels/`, and `data.yaml`.
@@ -178,15 +178,6 @@ Once you've reviewed your frames, export the verified dataset:
 | `--experiment` | `lodestar` | MLflow experiment name |
 | `--run-name` | model filename stem | MLflow run name |
 | `--mlflow-uri` | `sqlite:///mlflow.db` | MLflow tracking URI |
-| `--brightness` | `-0.05 0.05` | Brightness offset range |
-| `--contrast` | `0.25 1.0` | Contrast multiplier range |
-| `--noise` | `0.001 0.01` | Gaussian noise range (sigma) |
-| `--rotation` | `0 2π` | Rotation range (radians) |
-| `--scale` | `0.8 1.2` | Scale jitter range |
-| `--translate` | `-0.1 0.1` | Translation range (fraction of image size) |
-| `--flip-lr` | `0.5` | Probability of left-right flip |
-| `--flip-ud` | `0.5` | Probability of up-down flip |
-| `--config` | — | Path to a JSON configuration file |
 
 ### `lodestar_utils.py` (Inference Engine)
 
@@ -194,7 +185,6 @@ Once you've reviewed your frames, export the verified dataset:
 |---|---|---|
 | `--input-dir` | — | Directory of input images |
 | `--input-file` | — | Single input image |
-| `--config` | — | Path to a JSON configuration file |
 | `--model-path` | **required** | Path to saved `.pt` weights |
 | `--output-dir` | `output_<input_folder_name>/` | Where to write YOLO `.txt` files |
 | `--alpha` | `0.5` | Blend between equivariance score (0) and detection score (1) |
@@ -264,47 +254,13 @@ python lodestar_autolabeler.py \
 
 ## Configuring with JSON
 
-Both `train_lodestar.py` and `lodestar_autolabeler.py` accept a `--config` flag. CLI arguments always override JSON values, so configs set your defaults and you can tweak individual values on the command line.
-
-### Training config — `configs/default_lodestar.json`
-
-Used with `train_lodestar.py`:
-
-```bash
-python train_lodestar.py --config configs/default_lodestar.json --input-dir frames/
-```
-
-```json
-{
-  "n_transforms": 8,       // Equivariance transforms (higher = more rotation-robust)
-  "num_outputs": 3,        // 2 = (x,y) only; 3 = (x,y,radius) — needed for --use-radius
-  "training_params": {
-    "epochs": 100,
-    "batch_size": 8,
-    "crop_size": 64,
-    "brightness": [-0.05, 0.05],
-    "contrast": [0.25, 1.0],
-    "noise": [0.001, 0.01],
-    "rotation": [0, 6.283185307179586],  // Full 360° rotation
-    "scale": [0.8, 1.2],
-    "translate": [-0.1, 0.1],
-    "flip_lr": 0.5,
-    "flip_ud": 0.5,
-    "patience": 15,         // Early stopping: epochs without improvement
-    "min_delta": 0.005,
-    "seed": 42,
-    "experiment": "lodestar"
-  }
-}
-```
-
----
+`lodestar_autolabeler.py` accepts a `--config` flag. CLI arguments always override JSON values — configs set the defaults and individual values can be tweaked on the command line.
 
 ### Autolabeling configs — `configs/`
 
 Used with `lodestar_autolabeler.py`. Two pre-tuned configs are provided for 2 µm particles:
 
-**`configs/autolabel_2um_lodestar_model_15.json`** — recommended starting point:
+**`configs/autolabel_2um_lodestar_model_15.json`** — recommended starting point. Uses `ratio` mode (`cutoff` = fraction of max score), `fp16` and `torch.compile` for fast GPU inference:
 
 ```bash
 python lodestar_autolabeler.py --config configs/autolabel_2um_lodestar_model_15.json
@@ -312,37 +268,37 @@ python lodestar_autolabeler.py --config configs/autolabel_2um_lodestar_model_15.
 
 ```json
 {
-  "model": "models/lodestar_model_15",
-  "input": "/path/to/tiff/data/",
-  "alpha": 0.9,               // High alpha = weight detection score over equivariance score
-  "cutoff": 0.1,              // Keep detections scoring >= 10% of max score (ratio mode)
-  "nth": 5,                   // Label every 5th frame from TIFF stacks
-  "nms_distance": 30,         // Suppress duplicate detections within 30 px of each other
-  "plot": true,               // Save overlay PNGs to visually verify detections
-  "detect_batch_size": 4,
-  "num_workers": 4,
-  "fp16": true,               // Faster inference on modern GPUs (halves memory use)
-  "compile": true             // torch.compile — requires PyTorch 2.0+; skip if it errors
+    "model": "models/lodestar_model_15",
+    "input": "/path/to/tiff/data/",
+    "alpha": 0.9,
+    "cutoff": 0.1,
+    "nth": 5,
+    "nms_distance": 30,
+    "plot": true,
+    "detect_batch_size": 4,
+    "num_workers": 4,
+    "fp16": true,
+    "compile": true
 }
 ```
 
-**`configs/autolabel_2um_lodestar_model_10.json`** — legacy model, uses fixed box size:
+**`configs/autolabel_2um_lodestar_model_10.json`** — legacy model, uses per-detection radius (`use_radius: true`) with a very low cutoff; relies on NMS to suppress duplicates:
 
 ```json
 {
-  "model": "models/lodestar_model_10.pt",
-  "input": "/path/to/tiff/data/",
-  "use_radius": true,         // Use per-detection radius from model (needs num_outputs=3)
-  "alpha": 0.9,
-  "cutoff": 0.001,            // Very low cutoff — keeps almost everything; filter with NMS
-  "nms_distance": 35,
-  "plot": true,
-  "detect_batch_size": 4,
-  "num_workers": 4
+    "model": "models/lodestar_model_10.pt",
+    "input": "/path/to/tiff/data/",
+    "use_radius": true,
+    "alpha": 0.9,
+    "cutoff": 0.001,
+    "nms_distance": 35,
+    "plot": true,
+    "detect_batch_size": 4,
+    "num_workers": 4
 }
 ```
 
-> **Tip:** Start with `cutoff: 0.1` and `--plot`. Check the overlay PNGs — increase `cutoff` if you see too many false positives, decrease it if real particles are being missed. Adjust `nms_distance` to roughly your particle diameter.
+> **Tip:** Start with `cutoff: 0.1` and `--plot`. Check the overlay PNGs — increase `cutoff` if there are too many false positives, decrease it if real particles are being missed. Set `nms_distance` to roughly the particle diameter.
 
 > **Tip:** CLI arguments always override JSON. For example:
 > ```bash
@@ -393,7 +349,7 @@ After running the autolabeler, open its output in **Label Mode** to review and c
 python crop_tool.py path/to/<name>_dataset/images/
 
 # Or use a config file to auto-open the correct folder
-python crop_tool.py --config configs/autolabel_2um.json
+python crop_tool.py --config configs/autolabel_2um_lodestar_model_15.json
 ```
 
 Click **Label Mode** in the top-left. The purple overlay boxes are the model's predictions.
@@ -422,7 +378,7 @@ Click **Label Mode** in the top-left. The purple overlay boxes are the model's p
 
 ## MLflow
 
-Training runs are automatically tracked with MLflow to help you compare different models and augmentation settings.
+Training runs are automatically tracked with MLflow for comparing different models and augmentation settings.
 
 ### Viewing Runs Locally
 To start the MLflow dashboard and inspect your training history:
@@ -443,7 +399,7 @@ Each run records:
 - **Metrics**: Loss curves per step (logged automatically by the Lightning trainer).
 - **Artifacts**: A copy of the saved `.pt` weights, the `.json` config, and a copy of the **source crops** used for that specific run.
 
-To track runs locally (now defaults to `sqlite:///mlflow.db`):
+To write runs to the shared MLflow database (pass `--mlflow-uri` explicitly):
 
 ```bash
 python train_lodestar.py \

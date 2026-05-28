@@ -15,7 +15,7 @@ cd rf-detr
 uv sync
 ```
 
-This installs all dependencies including PyTorch with CUDA 12.1 support into a local `.venv`.
+This installs all dependencies including PyTorch with CUDA 13.0 support into a local `.venv`.
 
 ---
 
@@ -114,7 +114,7 @@ Open [http://127.0.0.1:5000](http://127.0.0.1:5000) in your browser to view all 
 
 ## Evaluation
 
-Evaluate on the test split after training. You can either:
+Evaluate on the test split after training. Two options:
 
 **Option A — use the most recent local checkpoint:**
 

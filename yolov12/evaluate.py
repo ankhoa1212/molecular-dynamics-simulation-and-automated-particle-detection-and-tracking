@@ -61,6 +61,23 @@ def evaluate_yolov12(weights, data, img_size=640, conf_thres=0.001, iou_thres=0.
         print("No detections.")
 
 
+def run(config_path: str = "config.yaml") -> None:
+    import os
+    import yaml
+
+    config_dir = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.isabs(config_path):
+        config_path = os.path.join(config_dir, config_path)
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    weights = config["model"]["weights"]
+    data_dir = config["data"]["dir"]
+    if not os.path.isabs(data_dir):
+        data_dir = os.path.join(os.path.dirname(config_path), data_dir)
+    data = {"val": os.path.join(data_dir, "validation/images")}
+    evaluate_yolov12(weights, data)
+
+
 if __name__ == "__main__":
     WEIGHTS = "yolov12.pt"
     DATA = {"val": "data/val.txt"}  # Update with your validation data path

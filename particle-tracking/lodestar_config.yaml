@@ -3,7 +3,7 @@
 # CLI arguments always override values set here.
 
 # Input: path to video, TIFF stack, or folder of images
-input: "/mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 60% Light Intensity_2_MMStack_Default.ome.tif"
+input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
 
 # Model:
 model:
@@ -26,13 +26,13 @@ tracking:
   tracker: trackpy  # trackpy (default, offline) | bytetrack (online)
 
   # Trackpy: maximum pixel distance a particle can move between frames
-  search_range: 10.0
+  search_range: 20.0
 
   # Trackpy: number of consecutive frames a particle may be missing before its track ends
-  memory: 5
+  memory: 10
 
   # Trackpy: discard tracks shorter than this many frames (0 = keep all)
-  stub_filter: 3
+  stub_filter: 6
 
   # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
   adaptive_stop: 1.0  # minimum search_range before giving up (set to null to disable)
@@ -49,7 +49,7 @@ tracking:
 
 # Output:
 output:
-  dir: /mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/lodestar/
+  dir: /mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/lodestar/
 
   save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
 

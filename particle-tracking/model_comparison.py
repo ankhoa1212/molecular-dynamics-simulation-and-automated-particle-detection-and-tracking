@@ -119,8 +119,28 @@ def build_comparison_figure(frame_rgb, results: list) -> "plt.Figure":
     return fig
 
 
+def _build_rfdetr_script(
+    cls_name: str, checkpoint: Path, frame_path: str, threshold: float, num_queries: int | None
+) -> str:
+    nq_kwarg = f", num_queries={num_queries}" if num_queries is not None else ""
+    return (
+        f"import json, numpy as np\n"
+        f"from rfdetr import {cls_name}\n"
+        f"model = {cls_name}(pretrain_weights={str(checkpoint)!r}{nq_kwarg})\n"
+        f"det = model.predict(np.load({frame_path!r}), threshold={threshold})\n"
+        f"xyxy = det.xyxy.tolist() if len(det) > 0 else []\n"
+        f"conf = det.confidence.tolist() if det.confidence is not None and len(det) > 0 else []\n"
+        f"print(json.dumps({{'xyxy': xyxy, 'confidence': conf}}))\n"
+    )
+
+
 def _rfdetr_infer_subprocess(
-    checkpoint: Path, variant: str, frame, threshold: float, device: str
+    checkpoint: Path,
+    variant: str,
+    frame,
+    threshold: float,
+    device: str,
+    num_queries: int | None = None,
 ) -> "sv.Detections":
     """Run RF-DETR inference in rf-detr's own venv to avoid CUDA version conflicts.
 
@@ -142,15 +162,7 @@ def _rfdetr_infer_subprocess(
         np.save(tmp, frame)
         frame_path = tmp.name
 
-    script = (
-        f"import json, numpy as np\n"
-        f"from rfdetr import {cls_name}\n"
-        f"model = {cls_name}(pretrain_weights={str(checkpoint)!r})\n"
-        f"det = model.predict(np.load({frame_path!r}), threshold={threshold})\n"
-        f"xyxy = det.xyxy.tolist() if len(det) > 0 else []\n"
-        f"conf = det.confidence.tolist() if det.confidence is not None and len(det) > 0 else []\n"
-        f"print(json.dumps({{'xyxy': xyxy, 'confidence': conf}}))\n"
-    )
+    script = _build_rfdetr_script(cls_name, checkpoint, frame_path, threshold, num_queries)
 
     try:
         proc = subprocess.run(
@@ -227,6 +239,12 @@ def main() -> None:
         help="RF-DETR variant (applies to all rf-detr models)",
     )
     parser.add_argument(
+        "--num-queries",
+        type=int,
+        default=None,
+        help="RF-DETR num_queries (must match checkpoint; default: rfdetr library default)",
+    )
+    parser.add_argument(
         "--device",
         default=default_device(),
         help="Inference device (e.g. cuda:0 or cpu)",
@@ -250,7 +268,12 @@ def main() -> None:
         if spec.model_type == "rf-detr":
             print("Running inference (subprocess — isolated CUDA env)...")
             detections = _rfdetr_infer_subprocess(
-                spec.checkpoint, args.rfdetr_variant, frame, args.threshold, args.device
+                spec.checkpoint,
+                args.rfdetr_variant,
+                frame,
+                args.threshold,
+                args.device,
+                num_queries=args.num_queries,
             )
         else:
             model = _load_model(spec, args.rfdetr_variant, args.device)
