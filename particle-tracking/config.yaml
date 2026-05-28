@@ -3,7 +3,7 @@
 # CLI arguments always override values set here.
 
 # Input: path to video, TIFF stack, or folder of images 
-input: "/mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
+input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
 
 # Model:
 model:
@@ -14,7 +14,7 @@ model:
   # Only used when model.type is rf-detr
   variant: large  # nano | small | medium | large
   num_classes: 2  # number of classes in the checkpoint (2 = particle/background)
-  num_queries: 6000  # max detections per frame; must match the trained checkpoint
+  num_queries: 300  # max detections per frame; must match the trained checkpoint (checkpoint_best_ema was trained with default 300)
 
   device: "0"  # "0" for first GPU, "cpu" for CPU-only
 
@@ -25,12 +25,12 @@ model:
 # center: false → x/y set the top-left corner in pixels.
 crop:
   center: true  # centre the crop on the frame
-  width: 0.5    # half the frame width  }  together → 1/4 of the original area
-  height: 0.5   # half the frame height }
+  width: 0.5
+  height: 0.5
 
 # Detection:
 detection:
-  threshold: 0.5  # Confidence threshold for keeping a detection (0.0–1.0)
+  threshold: 0.3  # Confidence threshold for keeping a detection (0.0–1.0)
 
 # Tracking:
 tracking:
@@ -46,7 +46,7 @@ tracking:
   stub_filter: 90
 
   # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
-  adaptive_stop: 5.0  # minimum search_range before giving up (set to null to disable)
+  adaptive_stop: 12  # minimum search_range before giving up (set to null to disable)
   adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
 
   # ByteTrack: frames to keep a lost track alive before discarding it
@@ -56,11 +56,11 @@ tracking:
   minimum_consecutive_frames: 1
 
   # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0)
-  track_activation_threshold: 0.5
+  track_activation_threshold: 0.1
 
 # Output:
 output:
-  dir: /mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/rf-detr/
+  dir: /mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/rf-detr-trial/
 
   save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
 
