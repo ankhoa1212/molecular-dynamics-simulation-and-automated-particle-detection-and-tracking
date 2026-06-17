@@ -1,0 +1,80 @@
+# Verification pipeline configuration
+# All paths are relative to the verification/ directory unless absolute.
+
+# --- render.py: synthetic microscopy image generation ---
+synthetic:
+  render_strategy: procedural   # procedural | deeptrack | randomized
+  image_width: 512              # output image width in pixels
+  image_height: 512             # output image height in pixels
+  psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
+  peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
+  shot_noise: true              # add Poisson photon noise
+  readout_noise: 15.0           # Gaussian readout noise std dev (ADU)
+  output_dir: verification_output/synthetic_frames/
+
+  # --- DeepTrack2 PSF parameters (render_strategy: deeptrack) ---
+  psf:
+    na: 1.4                     # numerical aperture
+    wavelength: 520e-9          # emission wavelength (metres)
+    resolution: 65e-9           # pixel size (metres/pixel)
+    defocus: 0.0                # Zernike defocus coefficient (waves)
+    spherical_aberration: 0.0   # Zernike spherical aberration (waves)
+
+  # --- Spatially varying background (render_strategy: deeptrack) ---
+  background:
+    heterogeneity_scale: 50     # spatial scale of background variation (px)
+    amplitude: 500              # max background variation (ADU)
+
+  # --- Per-particle intensity distribution (render_strategy: deeptrack) ---
+  particle:
+    intensity_distribution: lognormal   # fixed | lognormal
+    peak_mean: 40000            # mean peak intensity (ADU)
+    intensity_sigma: 0.3        # log-normal sigma
+
+  # --- sCMOS noise model (render_strategy: deeptrack) ---
+  noise:
+    gain_sigma: 0.02            # per-pixel gain variation (fraction of mean gain)
+    read_noise: 15.0            # Gaussian read noise std dev (ADU)
+
+  # --- Domain randomization (render_strategy: randomized) ---
+  randomization:
+    psf_sigma_range: [3.0, 7.0]          # Uniform range for per-frame PSF sigma (px)
+    peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
+    readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
+
+# --- benchmark.py: RF-DETR accuracy on synthetic frames ---
+benchmark:
+  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth
+  variant: large            # nano | small | medium | large
+  num_queries: 300
+  threshold: 0.3            # detection confidence threshold
+  match_distance: 10        # pixels — max center-to-center dist to count a detection as TP
+
+  tiling:
+    enabled: true
+    tile_size: 512           # set < image size if the frame has >300 particles
+    overlap: 50
+    nms_threshold: 0.3
+
+# --- benchmark.py: tracking metrics (requires ground_truth_tracks.csv from render.py) ---
+tracking:
+  enabled: true
+  search_range: 15              # trackpy max displacement between frames (px)
+  memory: 3                     # frames a particle can be missing before track ends
+  matching_threshold_radii: 0.5 # motmetrics GT↔pred match threshold (× psf_sigma_px)
+
+# --- compare.py: physics observable comparison ---
+compare:
+  lammps_file: null          # path to .lammpstrj (overridden by --lammps flag)
+  tracks_file: null          # path to tracks.csv  (overridden by --tracks flag)
+
+  # Unit conversion for MSD (required for µm² output):
+  pixel_scale: 0.108         # µm per pixel — measure from calibration slide for your objective
+  lj_to_um: 2.0              # µm per LJ unit (= particle diameter; 2 µm PS particles → lj_to_um=2.0)
+
+  # For velocity comparison — fill in after calibration:
+  # lj_timestep_s: null      # real seconds per LAMMPS timestep (needed to convert LJ v → µm/s)
+  # frame_dt_s: null          # real seconds per video frame (needed to convert track v → µm/s)
+
+  max_lag_frames: 50         # max lag τ for MSD computation (in frames / timesteps)
+  output_dir: verification_output/
