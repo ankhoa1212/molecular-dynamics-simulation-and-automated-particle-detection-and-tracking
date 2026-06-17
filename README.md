@@ -10,6 +10,7 @@ End-to-end pipeline for running molecular dynamics simulations, auto-labeling mi
   - [2. Auto-Labeling with LodeSTAR](#2-auto-labeling-with-lodestar-data-setup)
   - [3. Particle Detection — RF-DETR](#3-particle-detection--rf-detr-rf-detr)
   - [4. Particle Tracking](#4-particle-tracking-particle-tracking)
+  - [5. Verification](#5-verification-verification)
 - [Full Pipeline Overview](#full-pipeline-overview)
 - [Contributing](#contributing)
 - [Resources](#resources)
@@ -27,12 +28,19 @@ molecular-dynamics-simulation/
 ├── yolov12/                 # YOLOv12 training, evaluation, and weights
 │   ├── runs/detect/train/weights/best.pt
 │   └── processed_data/      # Train/validation image splits
-└── particle-tracking/       # Particle tracking pipeline
-    ├── track.py             # Unified tracker (RF-DETR, YOLOv12, or LodeSTAR)
-    ├── config.yaml          # Tracking configuration
-    ├── models/              # Local model weights (optional)
-    ├── data/raw/            # Raw input TIFF files
-    └── evaluation/results/  # Tracking outputs (tracks.csv, annotated video)
+├── particle-tracking/       # Particle tracking pipeline
+│   ├── track.py             # Unified tracker (RF-DETR, YOLOv12, or LodeSTAR)
+│   ├── config.yaml          # Tracking configuration
+│   ├── models/              # Local model weights (optional)
+│   ├── data/raw/            # Raw input TIFF files
+│   └── evaluation/results/  # Tracking outputs (tracks.csv, annotated video)
+└── verification/            # End-to-end verification pipeline
+    ├── render.py            # LAMMPS trajectory → synthetic microscopy TIFFs
+    ├── benchmark.py         # RF-DETR detection accuracy + MOTA/IDF1 tracking metrics
+    ├── compare.py           # Physics observable comparison (MSD, hexatic order)
+    ├── calibrate_psf.py     # Fit PSF/noise parameters from real microscopy frames
+    ├── compare_renders.py   # Side-by-side SNR/PSD comparison of rendering strategies
+    └── config.yaml          # Rendering, benchmarking, and tracking metric settings
 ```
 
 ---
@@ -219,6 +227,66 @@ See [`particle-tracking/README.md`](particle-tracking/README.md) for the full se
 
 ---
 
+### 5. Verification (`verification/`)
+
+End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering. Converts LAMMPS trajectories into synthetic microscopy frames and measures detection/tracking accuracy against known ground truth.
+
+**Setup:**
+
+```bash
+cd verification
+uv sync
+```
+
+**Rendering strategies** (set `render_strategy` in `config.yaml`):
+
+| Strategy | Description |
+|----------|-------------|
+| `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
+| `deeptrack` | Physics-accurate scalar-diffraction PSF; spatially varying background; log-normal intensity; sCMOS noise |
+| `randomized` | Procedural renderer with per-frame stochastic PSF/intensity/noise sampling |
+
+**Calibrate from real frames (run once):**
+
+```bash
+uv run python calibrate_psf.py --real-frames /path/to/real/tifs/
+# Paste the printed values into config.yaml under synthetic:
+```
+
+**Render synthetic frames:**
+
+```bash
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
+```
+
+**Benchmark detection + tracking accuracy:**
+
+```bash
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --ground-truth-tracks verification_output/ground_truth_tracks.csv
+# Outputs: accuracy_metrics.csv (precision/recall/F1) and tracking_metrics.csv (MOTA/IDF1)
+```
+
+**Compare physics observables against real tracks:**
+
+```bash
+uv run python compare.py \
+    --lammps ../lammps-scripts/results/sim.lammpstrj \
+    --tracks ../particle-tracking/output/tracks.csv
+```
+
+**Run tests:**
+
+```bash
+uv run pytest tests/ -v
+```
+
+See [`verification/README.md`](verification/README.md) for the full calibration workflow, configuration reference, and acceptance criteria.
+
+---
+
 ## Full Pipeline Overview
 
 ```
@@ -244,6 +312,10 @@ Raw microscopy TIFFs
        │
        ▼
 tracks.csv  +  annotated video
+       │
+       ▼
+[verification]            Benchmark detector on synthetic ground-truth frames
+                          Measure MOTA/IDF1/fragmentation; compare physics observables
 ```
 
 ---
