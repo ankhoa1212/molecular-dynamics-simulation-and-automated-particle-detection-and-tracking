@@ -6,6 +6,7 @@ Test scenarios from the plan:
 - test_absent_real_frames_dir_exits_with_error
 - test_empty_real_frames_dir_exits_with_error
 - test_output_config_is_valid_yaml
+- test_merge_config (U1: --merge-config flag)
 """
 
 import sys
@@ -234,3 +235,157 @@ class TestOutputConfigYaml:
         assert parsed is not None
         for key in ("psf", "particle", "background", "noise"):
             assert key in parsed, f"Missing '{key}' in YAML output"
+
+
+# ---------------------------------------------------------------------------
+# test_merge_config (U1: --merge-config flag)
+# ---------------------------------------------------------------------------
+
+# Minimal calibrated params dict (mirrors calibrate_from_frames output structure)
+_FAKE_PARAMS = {
+    "psf": {
+        "sigma_px": 5.2,
+        "defocus": 0.0,
+        "spherical_aberration": 0.0,
+        "resolution": 65e-9,
+    },
+    "particle": {"peak_mean": 38000.0, "intensity_sigma": 0.28},
+    "background": {"heterogeneity_scale": 47.0, "amplitude": 612.0},
+    "noise": {
+        "read_noise": 16.2,
+        "gain_sigma": 0.021,
+        "_gain_sigma_note": "  # WARNING: estimated from image stats",
+    },
+    "_meta": {"n_fits": 34, "n_frames": 5},
+}
+
+
+class TestMergeConfig:
+    """Tests for _merge_params_into_config and --merge-config CLI flag."""
+
+    def _write_config(self, path: Path, content: dict) -> None:
+        path.write_text(yaml.dump(content, default_flow_style=False, sort_keys=False))
+
+    def test_calibrated_values_land_in_synthetic_sub_dicts(self, tmp_path):
+        """After merge, config['synthetic']['particle']['peak_mean'] equals calibrated value."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(
+            cfg_path,
+            {
+                "synthetic": {
+                    "render_strategy": "gaussian",
+                    "image_width": 256,
+                }
+            },
+        )
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert result["synthetic"]["particle"]["peak_mean"] == 38000.0
+        # Pre-existing keys must be preserved
+        assert result["synthetic"]["render_strategy"] == "gaussian"
+        assert result["synthetic"]["image_width"] == 256
+
+    def test_gain_sigma_note_stripped_meta_absent(self, tmp_path):
+        """_gain_sigma_note must not appear in merged config; _meta must be absent."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(cfg_path, {"synthetic": {}})
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert "_gain_sigma_note" not in result["synthetic"]["noise"]
+        assert "_meta" not in result
+
+    def test_file_not_found_raises(self, tmp_path):
+        """FileNotFoundError is raised when the config path does not exist."""
+        absent = tmp_path / "nonexistent.yaml"
+        with pytest.raises(FileNotFoundError):
+            calibrate_psf._merge_params_into_config(absent, _FAKE_PARAMS)
+
+    def test_psf_sigma_alongside_existing_psf_keys(self, tmp_path):
+        """Merged psf.sigma_px coexists with pre-existing psf.na and psf.wavelength."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(
+            cfg_path,
+            {
+                "synthetic": {
+                    "psf": {"na": 1.4, "wavelength": 532e-9},
+                }
+            },
+        )
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        result = yaml.safe_load(cfg_path.read_text())
+        psf = result["synthetic"]["psf"]
+        assert psf["sigma_px"] == 5.2
+        assert psf["na"] == pytest.approx(1.4)
+        assert psf["wavelength"] == pytest.approx(532e-9)
+
+    def test_merged_yaml_is_parseable(self, tmp_path):
+        """The written YAML must survive a round-trip through yaml.safe_load."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(cfg_path, {"synthetic": {"render_strategy": "gaussian"}})
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        parsed = yaml.safe_load(cfg_path.read_text())
+        assert isinstance(parsed, dict)
+        assert "synthetic" in parsed
+
+    def test_no_synthetic_key_creates_it(self, tmp_path):
+        """When config has no synthetic key, merge creates it with all sub-dicts."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(cfg_path, {"tracker": {"threshold": 0.5}})
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert "synthetic" in result
+        for section in ("psf", "particle", "background", "noise"):
+            assert section in result["synthetic"], f"Missing section '{section}' after merge"
+        # Other top-level keys must be untouched
+        assert result["tracker"]["threshold"] == pytest.approx(0.5)
+
+    def test_cli_merge_config_flag(self, tmp_path):
+        """--merge-config via CLI correctly merges calibrated values into the target file."""
+        frame = _make_synthetic_frame(height=128, width=128, n_particles=30, psf_sigma=5.0)
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        _write_tif(frames_dir / "frame_000.tif", frame)
+
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(
+            cfg_path,
+            {
+                "synthetic": {
+                    "render_strategy": "gaussian",
+                    "randomization": True,
+                }
+            },
+        )
+
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "calibrate_psf.py",
+                "--real-frames",
+                str(frames_dir),
+                "--merge-config",
+                str(cfg_path),
+            ],
+        ):
+            calibrate_psf.main()
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert "synthetic" in result
+        assert "particle" in result["synthetic"]
+        assert "peak_mean" in result["synthetic"]["particle"]
+        # Pre-existing sibling keys preserved
+        assert result["synthetic"]["render_strategy"] == "gaussian"
+        assert result["synthetic"]["randomization"] is True
+        # Noise private key stripped
+        assert "_gain_sigma_note" not in result["synthetic"].get("noise", {})

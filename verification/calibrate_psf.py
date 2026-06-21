@@ -228,10 +228,42 @@ def _format_yaml_fragment(params: dict) -> str:
     )
 
 
+def _merge_params_into_config(config_path: Path, params: dict) -> None:
+    """Merge calibrated params into an existing config.yaml file under synthetic:.
+
+    Preserves all existing keys not in the four calibrated sub-dicts (psf, particle,
+    background, noise). Strips _gain_sigma_note from noise and drops _meta entirely.
+
+    Raises FileNotFoundError if config_path does not exist.
+    """
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with config_path.open() as f:
+        config = yaml.safe_load(f) or {}
+
+    if "synthetic" not in config:
+        config["synthetic"] = {}
+
+    synthetic = config["synthetic"]
+
+    for section in ("psf", "particle", "background", "noise"):
+        calibrated = dict(params[section])
+        if section == "noise":
+            calibrated.pop("_gain_sigma_note", None)
+        if section not in synthetic:
+            synthetic[section] = {}
+        synthetic[section].update(calibrated)
+
+    with config_path.open("w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Calibrate PSF and noise from real .tif frames")
     parser.add_argument("--real-frames", required=True)
     parser.add_argument("--output-config", default=None)
+    parser.add_argument("--merge-config", default=None, metavar="PATH")
     parser.add_argument("--dark-frames", default=None)
     args = parser.parse_args()
 
@@ -259,7 +291,12 @@ def main():
     if args.output_config:
         Path(args.output_config).write_text(fragment + "\n")
         print(f"Calibrated config written to: {args.output_config}")
-    else:
+
+    if args.merge_config:
+        _merge_params_into_config(Path(args.merge_config), params)
+        print(f"Calibrated parameters merged into: {args.merge_config}")
+
+    if not args.output_config and not args.merge_config:
         print(fragment)
 
 
