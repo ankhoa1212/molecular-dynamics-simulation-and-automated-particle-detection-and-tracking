@@ -36,28 +36,33 @@ Set `render_strategy` in `config.yaml` under `synthetic:`:
 | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
 | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
 | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
+| `background_composite` | Stamps calibrated Gaussian PSF particles onto a temporal-median background extracted from a real TIFF stack; Poisson noise applied to particle signal only; most realistic background texture |
 
 ## Calibration Workflow
 
-Before benchmarking on `deeptrack` renders, calibrate the imaging parameters from real frames:
+Before benchmarking on calibrated renders, fit imaging parameters from real frames and merge them into `config.yaml` automatically:
 
 ```bash
-# 1. Fit PSF and noise from real microscopy frames
-uv run python calibrate_psf.py --real-frames /path/to/real/tifs/
+# 1. Fit PSF, intensity, background, and noise from real microscopy frames
+#    --merge-config writes the calibrated values directly into config.yaml
+uv run python calibrate_psf.py \
+    --real-frames /path/to/real/tifs/ \
+    --merge-config config.yaml
 
-# 2. Copy the printed values into config.yaml under synthetic:
-
-# 3. Render with calibrated deeptrack strategy
+# 2. Render with calibrated strategy
+#    For background_composite: also set synthetic.background_composite.video_path in config.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 
-# 4. Check rendering quality against real frame
+# 3. Check rendering quality against real frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack randomized
+    --strategies procedural deeptrack randomized background_composite
 ```
 
-**Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between the calibrated deeptrack render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
+`--merge-config` writes calibrated values under `synthetic.psf`, `synthetic.particle`, `synthetic.background`, and `synthetic.noise` in `config.yaml`, preserving all existing keys. Omit it to print calibrated values to stdout instead (useful for inspection before committing).
+
+**Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between a calibrated render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
 
 ## Step 1 — Render synthetic frames
 
@@ -85,15 +90,18 @@ Key settings in `config.yaml` under `synthetic:`:
 
 | Key | Description |
 |-----|-------------|
-| `render_strategy` | `procedural` / `deeptrack` / `randomized` |
+| `render_strategy` | `procedural` / `deeptrack` / `randomized` / `background_composite` |
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
+| `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config`; used by `background_composite` |
 | `psf.na` / `psf.wavelength` / `psf.resolution` | DeepTrack2 PSF optics params |
 | `background.amplitude` | Max spatial background variation (ADU) |
 | `particle.peak_mean` / `particle.intensity_sigma` | Log-normal intensity distribution |
 | `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params |
 | `randomization.psf_sigma_range` / `.peak_range` / `.readout_noise_range` | Per-frame sampling ranges for `randomized` strategy |
+| `background_composite.video_path` | Path to real microscopy TIFF stack for background extraction (required for `background_composite`) |
+| `background_composite.n_frames_for_median` | Frames subsampled for temporal-median background (default: 50) |
 
 ## Step 2 — Benchmark detection and tracking accuracy
 
@@ -150,8 +158,8 @@ Writes `hexatic_order.png`, `msd.png`, `velocity_dist.png` to `verification_outp
 ```bash
 cd verification/
 
-# 0. Calibrate from real frames (run once; paste output into config.yaml)
-uv run python calibrate_psf.py --real-frames /path/to/real/tifs/
+# 0. Calibrate from real frames (run once; writes values directly into config.yaml)
+uv run python calibrate_psf.py --real-frames /path/to/real/tifs/ --merge-config config.yaml
 
 # 1. Render with calibrated params
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --frames 50
@@ -160,7 +168,7 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack
+    --strategies procedural deeptrack background_composite
 
 # 3. Benchmark detection + tracking
 uv run python benchmark.py \
