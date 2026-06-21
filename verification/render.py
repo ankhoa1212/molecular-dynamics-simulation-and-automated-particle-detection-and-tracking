@@ -141,13 +141,12 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy):
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
-        strategy: 'procedural' | 'deeptrack' | 'randomized'
+        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'background_composite'
 
     Returns:
         uint16 numpy array of shape (H, W)
     """
     if strategy == "deeptrack":
-        # U2 will implement this; import guard gives a clear error until then
         try:
             from render_deeptrack import render_frame_deeptrack
 
@@ -156,18 +155,26 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy):
             raise ImportError(
                 "DeepTrack2 rendering requires 'deeptrack==2.0.1'. "
                 "Run 'uv add deeptrack==2.0.1' inside verification/. "
-                "(render_strategy: deeptrack — implemented in U2)"
             )
     elif strategy == "randomized":
-        # U3 will implement this
         try:
             from render_randomized import render_frame_randomized
 
             return render_frame_randomized(positions_lj, box, cfg, rng)
         except ImportError:
             raise ImportError(
-                "Randomized rendering not yet implemented. "
-                "(render_strategy: randomized — implemented in U3)"
+                "Randomized rendering requires render_randomized.py. "
+                "Ensure the file exists in the verification/ directory."
+            )
+    elif strategy == "background_composite":
+        try:
+            from render_background_composite import render_frame_background_composite
+
+            return render_frame_background_composite(positions_lj, box, cfg, rng)
+        except ImportError:
+            raise ImportError(
+                "Background composite rendering requires render_background_composite.py. "
+                "Ensure the file exists in the verification/ directory."
             )
     else:
         # Default: procedural Gaussian PSF
@@ -193,6 +200,25 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(args.seed)
+
+    # Pre-load background once for background_composite strategy (avoids per-frame I/O).
+    if strategy == "background_composite":
+        from render_background_composite import extract_temporal_median
+
+        bc_cfg = cfg.get("background_composite", {})
+        if "video_path" not in bc_cfg:
+            raise ValueError(
+                "render_strategy: background_composite requires "
+                "synthetic.background_composite.video_path in config.yaml"
+            )
+        print(f"Loading background from: {bc_cfg['video_path']}")
+        cfg["_background_frame"] = extract_temporal_median(
+            bc_cfg["video_path"],
+            n_frames=bc_cfg.get("n_frames_for_median", 50),
+            rng=rng,
+        )
+        print("Background loaded.")
+
     ground_truth = []
     # Collect per-frame data for tracks CSV: list of (atom_ids, px_positions)
     all_frame_ids = []

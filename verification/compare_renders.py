@@ -99,7 +99,7 @@ def main():
         "--strategies",
         nargs="+",
         default=["procedural"],
-        choices=["procedural", "deeptrack", "randomized"],
+        choices=["procedural", "deeptrack", "randomized", "background_composite"],
     )
     parser.add_argument("--output-dir", default="verification_output/")
     args = parser.parse_args()
@@ -117,6 +117,31 @@ def main():
             real_frame = real_frame[0]
     if real_frame is None:
         warnings.warn("--real-frame not provided; PSD comparison skipped.", stacklevel=2)
+
+    # Pre-load background once if background_composite strategy is requested.
+    if "background_composite" in args.strategies:
+        try:
+            from render_background_composite import extract_temporal_median
+
+            bc_cfg = synth_cfg.get("background_composite", {})
+            if "video_path" in bc_cfg:
+                synth_cfg["_background_frame"] = extract_temporal_median(
+                    bc_cfg["video_path"],
+                    n_frames=bc_cfg.get("n_frames_for_median", 50),
+                    rng=rng,
+                )
+            else:
+                warnings.warn(
+                    "background_composite strategy requires "
+                    "synthetic.background_composite.video_path in config — skipping.",
+                    stacklevel=2,
+                )
+                args.strategies = [s for s in args.strategies if s != "background_composite"]
+        except ImportError:
+            print(
+                "WARNING: render_background_composite.py not found — skipping 'background_composite'."
+            )
+            args.strategies = [s for s in args.strategies if s != "background_composite"]
 
     rendered = {}
     for strategy in args.strategies:

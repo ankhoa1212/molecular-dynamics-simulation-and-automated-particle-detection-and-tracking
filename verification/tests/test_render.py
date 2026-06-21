@@ -594,3 +594,368 @@ class TestRandomizedStrategy:
         )
         assert frame.dtype == np.uint16
         assert frame.shape == (32, 32)
+
+
+# ---------------------------------------------------------------------------
+# U2 (background composite): render_background_composite.py
+# ---------------------------------------------------------------------------
+
+
+def _make_tifffile_stub(n_pages: int, page_shape=(16, 16)):
+    """Build a tifffile stub whose TiffFile context manager returns n_pages of synthetic data.
+
+    Each page returns a distinct uint16 array filled with the page index value
+    (page 0 → all zeros, page 1 → all ones, …).
+    """
+    import types
+
+    stub = types.ModuleType("tifffile")
+
+    class _FakePage:
+        def __init__(self, idx):
+            self._idx = idx
+            self._shape = page_shape
+
+        def asarray(self):
+            return np.full(self._shape, self._idx, dtype=np.uint16)
+
+    class _FakeTiffFile:
+        def __init__(self, path):
+            self.pages = [_FakePage(i) for i in range(n_pages)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    stub.TiffFile = _FakeTiffFile
+    return stub
+
+
+def _bc_module(tifffile_stub=None):
+    """Import render_background_composite with optional tifffile stub injected."""
+    # Remove any cached import
+    for key in list(sys.modules.keys()):
+        if "render_background_composite" in key:
+            del sys.modules[key]
+
+    if tifffile_stub is not None:
+        sys.modules["tifffile"] = tifffile_stub
+
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    import render_background_composite as rbc
+
+    return rbc
+
+
+def _bg_cfg(H=16, W=16):
+    """Minimal config dict for render_frame_background_composite tests."""
+    return {
+        "image_height": H,
+        "image_width": W,
+        "psf": {"sigma_px": 2.0},
+        "particle": {"peak_mean": 1000, "intensity_sigma": 0.1},
+        "noise": {"read_noise": 5.0},
+        "_background_frame": np.zeros((H, W), dtype=np.float32),
+    }
+
+
+class TestBackgroundCompositeStrategy:
+    """Tests for render_background_composite.py — background extraction and composite render."""
+
+    # ------------------------------------------------------------------
+    # extract_temporal_median
+    # ------------------------------------------------------------------
+
+    def test_extract_temporal_median_shape_and_dtype(self):
+        """10-page stub: returns float32 (16, 16)."""
+        stub = _make_tifffile_stub(n_pages=10, page_shape=(16, 16))
+        rbc = _bc_module(stub)
+        result = rbc.extract_temporal_median("fake.tif", n_frames=5)
+        assert result.dtype == np.float32
+        assert result.shape == (16, 16)
+
+    def test_extract_temporal_median_plausible_values(self):
+        """Median of pages 0..9 should be between 0 and 9."""
+        stub = _make_tifffile_stub(n_pages=10, page_shape=(16, 16))
+        rbc = _bc_module(stub)
+        result = rbc.extract_temporal_median("fake.tif", n_frames=10)
+        # page values are 0..9; median of a subset of these must be in [0, 9]
+        assert float(result.min()) >= 0.0
+        assert float(result.max()) <= 9.0
+
+    def test_extract_temporal_median_fewer_pages_than_n_frames(self):
+        """3 available pages, n_frames=50: uses all 3, no IndexError."""
+        stub = _make_tifffile_stub(n_pages=3, page_shape=(16, 16))
+        rbc = _bc_module(stub)
+        result = rbc.extract_temporal_median("fake.tif", n_frames=50)
+        assert result.shape == (16, 16)
+        assert result.dtype == np.float32
+
+    # ------------------------------------------------------------------
+    # render_frame_background_composite — basic output
+    # ------------------------------------------------------------------
+
+    def test_render_returns_uint16_correct_shape(self):
+        """Output is uint16 with shape (H, W) from cfg."""
+        rbc = _bc_module()
+        cfg = _bg_cfg(H=16, W=16)
+        positions = np.array([[5.0, 5.0], [3.0, 7.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        rng = np.random.default_rng(42)
+        frame = rbc.render_frame_background_composite(positions, box, cfg, rng)
+        assert frame.dtype == np.uint16
+        assert frame.shape == (16, 16)
+
+    def test_render_background_only_non_negative(self):
+        """Zero particles: output is non-negative everywhere."""
+        rbc = _bc_module()
+        cfg = _bg_cfg(H=16, W=16)
+        positions = np.zeros((0, 2))
+        box = (0.0, 10.0, 0.0, 10.0)
+        rng = np.random.default_rng(1)
+        frame = rbc.render_frame_background_composite(positions, box, cfg, rng)
+        assert frame.dtype == np.uint16
+        assert frame.shape == (16, 16)
+        # uint16 is always >= 0 by type, but confirm the clip is correct
+        assert int(frame.min()) >= 0
+
+    # ------------------------------------------------------------------
+    # Particle signal is stamped
+    # ------------------------------------------------------------------
+
+    def test_particle_at_known_position_elevates_region(self):
+        """Particle near image centre should raise values vs. background-only."""
+        rbc = _bc_module()
+        box = (0.0, 10.0, 0.0, 10.0)
+        H, W = 16, 16
+
+        # Background-only baseline (no noise for clean comparison)
+        cfg_bg = _bg_cfg(H, W)
+        cfg_bg["noise"]["read_noise"] = 0.0
+        cfg_bg["particle"]["peak_mean"] = 50000
+        cfg_bg["particle"]["intensity_sigma"] = 0.0  # constant intensity
+
+        rng_bg = np.random.default_rng(0)
+        frame_bg = rbc.render_frame_background_composite(np.zeros((0, 2)), box, cfg_bg, rng_bg)
+
+        # With a bright particle at the image centre
+        cfg_p = _bg_cfg(H, W)
+        cfg_p["noise"]["read_noise"] = 0.0
+        cfg_p["particle"]["peak_mean"] = 50000
+        cfg_p["particle"]["intensity_sigma"] = 0.0
+
+        rng_p = np.random.default_rng(0)
+        centre = np.array([[5.0, 5.0]])  # maps to pixel ~(8, 8)
+        frame_p = rbc.render_frame_background_composite(centre, box, cfg_p, rng_p)
+
+        # Total signal should be higher when a bright particle is present
+        assert int(frame_p.sum()) > int(frame_bg.sum())
+
+    # ------------------------------------------------------------------
+    # Noise randomness
+    # ------------------------------------------------------------------
+
+    def test_different_seeds_produce_different_output(self):
+        """Two calls with different rng seeds should differ (Poisson + read noise)."""
+        rbc = _bc_module()
+        cfg = _bg_cfg()
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        frame1 = rbc.render_frame_background_composite(
+            positions, box, cfg, np.random.default_rng(0)
+        )
+        frame2 = rbc.render_frame_background_composite(
+            positions, box, cfg, np.random.default_rng(999)
+        )
+        assert not np.array_equal(frame1, frame2)
+
+    # ------------------------------------------------------------------
+    # Error conditions
+    # ------------------------------------------------------------------
+
+    def test_missing_background_frame_raises_key_error(self):
+        """KeyError raised with informative message when _background_frame absent."""
+        rbc = _bc_module()
+        cfg = _bg_cfg()
+        del cfg["_background_frame"]
+        with pytest.raises(KeyError, match="_background_frame"):
+            rbc.render_frame_background_composite(
+                np.zeros((0, 2)), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(0)
+            )
+
+    # ------------------------------------------------------------------
+    # PSF sigma fallback
+    # ------------------------------------------------------------------
+
+    def test_sigma_fallback_to_psf_sigma_key(self):
+        """When psf.sigma_px absent, psf_sigma top-level key is used without error."""
+        rbc = _bc_module()
+        cfg = _bg_cfg()
+        # Remove the nested psf.sigma_px and use flat psf_sigma key instead
+        cfg["psf"] = {}
+        cfg["psf_sigma"] = 3.0
+        frame = rbc.render_frame_background_composite(
+            np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(7)
+        )
+        assert frame.dtype == np.uint16
+
+    # ------------------------------------------------------------------
+    # Clip to [0, 65535]
+    # ------------------------------------------------------------------
+
+    def test_output_clipped_to_uint16_range(self):
+        """Very bright background + bright particles must not overflow uint16."""
+        rbc = _bc_module()
+        cfg = _bg_cfg(H=16, W=16)
+        # Saturating background
+        cfg["_background_frame"] = np.full((16, 16), 60000, dtype=np.float32)
+        cfg["particle"]["peak_mean"] = 50000
+        cfg["noise"]["read_noise"] = 0.0
+
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        frame = rbc.render_frame_background_composite(
+            positions, box, cfg, np.random.default_rng(42)
+        )
+        assert frame.dtype == np.uint16
+        assert int(frame.max()) <= 65535
+
+
+# ---------------------------------------------------------------------------
+# U3: _dispatch_render routes to background_composite; main() pre-loads once
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchBackgroundComposite:
+    """U3 wiring: _dispatch_render delegates to render_frame_background_composite."""
+
+    def _fresh_render(self):
+        for key in list(sys.modules):
+            if key == "render":
+                del sys.modules[key]
+        sys.modules.setdefault("lammps_parser", mock.MagicMock())
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import render as r
+
+        return r
+
+    def test_dispatch_calls_render_frame_background_composite(self):
+        """_dispatch_render('background_composite') invokes render_frame_background_composite."""
+        r = self._fresh_render()
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        sentinel = np.zeros((16, 16), dtype=np.uint16)
+        cfg = {
+            "image_height": 16,
+            "image_width": 16,
+            "_background_frame": np.zeros((16, 16), dtype=np.float32),
+            "psf": {"sigma_px": 2.0},
+            "particle": {"peak_mean": 1000, "intensity_sigma": 0.1},
+            "noise": {"read_noise": 5.0},
+        }
+        rng = np.random.default_rng(0)
+
+        fake_rbc = mock.MagicMock()
+        fake_rbc.render_frame_background_composite.return_value = sentinel
+        # Remove any previously cached real module so the mock is picked up.
+        sys.modules.pop("render_background_composite", None)
+        with mock.patch.dict(sys.modules, {"render_background_composite": fake_rbc}):
+            result = r._dispatch_render(positions, box, cfg, rng, "background_composite")
+
+        fake_rbc.render_frame_background_composite.assert_called_once()
+        assert result is sentinel
+
+    def test_dispatch_background_composite_missing_module_raises_import_error(self):
+        """ImportError with helpful message when render_background_composite.py is absent."""
+        r = self._fresh_render()
+        cfg = {
+            "image_height": 16,
+            "image_width": 16,
+            "_background_frame": np.zeros((16, 16), dtype=np.float32),
+        }
+        with mock.patch.dict(sys.modules, {"render_background_composite": None}):
+            with pytest.raises(ImportError, match="render_background_composite"):
+                r._dispatch_render(
+                    np.zeros((0, 2)),
+                    (0.0, 10.0, 0.0, 10.0),
+                    cfg,
+                    np.random.default_rng(0),
+                    "background_composite",
+                )
+
+    def test_main_preloads_background_exactly_once(self, tmp_path):
+        """render.py main() calls extract_temporal_median once before the frame loop."""
+        import yaml
+
+        for key in list(sys.modules):
+            if key == "render":
+                del sys.modules[key]
+        sys.modules.setdefault("lammps_parser", mock.MagicMock())
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import render as r
+
+        # Config with background_composite strategy and a dummy video_path
+        cfg_dict = {
+            "synthetic": {
+                "render_strategy": "background_composite",
+                "image_width": 16,
+                "image_height": 16,
+                "psf_sigma": 2.0,
+                "peak_intensity": 1000,
+                "shot_noise": False,
+                "readout_noise": 0.0,
+                "output_dir": str(tmp_path / "frames"),
+                "psf": {"sigma_px": 2.0},
+                "particle": {"peak_mean": 1000, "intensity_sigma": 0.1},
+                "noise": {"read_noise": 5.0},
+                "background_composite": {
+                    "video_path": "fake_video.tif",
+                    "n_frames_for_median": 5,
+                },
+            }
+        }
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump(cfg_dict))
+
+        fake_bg = np.zeros((16, 16), dtype=np.float32)
+
+        # One LAMMPS block so the frame loop runs exactly once
+        block = {
+            "timestep": 0,
+            "num_atoms": 1,
+            "box_bounds": ["0.0 10.0\n", "0.0 10.0\n", "0.0 1.0\n"],
+            "atom_header": "ITEM: ATOMS id type x y z",
+            "atoms": ["1 1 5.0 5.0 0.0"],
+        }
+        sys.modules["lammps_parser"].parse_lammps_dump.return_value = iter([block])
+
+        extract_calls = []
+
+        def fake_extract(video_path, n_frames, rng):
+            extract_calls.append(video_path)
+            return fake_bg
+
+        fake_rbc = mock.MagicMock()
+        fake_rbc.extract_temporal_median.side_effect = fake_extract
+        fake_rbc.render_frame_background_composite.return_value = np.zeros(
+            (16, 16), dtype=np.uint16
+        )
+
+        # Earlier tests may leave a tifffile stub in sys.modules; patch imwrite on the
+        # render module object so it uses a no-op regardless of what tifffile resolves to.
+        sys.modules.pop("render_background_composite", None)
+        with mock.patch.dict(sys.modules, {"render_background_composite": fake_rbc}):
+            with mock.patch.object(r, "tifffile") as mock_tifffile:
+                mock_tifffile.imwrite = mock.MagicMock()
+                with mock.patch.object(
+                    sys,
+                    "argv",
+                    ["render.py", "--lammps", "fake.lammpstrj", "--config", str(cfg_path)],
+                ):
+                    r.main()
+
+        # extract_temporal_median called exactly once (pre-load, not per-frame)
+        assert len(extract_calls) == 1
+        assert extract_calls[0] == "fake_video.tif"

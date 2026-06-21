@@ -3,7 +3,7 @@
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
-  render_strategy: procedural   # procedural | deeptrack | randomized
+  render_strategy: procedural   # procedural | deeptrack | randomized | background_composite
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
@@ -12,13 +12,17 @@ synthetic:
   readout_noise: 15.0           # Gaussian readout noise std dev (ADU)
   output_dir: verification_output/synthetic_frames/
 
-  # --- DeepTrack2 PSF parameters (render_strategy: deeptrack) ---
+  # --- PSF parameters ---
+  # sigma_px is written here by: uv run python calibrate_psf.py --merge-config config.yaml
+  # Consumed by render_strategy: background_composite as Gaussian PSF kernel width.
+  # deeptrack ignores sigma_px and uses na/wavelength/resolution instead.
   psf:
     na: 1.4                     # numerical aperture
     wavelength: 520e-9          # emission wavelength (metres)
     resolution: 65e-9           # pixel size (metres/pixel)
     defocus: 0.0                # Zernike defocus coefficient (waves)
     spherical_aberration: 0.0   # Zernike spherical aberration (waves)
+    # sigma_px: 4.2             # empirical PSF sigma (px) — filled by calibrate_psf.py
 
   # --- Spatially varying background (render_strategy: deeptrack) ---
   background:
@@ -41,6 +45,12 @@ synthetic:
     psf_sigma_range: [3.0, 7.0]          # Uniform range for per-frame PSF sigma (px)
     peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
     readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
+
+  # --- Real-background compositing (render_strategy: background_composite) ---
+  # Requires psf.sigma_px (set by calibrate_psf.py --merge-config) or falls back to psf_sigma: 5.0
+  background_composite:
+    video_path: null            # path to real microscopy TIFF stack (required)
+    n_frames_for_median: 50     # frames subsampled for temporal-median background extraction
 
 # --- benchmark.py: RF-DETR accuracy on synthetic frames ---
 benchmark:
