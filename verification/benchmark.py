@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark RF-DETR detection accuracy on synthetic frames from render.py.
 
-Loads synthetic TIFF frames and their ground_truth.json, runs RF-DETR
+Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR
 (with optional tiling), matches detections to known particle positions,
 and reports per-frame precision/recall/F1 and mean position error.
 
@@ -19,14 +19,30 @@ Usage:
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv
 """
-import argparse
-import csv
-import json
+import os
+import re
 import sys
 from pathlib import Path
 
+# Re-exec with rf-detr's Python if the current interpreter is a different minor version.
+# RF-DETR's C extensions (numpy, torch) are compiled for the venv's Python and won't
+# load under a different minor version (e.g. 3.13 host vs 3.11 venv).
+_SCRIPT_DIR = Path(__file__).parent
+_RF_DETR_PYTHON = (_SCRIPT_DIR / ".." / "rf-detr" / ".venv" / "bin" / "python").absolute()
+
+if _RF_DETR_PYTHON.exists():
+    _site_pkgs = list((_SCRIPT_DIR / ".." / "rf-detr" / ".venv").glob("lib/python*/site-packages"))
+    if _site_pkgs:
+        _m = re.search(r"python(\d+\.\d+)", str(_site_pkgs[0]))
+        if _m and _m.group(1) != f"{sys.version_info.major}.{sys.version_info.minor}":
+            os.execv(str(_RF_DETR_PYTHON), [str(_RF_DETR_PYTHON)] + sys.argv)
+
+import argparse
+import csv
+import json
+
+import matplotlib.image as mplimg
 import numpy as np
-import tifffile
 import yaml
 from scipy.spatial import cKDTree
 
@@ -185,18 +201,14 @@ def _match_detections(pred_centers, gt_centers, match_distance):
 # ---------------------------------------------------------------------------
 
 
-def _load_frame_rgb(tiff_path):
-    """Load a (potentially 16-bit) TIFF and return uint8 RGB for RF-DETR."""
-    img = tifffile.imread(str(tiff_path))
-    if img.dtype != np.uint8:
-        f = img.astype(np.float32)
-        lo, hi = f.min(), f.max()
-        if hi > lo:
-            f = (f - lo) / (hi - lo) * 255.0
-        img = f.clip(0, 255).astype(np.uint8)
+def _load_frame_rgb(png_path):
+    """Load a PNG frame and return uint8 RGB for RF-DETR."""
+    img = mplimg.imread(str(png_path))  # float32 [0, 1]; shape (H,W), (H,W,3), or (H,W,4)
+    if img.ndim == 3 and img.shape[2] == 4:
+        img = img[:, :, :3]
     if img.ndim == 2:
         img = np.stack([img, img, img], axis=-1)
-    return img
+    return (img * 255).clip(0, 255).astype(np.uint8)
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +341,7 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark RF-DETR on synthetic frames")
     parser.add_argument(
-        "--frames", required=True, help="Directory of synthetic TIFF frames (from render.py)"
+        "--frames", required=True, help="Directory of synthetic PNG frames (from render.py)"
     )
     parser.add_argument(
         "--ground-truth", required=True, help="Path to ground_truth.json (from render.py)"
@@ -365,9 +377,9 @@ def main():
     gt_by_frame = {entry["frame"]: entry for entry in ground_truth}
 
     frames_dir = Path(args.frames)
-    tiff_files = sorted(frames_dir.glob("frame_*.tif"))
+    tiff_files = sorted(frames_dir.glob("frame_*.png"))
     if not tiff_files:
-        print(f"Error: no frame_*.tif files in {frames_dir}")
+        print(f"Error: no frame_*.png files in {frames_dir}")
         sys.exit(1)
 
     print(f"Checkpoint: {checkpoint}")
@@ -381,8 +393,8 @@ def main():
     all_dists = []
     all_detections_by_frame = {}  # frame_idx → (N, 2) array of (x, y) centroids
 
-    for tiff_path in tiff_files:
-        frame_idx = int(tiff_path.stem.replace("frame_", ""))
+    for png_path in tiff_files:
+        frame_idx = int(png_path.stem.replace("frame_", ""))
         if frame_idx not in gt_by_frame:
             continue
 
@@ -390,7 +402,7 @@ def main():
         gt_pos = gt_entry["positions"]
         gt_centers = np.array(gt_pos, dtype=np.float64) if gt_pos else np.zeros((0, 2))
 
-        img_rgb = _load_frame_rgb(tiff_path)
+        img_rgb = _load_frame_rgb(png_path)
 
         if tiling_enabled:
             dets = detect_with_tiling(model, img_rgb, threshold, tile_size, overlap, nms_threshold)

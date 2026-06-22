@@ -3,7 +3,7 @@
 # CLI arguments always override values set here.
 
 # Input: path to video, TIFF stack, or folder of images
-input: "/mnt/d/Particle Tracking Data/5um/70% Intensity PS 5um Video Trial 1_1_MMStack_Default.ome.tif"
+input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
 
 # Model:
 model:
@@ -17,7 +17,7 @@ model:
 detection:
   # LodeSTAR cutoff uses mode="ratio": fraction of the per-frame max score.
   threshold: 0.1   # from autolabel_2um_lodestar_model_15.json (cutoff)
-  alpha: 0.9        # weight score exponent (autolabel default)
+  alpha: 0.3        # weight score exponent; lower = less selective, better for dim early frames
   nms_distance: 30  # suppress detections within 30px of a higher-scoring one
   fp16: true        # run model in float16
 
@@ -29,14 +29,20 @@ tracking:
   search_range: 10.0
 
   # Trackpy: number of consecutive frames a particle may be missing before its track ends
-  memory: 5
+  memory: 20
 
-  # Trackpy: discard tracks shorter than this many frames (0 = keep all)
+  # Trackpy: discard tracks shorter than this many frames (0 = keep all); tune down if real
+  # particles stay in-frame for fewer frames than this (watch track_length_max in metrics.json)
   stub_filter: 3
 
   # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
   adaptive_stop: 1.0  # minimum search_range before giving up (set to null to disable)
   adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
+
+  # Trackpy: reconnect track fragments separated by at most this many frames (disabled if null)
+  bridge_gap: 15
+  # Trackpy: spatial search radius in pixels for gap-closing (default: 2 × search_range)
+  bridge_radius: 20
 
   # ByteTrack: frames to keep a lost track alive before discarding it
   lost_track_buffer: 60
@@ -49,7 +55,7 @@ tracking:
 
 # Output:
 output:
-  dir: /mnt/d/Particle Tracking Data/5um/lodestar/
+  dir: /mnt/d/Particle Tracking Data/2um/lodestar/
 
   save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
 
