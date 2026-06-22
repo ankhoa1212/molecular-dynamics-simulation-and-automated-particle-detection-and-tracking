@@ -1,0 +1,44 @@
+# render.py config — background_composite strategy
+# Composites synthetic particle signal onto a real experimental background
+# extracted via a low-percentile estimator from a reference TIFF stack.
+# Preserves real camera noise texture, illumination gradients, and sensor artefacts.
+#
+# Setup:
+#   1. Set video_path below to your real microscopy TIFF stack.
+#   2. Optionally run calibrate_psf.py to fill in psf.sigma_px.
+#
+# Usage:
+#   uv run python render.py --lammps <path> --config config.background_composite.yaml
+
+synthetic:
+  render_strategy: background_composite
+  image_width: 3200
+  image_height: 2200
+  peak_intensity: 40000         # fallback if particle.peak_mean is not set
+  output_dir: verification_output/synthetic_frames_background_composite/
+
+  # PSF kernel width — fill in via: uv run python calibrate_psf.py --merge-config <this file>
+  # Falls back to psf_sigma: 5.0 if sigma_px is absent.
+  psf:
+    na: 1.4
+    wavelength: 520e-9
+    resolution: 65e-9
+    # sigma_px: 4.2             # empirical PSF sigma (px) — filled by calibrate_psf.py
+
+  # Per-particle intensity distribution
+  particle:
+    intensity_distribution: lognormal
+    peak_mean: 40000
+    intensity_sigma: 0.3
+
+  # Noise (Gaussian read noise added on top of real background texture)
+  noise:
+    read_noise: 15.0
+
+  # Real background source — required
+  background_composite:
+    video_path: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 20% Light Intensity_2_MMStack_Default.ome.tif"
+    n_frames_for_median: 100    # frames sampled uniformly across the stack; more = better suppression
+    percentile: 10              # low-percentile estimator (0–100); lower suppresses bright particles more aggressively
+    min_filter_radius: 1        # erosion-only pre-filter (px); 1 = disabled; only useful for sub-pixel hot spots
+    opening_radius: 50          # morphological opening diameter (px); set >= particle diameter to erase ghost particles
