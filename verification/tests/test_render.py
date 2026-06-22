@@ -665,33 +665,189 @@ class TestBackgroundCompositeStrategy:
     """Tests for render_background_composite.py — background extraction and composite render."""
 
     # ------------------------------------------------------------------
-    # extract_temporal_median
+    # extract_background
     # ------------------------------------------------------------------
 
-    def test_extract_temporal_median_shape_and_dtype(self):
+    def test_extract_background_shape_and_dtype(self):
         """10-page stub: returns float32 (16, 16)."""
         stub = _make_tifffile_stub(n_pages=10, page_shape=(16, 16))
         rbc = _bc_module(stub)
-        result = rbc.extract_temporal_median("fake.tif", n_frames=5)
+        result = rbc.extract_background("fake.tif", n_frames=5)
         assert result.dtype == np.float32
         assert result.shape == (16, 16)
 
-    def test_extract_temporal_median_plausible_values(self):
+    def test_extract_background_plausible_values(self):
         """Median of pages 0..9 should be between 0 and 9."""
         stub = _make_tifffile_stub(n_pages=10, page_shape=(16, 16))
         rbc = _bc_module(stub)
-        result = rbc.extract_temporal_median("fake.tif", n_frames=10)
+        result = rbc.extract_background("fake.tif", n_frames=10)
         # page values are 0..9; median of a subset of these must be in [0, 9]
         assert float(result.min()) >= 0.0
         assert float(result.max()) <= 9.0
 
-    def test_extract_temporal_median_fewer_pages_than_n_frames(self):
+    def test_extract_background_fewer_pages_than_n_frames(self):
         """3 available pages, n_frames=50: uses all 3, no IndexError."""
         stub = _make_tifffile_stub(n_pages=3, page_shape=(16, 16))
         rbc = _bc_module(stub)
-        result = rbc.extract_temporal_median("fake.tif", n_frames=50)
+        result = rbc.extract_background("fake.tif", n_frames=50)
         assert result.shape == (16, 16)
         assert result.dtype == np.float32
+
+    def test_uniform_spacing_covers_full_range(self):
+        """Sampled indices span the full page range (first and last page included)."""
+        import tifffile as real_tifffile  # noqa: F401 — only check stub shape here
+
+        sampled_indices = []
+
+        import types
+
+        stub = types.ModuleType("tifffile")
+
+        class _TrackingPage:
+            def __init__(self, idx):
+                self._idx = idx
+
+            def asarray(self):
+                sampled_indices.append(self._idx)
+                return np.zeros((4, 4), dtype=np.uint16)
+
+        class _FakeTiffFile:
+            def __init__(self, path):
+                self.pages = [_TrackingPage(i) for i in range(20)]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        stub.TiffFile = _FakeTiffFile
+        rbc = _bc_module(stub)
+        rbc.extract_background("fake.tif", n_frames=5, min_filter_radius=1)
+        assert 0 in sampled_indices, "First page should always be sampled"
+        assert 19 in sampled_indices, "Last page should always be sampled"
+        assert len(sampled_indices) == 5
+
+    def test_low_percentile_suppresses_persistent_bright_pixels(self):
+        """10th percentile returns background value even when 8/10 frames are bright."""
+        import types
+
+        stub = types.ModuleType("tifffile")
+
+        class _FakePage:
+            def __init__(self, value):
+                self._value = value
+
+            def asarray(self):
+                frame = np.full((4, 4), 100, dtype=np.uint16)
+                frame[2, 2] = self._value
+                return frame
+
+        class _FakeTiffFile:
+            def __init__(self, path):
+                # 8 bright frames (pixel=5000) + 2 background frames (pixel=100)
+                self.pages = [_FakePage(5000)] * 8 + [_FakePage(100)] * 2
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        stub.TiffFile = _FakeTiffFile
+        rbc = _bc_module(stub)
+        result = rbc.extract_background("fake.tif", n_frames=10, percentile=10, min_filter_radius=1)
+        # 10th percentile of [5000]*8 + [100]*2 is 100 (background wins)
+        assert (
+            result[2, 2] <= 110.0
+        ), f"Low percentile should suppress bright particle; got {result[2, 2]}"
+
+    def test_min_filter_radius_1_is_identity(self):
+        """min_filter_radius=1 leaves the percentile result unchanged."""
+        stub = _make_tifffile_stub(n_pages=5, page_shape=(8, 8))
+        rbc = _bc_module(stub)
+        without_filter = rbc.extract_background("fake.tif", n_frames=5, min_filter_radius=1)
+        rbc2 = _bc_module(stub)
+        also_without = rbc2.extract_background("fake.tif", n_frames=5, min_filter_radius=1)
+        np.testing.assert_array_equal(without_filter, also_without)
+
+    def test_min_filter_erodes_isolated_bright_spot(self):
+        """A bright centre pixel surrounded by dark neighbours is eroded when radius > 1."""
+        import types
+
+        stub = types.ModuleType("tifffile")
+
+        class _FakePage:
+            def asarray(self):
+                frame = np.zeros((9, 9), dtype=np.uint16)
+                frame[4, 4] = 5000  # isolated bright spot
+                return frame
+
+        class _FakeTiffFile:
+            def __init__(self, path):
+                self.pages = [_FakePage() for _ in range(5)]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        stub.TiffFile = _FakeTiffFile
+        rbc = _bc_module(stub)
+        # percentile=100 (max) to keep the bright spot in the percentile result
+        # min_filter_radius=3 should then erase it
+        result = rbc.extract_background("fake.tif", n_frames=5, percentile=100, min_filter_radius=3)
+        # The isolated centre pixel should have been pulled down to 0 by the minimum filter
+        assert (
+            result[4, 4] == 0.0
+        ), f"Minimum filter should erase isolated bright pixel; got {result[4, 4]}"
+
+    def test_opening_erases_blob_smaller_than_radius(self):
+        """A bright disc blob whose diameter < opening_radius is erased by grey_opening."""
+        import types
+
+        stub = types.ModuleType("tifffile")
+
+        class _FakePage:
+            def asarray(self):
+                frame = np.zeros((40, 40), dtype=np.uint16)
+                # 5-px radius bright disc at centre
+                cy, cx = 20, 20
+                for dy in range(-5, 6):
+                    for dx in range(-5, 6):
+                        if dx**2 + dy**2 <= 25:
+                            frame[cy + dy, cx + dx] = 5000
+                return frame
+
+        class _FakeTiffFile:
+            def __init__(self, path):
+                self.pages = [_FakePage() for _ in range(5)]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        stub.TiffFile = _FakeTiffFile
+        rbc = _bc_module(stub)
+        # opening_radius=20 (disc radius 10) > blob radius 5 → blob erased
+        result = rbc.extract_background(
+            "fake.tif", n_frames=5, percentile=100, min_filter_radius=1, opening_radius=20
+        )
+        assert (
+            result[20, 20] == 0.0
+        ), f"Grey opening should erase blob smaller than opening disc; got {result[20, 20]}"
+
+    def test_extract_background_smoke_with_all_params(self):
+        """Full pipeline: percentile=10, min_filter_radius=3 on 10-page stub returns float32."""
+        stub = _make_tifffile_stub(n_pages=10, page_shape=(16, 16))
+        rbc = _bc_module(stub)
+        result = rbc.extract_background("fake.tif", n_frames=10, percentile=10, min_filter_radius=3)
+        assert result.dtype == np.float32
+        assert result.shape == (16, 16)
+        assert float(result.min()) >= 0.0
 
     # ------------------------------------------------------------------
     # render_frame_background_composite — basic output
@@ -886,7 +1042,7 @@ class TestDispatchBackgroundComposite:
                 )
 
     def test_main_preloads_background_exactly_once(self, tmp_path):
-        """render.py main() calls extract_temporal_median once before the frame loop."""
+        """render.py main() calls extract_background once before the frame loop."""
         import yaml
 
         for key in list(sys.modules):
@@ -913,6 +1069,9 @@ class TestDispatchBackgroundComposite:
                 "background_composite": {
                     "video_path": "fake_video.tif",
                     "n_frames_for_median": 5,
+                    "percentile": 15,
+                    "min_filter_radius": 5,
+                    "opening_radius": 7,
                 },
             }
         }
@@ -933,29 +1092,32 @@ class TestDispatchBackgroundComposite:
 
         extract_calls = []
 
-        def fake_extract(video_path, n_frames, rng):
-            extract_calls.append(video_path)
+        def fake_extract(video_path, n_frames, percentile, min_filter_radius, opening_radius):
+            extract_calls.append(
+                (video_path, n_frames, percentile, min_filter_radius, opening_radius)
+            )
             return fake_bg
 
         fake_rbc = mock.MagicMock()
-        fake_rbc.extract_temporal_median.side_effect = fake_extract
+        fake_rbc.extract_background.side_effect = fake_extract
         fake_rbc.render_frame_background_composite.return_value = np.zeros(
             (16, 16), dtype=np.uint16
         )
 
-        # Earlier tests may leave a tifffile stub in sys.modules; patch imwrite on the
-        # render module object so it uses a no-op regardless of what tifffile resolves to.
         sys.modules.pop("render_background_composite", None)
         with mock.patch.dict(sys.modules, {"render_background_composite": fake_rbc}):
-            with mock.patch.object(r, "tifffile") as mock_tifffile:
-                mock_tifffile.imwrite = mock.MagicMock()
-                with mock.patch.object(
-                    sys,
-                    "argv",
-                    ["render.py", "--lammps", "fake.lammpstrj", "--config", str(cfg_path)],
-                ):
-                    r.main()
+            with mock.patch.object(
+                sys,
+                "argv",
+                ["render.py", "--lammps", "fake.lammpstrj", "--config", str(cfg_path)],
+            ):
+                r.main()
 
-        # extract_temporal_median called exactly once (pre-load, not per-frame)
+        # extract_background called exactly once (pre-load, not per-frame)
         assert len(extract_calls) == 1
-        assert extract_calls[0] == "fake_video.tif"
+        video_path, n_frames, percentile, min_filter_radius, opening_radius = extract_calls[0]
+        assert video_path == "fake_video.tif"
+        assert n_frames == 5
+        assert percentile == 15
+        assert min_filter_radius == 5
+        assert opening_radius == 7

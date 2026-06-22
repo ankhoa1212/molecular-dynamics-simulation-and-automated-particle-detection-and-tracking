@@ -188,12 +188,19 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
     if detections_raw is None or len(detections_raw) == 0:
         return sv.Detections.empty()
 
+    # LodeSTAR det[2] is the model's radius/sigma output, not a confidence score.
+    # The raw value is in model-space (typically < 1.0); scale to pixels when that's the case.
+    frame_scale = max(frame.shape[:2])
     xyxy, confidences = [], []
     for det in detections_raw:
         y, x = det[0], det[1]
-        r = abs(det[2]) if len(det) >= 3 else box_size / 2
+        if len(det) >= 3:
+            sigma = abs(det[2])
+            r = sigma * frame_scale if sigma < 1.0 else sigma
+        else:
+            r = box_size / 2
         xyxy.append([x - r, y - r, x + r, y + r])
-        confidences.append(float(det[2]) if len(det) >= 3 else 1.0)
+        confidences.append(1.0)  # all detections passed the same cutoff; ordering is secondary
 
     result = sv.Detections(
         xyxy=np.array(xyxy, dtype=np.float32),
@@ -220,6 +227,50 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
         )
 
     return result
+
+
+def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
+    """Run RF-DETR on overlapping tiles and merge detections with NMS.
+
+    Adapts to any frame size at runtime. Falls back to a single predict() call
+    when the frame fits within tile_size in both dimensions.
+    """
+    import supervision as sv
+
+    H, W = frame.shape[:2]
+
+    if H <= tile_size and W <= tile_size:
+        return model.predict(frame, threshold=threshold)
+
+    stride = tile_size - overlap
+
+    def tile_starts(length):
+        starts = list(range(0, length - tile_size, stride))
+        starts.append(length - tile_size)
+        return starts
+
+    all_xyxy, all_conf, all_class_id = [], [], []
+    for y0 in tile_starts(H):
+        for x0 in tile_starts(W):
+            tile = frame[y0 : y0 + tile_size, x0 : x0 + tile_size]
+            dets = model.predict(tile, threshold=threshold)
+            if len(dets) > 0:
+                boxes = dets.xyxy.copy()
+                boxes[:, [0, 2]] += x0
+                boxes[:, [1, 3]] += y0
+                all_xyxy.append(boxes)
+                all_conf.append(dets.confidence)
+                all_class_id.append(dets.class_id)
+
+    if not all_xyxy:
+        return sv.Detections.empty()
+
+    merged = sv.Detections(
+        xyxy=np.concatenate(all_xyxy),
+        confidence=np.concatenate(all_conf),
+        class_id=np.concatenate(all_class_id),
+    )
+    return merged.with_nms(threshold=nms_threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +424,265 @@ def load_frames(input_path):
 
 
 # ---------------------------------------------------------------------------
+# Probe utilities
+# ---------------------------------------------------------------------------
+
+
+def _sample_frames(frames, n_samples):
+    """Return up to n_samples evenly-spaced frames from the list."""
+    if len(frames) <= n_samples:
+        return frames
+    indices = [int(i * len(frames) / n_samples) for i in range(n_samples)]
+    return [frames[i] for i in indices]
+
+
+def _run_detector(
+    model,
+    frame,
+    model_type,
+    threshold,
+    device="cpu",
+    lodestar_alpha=0.5,
+    lodestar_nms_distance=None,
+):
+    """Run the active detector on a single frame and return a detections object."""
+    if model_type == "rf-detr":
+        return model.predict(frame, threshold=threshold)
+    elif model_type == "yolo":
+        import supervision as sv
+
+        results = model.predict(frame, conf=threshold, verbose=False)[0]
+        return sv.Detections.from_ultralytics(results)
+    elif model_type == "lodestar":
+        return detect_lodestar(
+            model,
+            frame,
+            threshold,
+            device,
+            alpha=lodestar_alpha,
+            nms_distance=lodestar_nms_distance,
+        )
+    return []
+
+
+def run_density_probe(
+    frames,
+    model,
+    model_type,
+    threshold,
+    n_samples=10,
+    lodestar_alpha=0.5,
+    lodestar_nms_distance=None,
+    device="cpu",
+):
+    """Sample N frames, run detector, return (p95_count, frame_w, frame_h)."""
+    if not frames:
+        return 0.0, 0, 0
+    fh, fw = frames[0].shape[:2]
+    sample = _sample_frames(frames, n_samples)
+    counts = [
+        len(
+            _run_detector(
+                model, f, model_type, threshold, device, lodestar_alpha, lodestar_nms_distance
+            )
+        )
+        for f in sample
+    ]
+    p95 = float(np.percentile(counts, 95)) if counts else 0.0
+    return p95, fw, fh
+
+
+def suggest_crop_size(p95_count, fw, fh, target=250):
+    """Return (crop_w, crop_h) for a square center crop targeting at most `target` detections."""
+    if p95_count <= 0:
+        return fw, fh
+    density = p95_count / (fw * fh)
+    raw_size = int(np.ceil(np.sqrt(target / density)))
+    clamped = max(512, min(raw_size, min(fw, fh)))
+    return clamped, clamped
+
+
+def probe_threshold(
+    frames,
+    model,
+    model_type,
+    n_samples=10,
+    lodestar_alpha=0.5,
+    lodestar_nms_distance=None,
+    device="cpu",
+):
+    """Run detector at threshold=0 on sampled frames; suggest a threshold from the score distribution.
+
+    Returns (suggested_threshold, method) where method is 'valley' or 'percentile'.
+    """
+    sample = _sample_frames(frames, n_samples)
+    all_scores = []
+    for frame in sample:
+        dets = _run_detector(
+            model, frame, model_type, 0.0, device, lodestar_alpha, lodestar_nms_distance
+        )
+        if hasattr(dets, "confidence") and dets.confidence is not None and len(dets) > 0:
+            all_scores.extend(dets.confidence.tolist())
+
+    if not all_scores:
+        return 0.25, "fallback"
+
+    scores = np.array(all_scores)
+    hist, bin_edges = np.histogram(scores, bins=20, range=(0.0, 1.0))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    # Look for a valley between two confidence peaks (signal vs. noise separation)
+    suggested = None
+    method = "percentile"
+    mid = len(hist) // 2
+    if mid > 0 and mid < len(hist):
+        left_max_idx = int(np.argmax(hist[:mid]))
+        right_max_idx = mid + int(np.argmax(hist[mid:]))
+        if right_max_idx > left_max_idx + 1:
+            valley_region = hist[left_max_idx + 1 : right_max_idx]
+            if len(valley_region) > 0:
+                valley_idx = left_max_idx + 1 + int(np.argmin(valley_region))
+                left_peak = hist[left_max_idx]
+                right_peak = hist[right_max_idx]
+                valley_val = hist[valley_idx]
+                valley_pos = float(bin_centers[valley_idx])
+                if valley_pos - float(
+                    bin_centers[left_max_idx]
+                ) >= 0.05 and valley_val < 0.20 * min(left_peak, right_peak):
+                    suggested = valley_pos
+                    method = "valley"
+
+    if suggested is None:
+        suggested = float(np.percentile(scores, 85))
+        method = "percentile"
+
+    return suggested, method
+
+
+# ---------------------------------------------------------------------------
+# Track post-processing
+# ---------------------------------------------------------------------------
+
+
+def bridge_track_gaps(df, max_gap, search_radius):
+    """Reconnect track fragments separated by ≤ max_gap frames and ≤ search_radius pixels.
+
+    Iterates until no more merges are possible (handles chained fragments).
+    Only meaningful for trackpy output where tracks may be fragmented.
+    """
+    if df.empty or "track_id" not in df.columns:
+        return df
+    df = df.copy()
+    # tp.link_df sets 'frame' as an index level; reset to avoid sort_values ambiguity.
+    if "frame" in df.index.names:
+        df = df.reset_index(drop=True)
+    for _ in range(200):  # bounded to avoid infinite loops
+        by_frame = df.sort_values("frame")
+        endpoints = (
+            by_frame.groupby("track_id").last().reset_index()[["track_id", "frame", "x", "y"]]
+        )
+        startpoints = (
+            by_frame.groupby("track_id").first().reset_index()[["track_id", "frame", "x", "y"]]
+        )
+
+        merges = {}
+        used_ep, used_sp = set(), set()
+
+        for _, ep in endpoints.sort_values("frame").iterrows():
+            ep_tid = int(ep.track_id)
+            if ep_tid in used_ep:
+                continue
+            cands = startpoints[
+                (startpoints.track_id != ep.track_id)
+                & (~startpoints.track_id.isin(used_sp))
+                & (startpoints.frame > ep.frame)
+                & (startpoints.frame - ep.frame <= max_gap)
+            ].copy()
+            if cands.empty:
+                continue
+            cands["dist"] = np.sqrt((cands.x - ep.x) ** 2 + (cands.y - ep.y) ** 2)
+            cands = cands[cands.dist <= search_radius]
+            if cands.empty:
+                continue
+            frame_gap = cands.frame - ep.frame
+            cands = cands.copy()
+            cands["score"] = np.sqrt((cands.dist / search_radius) ** 2 + (frame_gap / max_gap) ** 2)
+            best = cands.loc[cands.score.idxmin()]
+            best_tid = int(best.track_id)
+            merges[best_tid] = ep_tid
+            used_ep.add(ep_tid)
+            used_sp.add(best_tid)
+
+        if not merges:
+            break
+        df["track_id"] = df["track_id"].map(lambda tid: merges.get(int(tid), int(tid)))
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+
+def compute_and_save_metrics(df_final, det_counts, run_meta, output_dir):
+    """Compute tracking quality metrics and save to metrics.json alongside tracks.csv."""
+    import json
+
+    metrics: dict = {}
+
+    if not df_final.empty and "track_id" in df_final.columns:
+        lengths = df_final.groupby("track_id")["frame"].count()
+        metrics["n_tracks"] = int(lengths.shape[0])
+        metrics["track_length_mean"] = round(float(lengths.mean()), 2)
+        metrics["track_length_median"] = round(float(lengths.median()), 2)
+        metrics["track_length_max"] = int(lengths.max())
+        metrics["track_length_min"] = int(lengths.min())
+        if "conf" in df_final.columns:
+            metrics["mean_confidence"] = round(float(df_final["conf"].mean()), 4)
+        else:
+            metrics["mean_confidence"] = None
+    else:
+        metrics.update(
+            {
+                "n_tracks": 0,
+                "track_length_mean": 0.0,
+                "track_length_median": 0.0,
+                "track_length_max": 0,
+                "track_length_min": 0,
+                "mean_confidence": None,
+            }
+        )
+
+    if det_counts:
+        n_frames = len(det_counts)
+        metrics["n_frames"] = n_frames
+        metrics["detection_rate"] = round(sum(1 for c in det_counts if c > 0) / n_frames, 4)
+        metrics["detections_per_frame_mean"] = round(sum(det_counts) / n_frames, 2)
+        metrics["detections_per_frame_max"] = int(max(det_counts))
+        metrics["frames_with_zero_detections"] = int(sum(1 for c in det_counts if c == 0))
+
+    metrics.update(run_meta)
+
+    metrics_path = output_dir / "metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    print(f"\nTracking summary:")
+    print(f"  Tracks:           {metrics.get('n_tracks', 0)}")
+    if metrics.get("n_tracks", 0) > 0:
+        print(
+            f"  Track length:     mean={metrics['track_length_mean']}, "
+            f"median={metrics['track_length_median']}, max={metrics['track_length_max']}"
+        )
+    print(f"  Detection rate:   {metrics.get('detection_rate', 0):.1%} of frames")
+    print(f"  Avg dets/frame:   {metrics.get('detections_per_frame_mean', 0):.1f}")
+    if metrics.get("mean_confidence") is not None:
+        print(f"  Mean confidence:  {metrics['mean_confidence']:.4f}")
+    print(f"  Metrics saved to: {metrics_path}")
+
+
+# ---------------------------------------------------------------------------
 # Trajectory image
 # ---------------------------------------------------------------------------
 
@@ -448,7 +758,9 @@ def main():
     parser.add_argument("--device", help="Inference device (e.g. 0 or cpu)")
     parser.add_argument("--threshold", type=float, help="Detection confidence threshold")
     # I/O
-    parser.add_argument("--input", help="Path to video, image folder, or TIFF stack")
+    parser.add_argument(
+        "--input", nargs="+", help="One or more paths to video, image folder, or TIFF stack"
+    )
     parser.add_argument("--output-dir", help="Directory to save results")
     # Tracking
     parser.add_argument("--tracker", choices=["trackpy", "bytetrack"])
@@ -509,6 +821,42 @@ def main():
         action="store_true",
         help="Compute and save hexatic order parameter plot after tracking",
     )
+    # Model overrides (also settable via config)
+    parser.add_argument("--num-classes", type=int, help="RF-DETR: number of output classes")
+    parser.add_argument("--num-queries", type=int, help="RF-DETR: max detections per frame")
+    # Probe mode
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help=(
+            "Probe mode: load model, sample frames, print PROBE_RESULT crop_w=N crop_h=N, exit. "
+            "Use --probe-threshold to also print a suggested detection threshold."
+        ),
+    )
+    parser.add_argument(
+        "--probe-threshold",
+        action="store_true",
+        help="With --probe: also run threshold analysis and print PROBE_THRESHOLD suggested=X method=Y",
+    )
+    parser.add_argument(
+        "--probe-n-samples",
+        type=int,
+        default=10,
+        help="Number of frames to sample during probe (default: 10)",
+    )
+    # Gap-closing
+    parser.add_argument(
+        "--bridge-gap",
+        type=int,
+        default=None,
+        help="Trackpy: reconnect track fragments with a gap of at most N frames (disabled by default)",
+    )
+    parser.add_argument(
+        "--bridge-radius",
+        type=float,
+        default=None,
+        help="Trackpy: spatial search radius for gap-closing in pixels (default: 2 × search_range)",
+    )
 
     args = parser.parse_args()
     cfg = load_config(args.config)
@@ -519,11 +867,35 @@ def main():
         cfg, "model", "checkpoint", default="../rf-detr/checkpoints/checkpoint_best_ema.pth"
     )
     variant = args.variant or cfg_get(cfg, "model", "variant", default="large")
-    num_classes = cfg_get(cfg, "model", "num_classes")
-    num_queries = cfg_get(cfg, "model", "num_queries")
+    num_classes = (
+        args.num_classes if args.num_classes is not None else cfg_get(cfg, "model", "num_classes")
+    )
+    num_queries = (
+        args.num_queries if args.num_queries is not None else cfg_get(cfg, "model", "num_queries")
+    )
     device = _normalize_device(args.device or cfg_get(cfg, "model", "device", default="0")) or "cpu"
+    threshold_from_cli = args.threshold is not None
     threshold = args.threshold or cfg_get(cfg, "detection", "threshold", default=0.25)
-    input_path = args.input or cfg_get(cfg, "input")
+    # Use the LodeSTAR autolabel cutoff as the default threshold when none was explicitly passed
+    if model_type == "lodestar" and not threshold_from_cli:
+        import json as _json
+
+        _autolabel_cfg = (
+            SCRIPT_DIR / ".." / "data-setup" / "configs" / "autolabel_2um_lodestar_model_15.json"
+        )
+        try:
+            with open(_autolabel_cfg) as _f:
+                _prior = _json.load(_f)
+            if "cutoff" in _prior:
+                threshold = float(_prior["cutoff"])
+                print(f"Using LodeSTAR prior threshold: {threshold} (from autolabel config)")
+        except (FileNotFoundError, KeyError, ValueError, Exception):
+            pass
+
+    raw_input = args.input or cfg_get(cfg, "input")
+    if raw_input is None:
+        parser.error("--input is required (or set 'input' in config.yaml)")
+    input_paths = [raw_input] if isinstance(raw_input, str) else list(raw_input)
     output_dir = Path(
         args.output_dir
         or cfg_get(cfg, "output", "dir", default="evaluation/results/tracking_output")
@@ -552,6 +924,19 @@ def main():
         if args.adaptive_step is not None
         else cfg_get(cfg, "tracking", "adaptive_step", default=0.95)
     )
+    bridge_gap = (
+        args.bridge_gap
+        if args.bridge_gap is not None
+        else cfg_get(cfg, "tracking", "bridge_gap", default=None)
+    )
+    bridge_radius = (
+        args.bridge_radius
+        if args.bridge_radius is not None
+        else cfg_get(cfg, "tracking", "bridge_radius", default=None)
+    )
+    probe_mode = args.probe
+    probe_threshold_mode = args.probe_threshold
+    probe_n_samples = args.probe_n_samples
     lost_track_buffer = (
         args.lost_track_buffer
         if args.lost_track_buffer is not None
@@ -587,6 +972,10 @@ def main():
     save_hexatic_order = args.hexatic_order or cfg_get(
         cfg, "analysis", "hexatic_order", default=False
     )
+    tiling_enabled = cfg_get(cfg, "tiling", "enabled", default=False)
+    tiling_tile_size = cfg_get(cfg, "tiling", "tile_size", default=1024)
+    tiling_overlap = cfg_get(cfg, "tiling", "overlap", default=100)
+    tiling_nms_threshold = cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
     save_video = args.save_video or cfg_get(cfg, "output", "save_video", default=False)
     fps = args.fps or cfg_get(cfg, "output", "fps", default=30)
     trace_length = (
@@ -595,325 +984,409 @@ def main():
         else cfg_get(cfg, "output", "trace_length", default=30)
     )
 
-    if input_path is None:
-        parser.error("--input is required (or set 'input' in config.yaml)")
-
     checkpoint = resolve_path(checkpoint)
     output_dir = resolve_path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    input_path = Path(input_path)
-    is_lammpstrj = input_path.suffix.lower() == ".lammpstrj"
-
     print(f"Config:    {args.config}")
-    if not is_lammpstrj:
+
+    # -----------------------------------------------------------------------
+    # Pre-loop: imports and model initialisation (once for all inputs)
+    # -----------------------------------------------------------------------
+    needs_model = any(Path(p).suffix.lower() != ".lammpstrj" for p in input_paths)
+
+    if needs_model:
         print(f"Model:     {model_type} ({checkpoint})")
         print(f"Tracker:   {tracker}")
-    print(f"Input:     {input_path}")
-    print(f"Output:    {output_dir}")
+        try:
+            import supervision as sv
+        except ImportError:
+            print("Error: 'supervision' not found. Run 'pip install supervision'.")
+            sys.exit(1)
 
-    # -----------------------------------------------------------------------
-    # LAMMPS trajectory: positions are known — skip detection entirely
-    # -----------------------------------------------------------------------
-    if is_lammpstrj:
-        print(f"\nParsing LAMMPS trajectory: {input_path}")
-        lammps_frames = load_lammpstrj(input_path)
-        print(f"Found {len(lammps_frames)} timesteps.")
+        if tracker == "trackpy":
+            try:
+                import trackpy as tp
+            except ImportError:
+                print("Error: 'trackpy' not found. Run 'pip install trackpy'.")
+                sys.exit(1)
 
-        tracking_data = []
-        for frame_idx, df_frame in enumerate(lammps_frames):
-            for _, atom in df_frame.iterrows():
-                tracking_data.append(
+        print(f"\nInitializing {model_type} model...")
+        if model_type == "rf-detr":
+            model = get_rfdetr_model(
+                variant, checkpoint, device, num_classes=num_classes, num_queries=num_queries
+            )
+        elif model_type == "yolo":
+            model = get_yolo_model(checkpoint)
+        elif model_type == "lodestar":
+            model = get_lodestar_model(checkpoint, device, fp16=lodestar_fp16)
+        else:
+            model = None
+    else:
+        model = None
+
+    used_stems: set = set()
+
+    for raw_path in input_paths:
+        input_path = Path(raw_path)
+        stem = input_path.stem
+        if stem in used_stems:
+            counter = 2
+            while f"{stem}_{counter}" in used_stems:
+                counter += 1
+            stem = f"{stem}_{counter}"
+        used_stems.add(stem)
+        per_input_output_dir = output_dir / stem
+        per_input_output_dir.mkdir(parents=True, exist_ok=True)
+
+        is_lammpstrj = input_path.suffix.lower() == ".lammpstrj"
+        print(f"\nInput:     {input_path}")
+        print(f"Output:    {per_input_output_dir}")
+
+        # -----------------------------------------------------------------------
+        # LAMMPS trajectory: positions are known — skip detection entirely
+        # -----------------------------------------------------------------------
+        if is_lammpstrj:
+            print(f"\nParsing LAMMPS trajectory: {input_path}")
+            lammps_frames = load_lammpstrj(input_path)
+            print(f"Found {len(lammps_frames)} timesteps.")
+
+            tracking_data = []
+            for frame_idx, df_frame in enumerate(lammps_frames):
+                for _, atom in df_frame.iterrows():
+                    tracking_data.append(
+                        {
+                            "frame": frame_idx,
+                            "timestep": int(atom["timestep"]),
+                            "track_id": int(atom["id"]),
+                            "x": atom["x"],
+                            "y": atom["y"],
+                        }
+                    )
+
+            if save_video:
+                print("Warning: --save-video is not supported for .lammpstrj input.")
+
+            df_final = pd.DataFrame(tracking_data)
+            csv_path = per_input_output_dir / "tracks.csv"
+            df_final.to_csv(csv_path, index=False)
+            print(f"Saved tracking data to {csv_path}")
+            continue
+
+        # -----------------------------------------------------------------------
+        # Image / video pipeline
+        # -----------------------------------------------------------------------
+        print(f"\nLoading frames from {input_path}...")
+        frames = load_frames(input_path)
+        if not frames:
+            print("No frames found. Skipping.")
+            continue
+        print(f"Found {len(frames)} frames.")
+
+        # Probe mode: compute crop size and optionally suggest threshold, then continue
+        if probe_mode:
+            print(f"Probing density on {probe_n_samples} sampled frames...")
+            p95, fw, fh = run_density_probe(
+                frames,
+                model,
+                model_type,
+                threshold,
+                n_samples=probe_n_samples,
+                lodestar_alpha=lodestar_alpha,
+                lodestar_nms_distance=lodestar_nms_distance,
+                device=device,
+            )
+            crop_w, crop_h = suggest_crop_size(p95, fw, fh)
+            print(f"  p95 detections/frame: {p95:.1f}, frame: {fw}×{fh}")
+            print(f"PROBE_RESULT crop_w={crop_w} crop_h={crop_h}")
+            if probe_threshold_mode:
+                print(f"Probing threshold distribution on {probe_n_samples} sampled frames...")
+                suggested, method = probe_threshold(
+                    frames,
+                    model,
+                    model_type,
+                    n_samples=probe_n_samples,
+                    lodestar_alpha=lodestar_alpha,
+                    lodestar_nms_distance=lodestar_nms_distance,
+                    device=device,
+                )
+                print(f"PROBE_THRESHOLD suggested={suggested:.4f} method={method}")
+            continue
+
+        # Resolve crop region from config (uses first frame dimensions)
+        crop_cfg = cfg_get(cfg, "crop") or {}
+        crop_x = crop_y = crop_w = crop_h = None
+        if crop_cfg:
+            fh, fw = frames[0].shape[:2]
+            raw_w = crop_cfg.get("width")
+            raw_h = crop_cfg.get("height")
+            crop_w = int(raw_w * fw if isinstance(raw_w, float) and raw_w <= 1.0 else (raw_w or fw))
+            crop_h = int(raw_h * fh if isinstance(raw_h, float) and raw_h <= 1.0 else (raw_h or fh))
+            if crop_cfg.get("center", False):
+                crop_x = (fw - crop_w) // 2
+                crop_y = (fh - crop_h) // 2
+            else:
+                crop_x = int(crop_cfg.get("x", 0))
+                crop_y = int(crop_cfg.get("y", 0))
+            print(f"Crop:      x={crop_x} y={crop_y} w={crop_w} h={crop_h} (frame {fw}×{fh})")
+        if tiling_enabled:
+            fh, fw = frames[0].shape[:2]
+            stride = tiling_tile_size - tiling_overlap
+            nx = len(list(range(0, fw - tiling_tile_size, stride))) + 1
+            ny = len(list(range(0, fh - tiling_tile_size, stride))) + 1
+            print(
+                f"Tiling:    {nx}×{ny} tiles, tile_size={tiling_tile_size}, overlap={tiling_overlap} (frame {fw}×{fh})"
+            )
+
+        # 1. Detection phase
+        all_detections = []
+        raw_tracking_data = []
+
+        for i, frame in enumerate(tqdm(frames, desc="Detecting")):
+            detect_frame = (
+                frame[crop_y : crop_y + crop_h, crop_x : crop_x + crop_w]
+                if crop_x is not None
+                else frame
+            )
+
+            if model_type == "rf-detr":
+                if tiling_enabled:
+                    detections = detect_with_tiling(
+                        model,
+                        detect_frame,
+                        threshold,
+                        tiling_tile_size,
+                        tiling_overlap,
+                        tiling_nms_threshold,
+                    )
+                else:
+                    detections = model.predict(detect_frame, threshold=threshold)
+            elif model_type == "yolo":
+                results = model.predict(detect_frame, conf=threshold, device=device, verbose=False)[
+                    0
+                ]
+                detections = sv.Detections.from_ultralytics(results)
+            elif model_type == "lodestar":
+                detections = detect_lodestar(
+                    model,
+                    detect_frame,
+                    threshold,
+                    device,
+                    alpha=lodestar_alpha,
+                    nms_distance=lodestar_nms_distance,
+                )
+
+            # Shift bounding boxes back to full-frame coordinates
+            if crop_x is not None and len(detections) > 0:
+                detections.xyxy[:, [0, 2]] += crop_x
+                detections.xyxy[:, [1, 3]] += crop_y
+
+            all_detections.append(detections)
+
+            for j in range(len(detections)):
+                x1, y1, x2, y2 = detections.xyxy[j]
+                raw_tracking_data.append(
                     {
-                        "frame": frame_idx,
-                        "timestep": int(atom["timestep"]),
-                        "track_id": int(atom["id"]),
-                        "x": atom["x"],
-                        "y": atom["y"],
+                        "frame": i,
+                        "x": (x1 + x2) / 2,
+                        "y": (y1 + y2) / 2,
+                        "w": x2 - x1,
+                        "h": y2 - y1,
+                        "conf": (
+                            detections.confidence[j] if detections.confidence is not None else 1.0
+                        ),
                     }
                 )
 
-        if save_video:
-            print("Warning: --save-video is not supported for .lammpstrj input.")
-
-        df_final = pd.DataFrame(tracking_data)
-        csv_path = output_dir / "tracks.csv"
-        df_final.to_csv(csv_path, index=False)
-        print(f"Saved tracking data to {csv_path}")
-        return
-
-    # -----------------------------------------------------------------------
-    # Image / video pipeline
-    # -----------------------------------------------------------------------
-    print(f"\nInitializing {model_type} model...")
-
-    try:
-        import supervision as sv
-    except ImportError:
-        print("Error: 'supervision' not found. Run 'pip install supervision'.")
-        sys.exit(1)
-
-    if tracker == "trackpy":
-        try:
-            import trackpy as tp
-        except ImportError:
-            print("Error: 'trackpy' not found. Run 'pip install trackpy'.")
-            sys.exit(1)
-
-    # Initialize detection model before loading frames so import/checkpoint
-    # errors surface immediately rather than after a potentially long load.
-    if model_type == "rf-detr":
-        model = get_rfdetr_model(
-            variant, checkpoint, device, num_classes=num_classes, num_queries=num_queries
-        )
-    elif model_type == "yolo":
-        model = get_yolo_model(checkpoint)
-    elif model_type == "lodestar":
-        model = get_lodestar_model(checkpoint, device, fp16=lodestar_fp16)
-
-    print(f"\nLoading frames from {input_path}...")
-    frames = load_frames(input_path)
-    if not frames:
-        print("No frames found. Exiting.")
-        return
-    print(f"Found {len(frames)} frames.")
-
-    # Resolve crop region from config (uses first frame dimensions)
-    crop_cfg = cfg_get(cfg, "crop") or {}
-    crop_x = crop_y = crop_w = crop_h = None
-    if crop_cfg:
-        fh, fw = frames[0].shape[:2]
-        raw_w = crop_cfg.get("width")
-        raw_h = crop_cfg.get("height")
-        crop_w = int(raw_w * fw if isinstance(raw_w, float) and raw_w <= 1.0 else (raw_w or fw))
-        crop_h = int(raw_h * fh if isinstance(raw_h, float) and raw_h <= 1.0 else (raw_h or fh))
-        if crop_cfg.get("center", False):
-            crop_x = (fw - crop_w) // 2
-            crop_y = (fh - crop_h) // 2
-        else:
-            crop_x = int(crop_cfg.get("x", 0))
-            crop_y = int(crop_cfg.get("y", 0))
-        print(f"Crop:      x={crop_x} y={crop_y} w={crop_w} h={crop_h} (frame {fw}×{fh})")
-
-    # 1. Detection phase
-    all_detections = []
-    raw_tracking_data = []
-
-    for i, frame in enumerate(tqdm(frames, desc="Detecting")):
-        detect_frame = (
-            frame[crop_y : crop_y + crop_h, crop_x : crop_x + crop_w]
-            if crop_x is not None
-            else frame
-        )
-
-        if model_type == "rf-detr":
-            detections = model.predict(detect_frame, threshold=threshold)
-        elif model_type == "yolo":
-            results = model.predict(detect_frame, conf=threshold, device=device, verbose=False)[0]
-            detections = sv.Detections.from_ultralytics(results)
-        elif model_type == "lodestar":
-            detections = detect_lodestar(
-                model,
-                detect_frame,
-                threshold,
-                device,
-                alpha=lodestar_alpha,
-                nms_distance=lodestar_nms_distance,
-            )
-
-        # Shift bounding boxes back to full-frame coordinates
-        if crop_x is not None and len(detections) > 0:
-            detections.xyxy[:, [0, 2]] += crop_x
-            detections.xyxy[:, [1, 3]] += crop_y
-
-        all_detections.append(detections)
-
-        for j in range(len(detections)):
-            x1, y1, x2, y2 = detections.xyxy[j]
-            raw_tracking_data.append(
-                {
-                    "frame": i,
-                    "x": (x1 + x2) / 2,
-                    "y": (y1 + y2) / 2,
-                    "w": x2 - x1,
-                    "h": y2 - y1,
-                    "conf": detections.confidence[j] if detections.confidence is not None else 1.0,
-                }
-            )
-
-    # Detection summary — helps diagnose whether low track count is a detector problem
-    det_counts = [len(d) for d in all_detections]
-    if det_counts:
-        total = sum(det_counts)
-        avg = total / len(det_counts)
-        print(
-            f"\nDetection summary: {total} total detections across {len(det_counts)} frames "
-            f"(avg {avg:.1f}/frame, min {min(det_counts)}, max {max(det_counts)})"
-        )
-        if avg < 5:
+        # Detection summary — helps diagnose whether low track count is a detector problem
+        det_counts = [len(d) for d in all_detections]
+        if det_counts:
+            total = sum(det_counts)
+            avg = total / len(det_counts)
             print(
-                "  Warning: very few detections per frame. "
-                "Low track count is likely a detector issue, not a tracker issue. "
-                "Consider lowering --threshold or retraining/fine-tuning the model."
+                f"\nDetection summary: {total} total detections across {len(det_counts)} frames "
+                f"(avg {avg:.1f}/frame, min {min(det_counts)}, max {max(det_counts)})"
             )
+            if avg < 5:
+                print(
+                    "  Warning: very few detections per frame. "
+                    "Low track count is likely a detector issue, not a tracker issue. "
+                    "Consider lowering --threshold or retraining/fine-tuning the model."
+                )
 
-    # 2. Tracking phase
-    df = pd.DataFrame(raw_tracking_data)
-    tracking_data = []
+        # 2. Tracking phase
+        df = pd.DataFrame(raw_tracking_data)
+        tracking_data = []
 
-    if df.empty and model_type == "rf-detr":
-        # Run one probe frame at threshold=0 to show the actual score range.
-        probe = model.predict(frames[0], threshold=0.0)
-        if len(probe) > 0 and probe.confidence is not None:
-            max_conf = float(probe.confidence.max())
-            print(
-                f"Warning: 0 detections with threshold={threshold}. "
-                f"Max confidence seen on frame 0 was {max_conf:.4f}. "
-                f"Try lowering --threshold (e.g. {max_conf * 0.8:.4f})."
-            )
-        else:
-            print(f"Warning: 0 detections. The model may not be compatible with this input.")
-
-    if tracker == "trackpy":
-        print("Applying Trackpy (offline)...")
-        if not df.empty:
-            link_kwargs = {"search_range": search_range, "memory": memory}
-            if adaptive_stop is not None:
-                link_kwargs["adaptive_stop"] = adaptive_stop
-                link_kwargs["adaptive_step"] = adaptive_step
-            df = tp.link_df(df, **link_kwargs)
-            if stub_filter > 0:
-                df = tp.filter_stubs(df, stub_filter)
-            df = df.rename(columns={"particle": "track_id"})
-            tracking_data = df.to_dict("records")
-        else:
-            print("No detections to track.")
-
-    elif tracker == "bytetrack":
-        print("Applying ByteTrack (online)...")
-        byte_tracker = sv.ByteTrack(
-            track_activation_threshold=track_activation_threshold,
-            lost_track_buffer=lost_track_buffer,
-            minimum_consecutive_frames=minimum_consecutive_frames,
-        )
-        tracked_frames_detections = []
-
-        for i, detections in enumerate(tqdm(all_detections, desc="Tracking")):
-            detections = byte_tracker.update_with_detections(detections)
-            tracked_frames_detections.append(detections)
-
-            if detections.tracker_id is not None:
-                for j in range(len(detections.tracker_id)):
-                    x1, y1, x2, y2 = detections.xyxy[j]
-                    tracking_data.append(
-                        {
-                            "frame": i,
-                            "track_id": int(detections.tracker_id[j]),
-                            "x": (x1 + x2) / 2,
-                            "y": (y1 + y2) / 2,
-                            "w": x2 - x1,
-                            "h": y2 - y1,
-                            "conf": (
-                                detections.confidence[j]
-                                if detections.confidence is not None
-                                else 1.0
-                            ),
-                        }
-                    )
+        if df.empty and model_type == "rf-detr":
+            # Run one probe frame at threshold=0 to show the actual score range.
+            probe = model.predict(frames[0], threshold=0.0)
+            if len(probe) > 0 and probe.confidence is not None:
+                max_conf = float(probe.confidence.max())
+                print(
+                    f"Warning: 0 detections with threshold={threshold}. "
+                    f"Max confidence seen on frame 0 was {max_conf:.4f}. "
+                    f"Try lowering --threshold (e.g. {max_conf * 0.8:.4f})."
+                )
             else:
-                tracked_frames_detections[-1] = sv.Detections.empty()
+                print(f"Warning: 0 detections. The model may not be compatible with this input.")
 
-    # 3. Visualization phase
-    if save_video:
-        print("Annotating video...")
-        box_annotator = sv.BoxAnnotator()
-        label_annotator = sv.LabelAnnotator()
-        trace_annotator = sv.TraceAnnotator(trace_length=trace_length)
-        df_tracked = pd.DataFrame(tracking_data)
-        annotated_frames = []
+        if tracker == "trackpy":
+            print("Applying Trackpy (offline)...")
+            if not df.empty:
+                link_kwargs = {"search_range": search_range, "memory": memory}
+                if adaptive_stop is not None:
+                    link_kwargs["adaptive_stop"] = adaptive_stop
+                    link_kwargs["adaptive_step"] = adaptive_step
+                df = tp.link_df(df, **link_kwargs)
+                if stub_filter > 0:
+                    df = tp.filter_stubs(df, stub_filter)
+                df = df.rename(columns={"particle": "track_id"})
+                if bridge_gap is not None and not df.empty:
+                    radius = bridge_radius if bridge_radius is not None else 2.0 * search_range
+                    pre_count = df["track_id"].nunique()
+                    print(f"Bridging track gaps (max_gap={bridge_gap}, radius={radius:.1f}px)...")
+                    df = bridge_track_gaps(df, max_gap=bridge_gap, search_radius=radius)
+                    post_count = df["track_id"].nunique()
+                    print(f"  Tracks: {pre_count} → {post_count} (merged {pre_count - post_count})")
+                tracking_data = df.to_dict("records")
+            else:
+                print("No detections to track.")
 
-        for i, frame in enumerate(tqdm(frames, desc="Visualizing")):
-            if not df_tracked.empty and "track_id" in df_tracked.columns:
-                frame_df = df_tracked[df_tracked["frame"] == i]
-                if not frame_df.empty:
-                    xyxy, tracker_ids = [], []
-                    for _, row in frame_df.iterrows():
-                        x, y, w, h = row["x"], row["y"], row["w"], row["h"]
-                        xyxy.append([x - w / 2, y - h / 2, x + w / 2, y + h / 2])
-                        tracker_ids.append(int(row["track_id"]))
-                    detections = sv.Detections(
-                        xyxy=np.array(xyxy, dtype=np.float32),
-                        tracker_id=np.array(tracker_ids, dtype=int),
-                        class_id=np.zeros(len(xyxy), dtype=int),
-                    )
+        elif tracker == "bytetrack":
+            print("Applying ByteTrack (online)...")
+            byte_tracker = sv.ByteTrack(
+                track_activation_threshold=track_activation_threshold,
+                lost_track_buffer=lost_track_buffer,
+                minimum_consecutive_frames=minimum_consecutive_frames,
+            )
+            tracked_frames_detections = []
+
+            for i, detections in enumerate(tqdm(all_detections, desc="Tracking")):
+                detections = byte_tracker.update_with_detections(detections)
+                tracked_frames_detections.append(detections)
+
+                if detections.tracker_id is not None:
+                    for j in range(len(detections.tracker_id)):
+                        x1, y1, x2, y2 = detections.xyxy[j]
+                        tracking_data.append(
+                            {
+                                "frame": i,
+                                "track_id": int(detections.tracker_id[j]),
+                                "x": (x1 + x2) / 2,
+                                "y": (y1 + y2) / 2,
+                                "w": x2 - x1,
+                                "h": y2 - y1,
+                                "conf": (
+                                    detections.confidence[j]
+                                    if detections.confidence is not None
+                                    else 1.0
+                                ),
+                            }
+                        )
+                else:
+                    tracked_frames_detections[-1] = sv.Detections.empty()
+
+        # 3. Visualization phase
+        if save_video:
+            print("Annotating video...")
+            box_annotator = sv.BoxAnnotator()
+            label_annotator = sv.LabelAnnotator()
+            trace_annotator = sv.TraceAnnotator(trace_length=trace_length)
+            df_tracked = pd.DataFrame(tracking_data)
+            annotated_frames = []
+
+            for i, frame in enumerate(tqdm(frames, desc="Visualizing")):
+                if not df_tracked.empty and "track_id" in df_tracked.columns:
+                    frame_df = df_tracked[df_tracked["frame"] == i]
+                    if not frame_df.empty:
+                        xyxy, tracker_ids = [], []
+                        for _, row in frame_df.iterrows():
+                            x, y, w, h = row["x"], row["y"], row["w"], row["h"]
+                            xyxy.append([x - w / 2, y - h / 2, x + w / 2, y + h / 2])
+                            tracker_ids.append(int(row["track_id"]))
+                        detections = sv.Detections(
+                            xyxy=np.array(xyxy, dtype=np.float32),
+                            tracker_id=np.array(tracker_ids, dtype=int),
+                            class_id=np.zeros(len(xyxy), dtype=int),
+                        )
+                    else:
+                        detections = sv.Detections.empty()
                 else:
                     detections = sv.Detections.empty()
-            else:
-                detections = sv.Detections.empty()
 
-            annotated_frame = frame.copy()
-            if detections.tracker_id is not None and len(detections.tracker_id) > 0:
-                labels = [f"#{tid}" for tid in detections.tracker_id]
-                annotated_frame = trace_annotator.annotate(
-                    scene=annotated_frame, detections=detections
-                )
-                annotated_frame = box_annotator.annotate(
-                    scene=annotated_frame, detections=detections
-                )
-                annotated_frame = label_annotator.annotate(
-                    scene=annotated_frame, detections=detections, labels=labels
-                )
-            annotated_frames.append(annotated_frame)
+                annotated_frame = frame.copy()
+                if detections.tracker_id is not None and len(detections.tracker_id) > 0:
+                    labels = [f"#{tid}" for tid in detections.tracker_id]
+                    annotated_frame = trace_annotator.annotate(
+                        scene=annotated_frame, detections=detections
+                    )
+                    annotated_frame = box_annotator.annotate(
+                        scene=annotated_frame, detections=detections
+                    )
+                    annotated_frame = label_annotator.annotate(
+                        scene=annotated_frame, detections=detections, labels=labels
+                    )
+                annotated_frames.append(annotated_frame)
 
-        video_path = output_dir / "tracking_visualization.mp4"
-        h, w = annotated_frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
-        for f in annotated_frames:
-            out.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
-        out.release()
-        print(f"Saved annotated video to {video_path}")
+            video_path = per_input_output_dir / "tracking_visualization.mp4"
+            h, w = annotated_frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
+            for f in annotated_frames:
+                out.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
+            out.release()
+            print(f"Saved annotated video to {video_path}")
 
-    # 4. Save results
-    df_final = pd.DataFrame(tracking_data)
-    csv_path = output_dir / "tracks.csv"
-    df_final.to_csv(csv_path, index=False)
-    print(f"Saved tracking data to {csv_path}")
+        # 4. Save results
+        df_final = pd.DataFrame(tracking_data)
+        csv_path = per_input_output_dir / "tracks.csv"
+        df_final.to_csv(csv_path, index=False)
+        print(f"Saved tracking data to {csv_path}")
 
-    if save_trajectory_image and not df_final.empty and "track_id" in df_final.columns:
-        print("Rendering trajectory image...")
-        img_path = output_dir / "trajectories.png"
-        _save_trajectory_image(df_final, frames[-1], img_path, colormap=trajectory_colormap)
-        print(f"Saved trajectory image to {img_path}")
+        run_meta: dict = {"model_type": model_type, "threshold": threshold, "tracker": tracker}
+        if crop_x is not None:
+            run_meta["crop"] = {"x": crop_x, "y": crop_y, "w": crop_w, "h": crop_h}
+        if bridge_gap is not None:
+            run_meta["bridge_gap"] = bridge_gap
+        compute_and_save_metrics(df_final, det_counts, run_meta, per_input_output_dir)
 
-    if save_hexatic_order and not df_final.empty:
-        print("Computing hexatic order parameter...")
-        lammps_scripts_dir = SCRIPT_DIR / ".." / "lammps-scripts"
-        lammps_venv_site = list((lammps_scripts_dir / ".venv").glob("lib/python*/site-packages"))
-        if lammps_venv_site and str(lammps_venv_site[0]) not in sys.path:
-            sys.path.insert(0, str(lammps_venv_site[0]))
-        try:
-            import matplotlib.pyplot as plt
-            from hexatic_order_analysis import calc_hexatic_from_tracks
+        if save_trajectory_image and not df_final.empty and "track_id" in df_final.columns:
+            print("Rendering trajectory image...")
+            img_path = per_input_output_dir / "trajectories.png"
+            _save_trajectory_image(df_final, frames[-1], img_path, colormap=trajectory_colormap)
+            print(f"Saved trajectory image to {img_path}")
 
-            fh, fw = frames[0].shape[:2]
-            frame_nums, psi6 = calc_hexatic_from_tracks(df_final, fw, fh, verbose=0)
-            if frame_nums:
-                plt.figure(figsize=(10, 6))
-                plt.plot(frame_nums, psi6, alpha=0.7)
-                plt.xlabel("Frame")
-                plt.ylabel(r"Global Hexatic Order $|\Psi_6|$")
-                plt.title("Hexatic Order Parameter — Particle Tracking")
-                plt.grid(True, alpha=0.3)
-                plt.tight_layout()
-                hexatic_path = output_dir / "hexatic_order.png"
-                plt.savefig(str(hexatic_path), dpi=300)
-                plt.close()
-                print(f"Saved hexatic order plot to {hexatic_path}")
-        except ImportError:
-            print(
-                "Warning: could not import hexatic_order_analysis — ensure freud is installed in lammps-scripts/.venv"
+        if save_hexatic_order and not df_final.empty:
+            print("Computing hexatic order parameter...")
+            lammps_scripts_dir = SCRIPT_DIR / ".." / "lammps-scripts"
+            lammps_venv_site = list(
+                (lammps_scripts_dir / ".venv").glob("lib/python*/site-packages")
             )
+            if lammps_venv_site and str(lammps_venv_site[0]) not in sys.path:
+                sys.path.insert(0, str(lammps_venv_site[0]))
+            try:
+                import matplotlib.pyplot as plt
+                from hexatic_order_analysis import calc_hexatic_from_tracks
+
+                fh, fw = frames[0].shape[:2]
+                frame_nums, psi6 = calc_hexatic_from_tracks(df_final, fw, fh, verbose=0)
+                if frame_nums:
+                    plt.figure(figsize=(10, 6))
+                    plt.plot(frame_nums, psi6, alpha=0.7)
+                    plt.xlabel("Frame")
+                    plt.ylabel(r"Global Hexatic Order $|\Psi_6|$")
+                    plt.title("Hexatic Order Parameter — Particle Tracking")
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    hexatic_path = per_input_output_dir / "hexatic_order.png"
+                    plt.savefig(str(hexatic_path), dpi=300)
+                    plt.close()
+                    print(f"Saved hexatic order plot to {hexatic_path}")
+            except ImportError:
+                print(
+                    "Warning: could not import hexatic_order_analysis — ensure freud is installed in lammps-scripts/.venv"
+                )
 
 
 if __name__ == "__main__":
