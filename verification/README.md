@@ -29,14 +29,18 @@ cd ../lammps-scripts && pip install -r requirements.txt
 
 ## Rendering Strategies
 
-Set `render_strategy` in `config.yaml` under `synthetic:`:
+Ready-to-use configs for each strategy live in `configs/`:
 
-| Strategy | Description |
-|----------|-------------|
-| `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
-| `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
-| `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
-| `background_composite` | Stamps calibrated Gaussian PSF particles onto a temporal-median background extracted from a real TIFF stack; Poisson noise applied to particle signal only; most realistic background texture |
+| Config | Strategy | Description |
+|--------|----------|-------------|
+| `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
+| `configs/render_deeptrack.yaml` | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
+| `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
+| `configs/render_background_composite.yaml` | `background_composite` | Stamps calibrated Gaussian PSF particles onto a temporal-median background extracted from a real TIFF stack; Poisson noise applied to particle signal only; most realistic background texture |
+
+Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
+
+`config.yaml` is the full reference config used by `benchmark.py`, `compare.py`, and `calibrate_psf.py --merge-config`.
 
 ## Calibration Workflow
 
@@ -67,7 +71,14 @@ uv run python compare_renders.py \
 ## Step 1 — Render synthetic frames
 
 ```bash
+# Default (procedural, uses config.yaml)
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
+
+# Pick a specific strategy
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_procedural.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_deeptrack.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_background_composite.yaml
 ```
 
 Outputs:

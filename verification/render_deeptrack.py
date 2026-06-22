@@ -84,6 +84,18 @@ def _build_psf_kernel(cfg, H, W):
         total = 1.0
 
     kernel = (kernel / total).astype(np.float32)
+
+    # Crop to a small patch around the PSF centre so that
+    # scipy.ndimage.convolve doesn't allocate O(image_size^4) memory.
+    # 32-pixel half-width covers >5σ for any physically realistic PSF at
+    # the resolutions used here; re-normalise after crop.
+    cy, cx = H // 2, W // 2
+    r = min(32, cy, cx)
+    kernel = kernel[cy - r : cy + r + 1, cx - r : cx + r + 1]
+    s = kernel.sum()
+    if s > 0:
+        kernel = kernel / s
+
     return kernel
 
 

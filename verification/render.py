@@ -21,14 +21,17 @@ Render strategies (set via synthetic.render_strategy in config.yaml):
     deeptrack   — physics-accurate scalar-diffraction PSF via DeepTrack2
     randomized  — procedural with per-frame stochastic parameter sampling
 """
+
 import argparse
 import csv
 import json
 import sys
 from pathlib import Path
 
+import subprocess
+
+import matplotlib.image as mplimg
 import numpy as np
-import tifffile
 import yaml
 
 # lammps_parser.py lives in lammps-scripts/ (pure Python, no venv needed)
@@ -191,6 +194,9 @@ def main():
     )
     parser.add_argument("--frames", type=int, default=None, help="Limit to first N timesteps")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
+    parser.add_argument(
+        "--video", action="store_true", help="Also encode frames into preview.mp4 (requires ffmpeg)"
+    )
     args = parser.parse_args()
 
     cfg = _load_config(args.config).get("synthetic", {})
@@ -203,19 +209,21 @@ def main():
 
     # Pre-load background once for background_composite strategy (avoids per-frame I/O).
     if strategy == "background_composite":
-        from render_background_composite import extract_temporal_median
+        from render_background_composite import extract_background
 
         bc_cfg = cfg.get("background_composite", {})
-        if "video_path" not in bc_cfg:
+        if not bc_cfg.get("video_path"):
             raise ValueError(
                 "render_strategy: background_composite requires "
                 "synthetic.background_composite.video_path in config.yaml"
             )
         print(f"Loading background from: {bc_cfg['video_path']}")
-        cfg["_background_frame"] = extract_temporal_median(
+        cfg["_background_frame"] = extract_background(
             bc_cfg["video_path"],
-            n_frames=bc_cfg.get("n_frames_for_median", 50),
-            rng=rng,
+            n_frames=bc_cfg.get("n_frames_for_median", 100),
+            percentile=bc_cfg.get("percentile", 10),
+            min_filter_radius=bc_cfg.get("min_filter_radius", 1),
+            opening_radius=bc_cfg.get("opening_radius", 50),
         )
         print("Background loaded.")
 
@@ -239,8 +247,15 @@ def main():
 
         img = _dispatch_render(positions_lj, box, cfg, rng, strategy)
 
-        tiff_path = output_dir / f"frame_{i:05d}.tif"
-        tifffile.imwrite(str(tiff_path), img)
+        img_f = img.astype(np.float32)
+        lo, hi = img_f.min(), img_f.max()
+        img8 = (
+            ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+            if hi > lo
+            else np.zeros_like(img, dtype=np.uint8)
+        )
+        png_path = output_dir / f"frame_{i:05d}.png"
+        mplimg.imsave(str(png_path), img8, cmap="gray")
 
         H, W = cfg["image_height"], cfg["image_width"]
         px_pos = (
@@ -289,6 +304,30 @@ def main():
 
     print(f"\nRendered {len(ground_truth)} frames → {output_dir}")
     print(f"Ground truth  → {gt_path}")
+
+    if args.video and ground_truth:
+        video_path = output_dir / "preview.mp4"
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-r",
+                "10",
+                "-i",
+                str(output_dir / "frame_%05d.png"),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"Video         → {video_path}")
+        else:
+            print(f"ffmpeg failed (is it installed?): {result.stderr[:300]}")
 
 
 if __name__ == "__main__":
