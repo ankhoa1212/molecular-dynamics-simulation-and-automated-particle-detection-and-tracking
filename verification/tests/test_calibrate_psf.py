@@ -349,6 +349,67 @@ class TestMergeConfig:
         # Other top-level keys must be untouched
         assert result["tracker"]["threshold"] == pytest.approx(0.5)
 
+    def test_preserves_inline_and_standalone_comments(self, tmp_path):
+        """Merging must not destroy the file's existing comments (the bug this fix
+        addresses — the old full yaml.safe_load/yaml.dump round-trip dropped all of
+        them)."""
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "# top-of-file comment\n"
+            "synthetic:\n"
+            "  render_strategy: gaussian   # inline comment on an untouched key\n"
+            "  # standalone comment above a section\n"
+            "  psf:\n"
+            "    na: 1.4   # inline comment on a pre-existing psf key\n"
+        )
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        text = cfg_path.read_text()
+        assert "# top-of-file comment" in text
+        assert "# inline comment on an untouched key" in text
+        assert "# standalone comment above a section" in text
+        assert "# inline comment on a pre-existing psf key" in text
+
+        result = yaml.safe_load(text)
+        assert result["synthetic"]["psf"]["sigma_px"] == 5.2
+        assert result["synthetic"]["psf"]["na"] == pytest.approx(1.4)
+
+    def test_commented_out_placeholder_key_is_not_overwritten(self, tmp_path):
+        """A commented-out example line for a key being merged (the real
+        verification/config.yaml:24 shape) must be left alone, with the active
+        value appended as a new line rather than the comment being uncommented."""
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "synthetic:\n"
+            "  psf:\n"
+            "    na: 1.4\n"
+            "    # sigma_px: 4.2             # empirical PSF sigma (px) — filled by calibrate_psf.py\n"
+        )
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        text = cfg_path.read_text()
+        # The commented-out placeholder survives verbatim...
+        assert "# sigma_px: 4.2             # empirical PSF sigma (px)" in text
+        # ...and a new active line was appended, not a rewrite of the comment.
+        assert "\n    sigma_px: 5.2\n" in text
+        result = yaml.safe_load(text)
+        assert result["synthetic"]["psf"]["sigma_px"] == 5.2
+
+    def test_existing_value_line_trailing_comment_is_kept(self, tmp_path):
+        """Replacing an existing key's value keeps that line's own trailing
+        comment intact rather than dropping it."""
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "synthetic:\n" "  psf:\n" "    sigma_px: 4.0  # from prior calibration\n"
+        )
+
+        calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
+
+        text = cfg_path.read_text()
+        assert "sigma_px: 5.2  # from prior calibration" in text
+
     def test_cli_merge_config_flag(self, tmp_path):
         """--merge-config via CLI correctly merges calibrated values into the target file."""
         frame = _make_synthetic_frame(height=128, width=128, n_particles=30, psf_sigma=5.0)

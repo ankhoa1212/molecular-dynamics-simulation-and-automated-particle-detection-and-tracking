@@ -7,6 +7,7 @@ Usage:
 Prints a YAML fragment ready to paste into config.yaml under synthetic:.
 """
 import argparse
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -228,35 +229,133 @@ def _format_yaml_fragment(params: dict) -> str:
     )
 
 
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _is_key_line(line: str, indent: int, key: str) -> bool:
+    """True if `line` is an active (non-comment) 'key:' line at exactly `indent`."""
+    stripped = line.strip()
+    if stripped == "" or stripped.startswith("#"):
+        return False
+    if _line_indent(line) != indent:
+        return False
+    rest = line[indent:]
+    return rest == f"{key}:" or rest.startswith(f"{key}: ") or rest.startswith(f"{key}:\n")
+
+
+def _find_key_line(lines: list[str], start: int, end: int, indent: int, key: str) -> int | None:
+    """Find the first ACTIVE 'key:' line within lines[start:end] at `indent`.
+
+    Deliberately skips commented-out lines (e.g. '# sigma_px: 4.2') so a
+    commented-out placeholder is never mistaken for a live key.
+    """
+    for i in range(start, end):
+        if _is_key_line(lines[i], indent, key):
+            return i
+    return None
+
+
+def _block_end(lines: list[str], header_idx: int, header_indent: int) -> int:
+    """Index one past the last line belonging to the block headed by lines[header_idx].
+
+    Blank lines don't end the block; the first non-blank line at indent <=
+    header_indent does.
+    """
+    i = header_idx + 1
+    last_in_block = header_idx
+    while i < len(lines):
+        if lines[i].strip() == "":
+            i += 1
+            continue
+        if _line_indent(lines[i]) > header_indent:
+            last_in_block = i
+            i += 1
+            continue
+        break
+    return last_in_block + 1
+
+
+def _render_value(value) -> str:
+    return str(value)
+
+
+def _replace_value_preserving_comment(line: str, key: str, indent: int, rendered_value: str) -> str:
+    """Replace just the value portion of an existing 'key: value  # comment' line,
+    keeping the trailing comment (if any) and the line's own indentation intact."""
+    newline = "\n" if line.endswith("\n") else ""
+    content = line[indent:].rstrip("\n")
+    rest = content[len(f"{key}:") :]
+    if "#" in rest:
+        comment = rest[rest.index("#") :]
+        return f"{' ' * indent}{key}: {rendered_value}  {comment}{newline}"
+    return f"{' ' * indent}{key}: {rendered_value}{newline}"
+
+
+def _normalize_flow_empty_mappings(lines: list[str]) -> list[str]:
+    """Rewrite 'key: {}' lines to a bare 'key:' block header.
+
+    yaml.dump renders an empty dict as flow-style '{}' even with
+    default_flow_style=False (there's nothing to put in block style). Normalizing
+    this away up front means the rest of this module only has to reason about one
+    shape — a block header, possibly with zero children yet — instead of two.
+    """
+    pattern = re.compile(r"^(\s*)(\w[\w-]*):\s*\{\}\s*$")
+    out = []
+    for line in lines:
+        m = pattern.match(line.rstrip("\n"))
+        out.append(f"{m.group(1)}{m.group(2)}:\n" if m else line)
+    return out
+
+
 def _merge_params_into_config(config_path: Path, params: dict) -> None:
     """Merge calibrated params into an existing config.yaml file under synthetic:.
 
     Preserves all existing keys not in the four calibrated sub-dicts (psf, particle,
-    background, noise). Strips _gain_sigma_note from noise and drops _meta entirely.
+    background, noise), including comments and formatting — this patches only the
+    specific lines being updated (or appends new ones) rather than re-dumping the
+    whole file, since a full yaml.safe_load -> yaml.dump round-trip silently drops
+    every comment in the file. Strips _gain_sigma_note from noise and drops _meta
+    entirely (both are internal-only fields, never written).
 
     Raises FileNotFoundError if config_path does not exist.
     """
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with config_path.open() as f:
-        config = yaml.safe_load(f) or {}
+    lines = _normalize_flow_empty_mappings(config_path.read_text().splitlines(keepends=True))
 
-    if "synthetic" not in config:
-        config["synthetic"] = {}
-
-    synthetic = config["synthetic"]
+    synthetic_idx = _find_key_line(lines, 0, len(lines), indent=0, key="synthetic")
+    if synthetic_idx is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append("synthetic:\n")
+        synthetic_idx = len(lines) - 1
 
     for section in ("psf", "particle", "background", "noise"):
         calibrated = dict(params[section])
         if section == "noise":
             calibrated.pop("_gain_sigma_note", None)
-        if section not in synthetic:
-            synthetic[section] = {}
-        synthetic[section].update(calibrated)
 
-    with config_path.open("w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        synthetic_end = _block_end(lines, synthetic_idx, header_indent=0)
+        section_idx = _find_key_line(lines, synthetic_idx + 1, synthetic_end, indent=2, key=section)
+        if section_idx is None:
+            lines.insert(synthetic_end, f"  {section}:\n")
+            section_idx = synthetic_end
+
+        section_end = _block_end(lines, section_idx, header_indent=2)
+        for key, value in calibrated.items():
+            rendered = _render_value(value)
+            key_idx = _find_key_line(lines, section_idx + 1, section_end, indent=4, key=key)
+            if key_idx is not None:
+                lines[key_idx] = _replace_value_preserving_comment(
+                    lines[key_idx], key, indent=4, rendered_value=rendered
+                )
+            else:
+                lines.insert(section_end, f"    {key}: {rendered}\n")
+                section_end += 1
+
+    config_path.write_text("".join(lines))
 
 
 def main():
