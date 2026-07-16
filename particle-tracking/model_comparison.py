@@ -246,19 +246,12 @@ _CONFIG_WRITER_NAMES = {
 def parse_crop(
     crop_str: str | None, parser: argparse.ArgumentParser
 ) -> tuple[int | None, int | None]:
-    """Parse a 'WxH' crop string, matching run_tracking.py's --crop validation."""
-    if crop_str is None:
-        return None, None
-    if "x" not in crop_str:
-        parser.error("--crop requires WxH format (e.g. 1024x1024)")
-    w_str, _, h_str = crop_str.partition("x")
-    try:
-        w, h = int(w_str), int(h_str)
-        if w <= 0 or h <= 0:
-            raise ValueError
-    except ValueError:
-        parser.error("--crop requires positive integer dimensions (e.g. 1024x1024)")
-    return w, h
+    """Parse a 'WxH' crop string via the shared validator in tracker_configs.py,
+    which run_tracking.py's --crop parsing also uses — kept as one implementation
+    so the two entry points can't drift apart."""
+    from tracker_configs import parse_crop_dims
+
+    return parse_crop_dims(crop_str, parser.error)
 
 
 def _read_tuning(config_path: Path) -> dict:
