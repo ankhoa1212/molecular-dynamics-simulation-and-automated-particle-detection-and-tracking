@@ -68,6 +68,27 @@ def _normalize_device(device):
     return s
 
 
+def lodestar_prior_threshold(script_dir):
+    """Read the LodeSTAR autolabel cutoff to use as a default detection threshold.
+
+    Returns None (falls back to the caller's own default) when the autolabel config
+    is missing, malformed, or has no 'cutoff' key — never raises.
+    """
+    import json as _json
+
+    autolabel_cfg = (
+        script_dir / ".." / "data-setup" / "configs" / "autolabel_2um_lodestar_model_15.json"
+    )
+    try:
+        with open(autolabel_cfg) as f:
+            prior = _json.load(f)
+        if "cutoff" in prior:
+            return float(prior["cutoff"])
+    except (FileNotFoundError, KeyError, ValueError):
+        pass
+    return None
+
+
 def get_rfdetr_model(variant, checkpoint, device, num_classes=None, num_queries=None):
     """Load RF-DETR from the venv in rf-detr/."""
     rf_detr_venv = SCRIPT_DIR / ".." / "rf-detr" / ".venv"
@@ -180,7 +201,9 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
     tensor = tensor.to(next(model.parameters()).dtype)
 
     with torch.inference_mode():
-        detections_raw = model.detect(tensor, alpha=alpha, beta=0.5, cutoff=threshold, mode="ratio")
+        detections_raw = model.detect(
+            tensor, alpha=alpha, beta=1.0 - alpha, cutoff=threshold, mode="ratio"
+        )
 
     if isinstance(detections_raw, list):
         detections_raw = detections_raw[0]
@@ -245,6 +268,8 @@ def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshol
     stride = tile_size - overlap
 
     def tile_starts(length):
+        if length <= tile_size:
+            return [0]
         starts = list(range(0, length - tile_size, stride))
         starts.append(length - tile_size)
         return starts
@@ -451,7 +476,7 @@ def _run_detector(
     elif model_type == "yolo":
         import supervision as sv
 
-        results = model.predict(frame, conf=threshold, verbose=False)[0]
+        results = model.predict(frame, conf=threshold, device=device, verbose=False)[0]
         return sv.Detections.from_ultralytics(results)
     elif model_type == "lodestar":
         return detect_lodestar(
@@ -737,6 +762,54 @@ def _save_trajectory_image(df_tracked, background_frame, output_path, colormap="
 
 
 # ---------------------------------------------------------------------------
+# Preview mode helpers
+# ---------------------------------------------------------------------------
+
+
+def resolve_preview_max_frames(test_flag, preview_n, max_frames_arg):
+    """Resolve the effective max_frames from --test/--preview/--max-frames.
+
+    Precedence: --test > --preview > --max-frames (mirrors the existing
+    --test-over-max-frames relationship; --preview slots in above --max-frames).
+    """
+    if test_flag:
+        return 1
+    if preview_n is not None:
+        return preview_n
+    return max_frames_arg
+
+
+def resolve_preview_stub_filter(stub_filter, n_frames):
+    """Cap stub_filter so a short preview run doesn't misreport zero tracks.
+
+    Directional relaxation only: caps stub_filter to roughly half the preview's
+    frame count (minimum 1) so trackpy.filter_stubs doesn't discard every track
+    purely because the full-run stub_filter (tuned for long runs) can't be
+    reached within a short preview. Returns stub_filter unchanged if it already
+    fits, or if stub_filter/n_frames don't call for capping.
+    """
+    if stub_filter is None or stub_filter <= 0 or n_frames is None or n_frames <= 0:
+        return stub_filter
+    return min(stub_filter, max(1, n_frames // 2))
+
+
+def count_tracks_at_stub_filter(df, stub_filter):
+    """Return the number of unique tracks that survive the given stub_filter.
+
+    Log-only helper: used by preview mode to report what the full run's
+    un-relaxed stub_filter would have produced on the same frames, without
+    affecting the tracks actually reported by the current run.
+    """
+    if df is None or df.empty:
+        return 0
+    if stub_filter is None or stub_filter <= 0:
+        return df["particle"].nunique()
+    import trackpy as tp
+
+    return tp.filter_stubs(df, stub_filter)["particle"].nunique()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -802,6 +875,34 @@ def main():
     )
     # Video output
     parser.add_argument("--save-video", action="store_true")
+    parser.add_argument(
+        "--video-labels",
+        action="store_true",
+        help="Show track ID labels in output video (off by default)",
+    )
+    parser.add_argument(
+        "--no-video-labels",
+        action="store_true",
+        help="Omit track ID labels from output video (default)",
+    )
+    parser.add_argument(
+        "--max-frames", type=int, default=None, help="Only process the first N frames"
+    )
+    parser.add_argument(
+        "--test", action="store_true", help="Test mode: process only the first frame"
+    )
+    parser.add_argument(
+        "--preview",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Preview mode: run the full pipeline on the first N frames with stub_filter "
+            "relaxed to fit, and skip hexatic-order/trajectory-image by default (pass "
+            "--hexatic-order/--save-trajectory-image explicitly to force them on). "
+            "Precedence: --test > --preview > --max-frames."
+        ),
+    )
     parser.add_argument("--fps", type=int, help="FPS for output video")
     parser.add_argument(
         "--trace-length", type=int, help="Frames of trajectory history shown in output video"
@@ -861,6 +962,9 @@ def main():
     args = parser.parse_args()
     cfg = load_config(args.config)
 
+    # --test wins over --preview (mirrors --test's existing precedence over --max-frames)
+    preview_active = args.preview is not None and not args.test
+
     # Resolve final values: CLI arg → config → built-in default
     model_type = args.model_type or cfg_get(cfg, "model", "type", default="rf-detr")
     checkpoint = args.checkpoint or cfg_get(
@@ -875,22 +979,14 @@ def main():
     )
     device = _normalize_device(args.device or cfg_get(cfg, "model", "device", default="0")) or "cpu"
     threshold_from_cli = args.threshold is not None
+    threshold_from_cfg = cfg_get(cfg, "detection", "threshold", default=None) is not None
     threshold = args.threshold or cfg_get(cfg, "detection", "threshold", default=0.25)
     # Use the LodeSTAR autolabel cutoff as the default threshold when none was explicitly passed
-    if model_type == "lodestar" and not threshold_from_cli:
-        import json as _json
-
-        _autolabel_cfg = (
-            SCRIPT_DIR / ".." / "data-setup" / "configs" / "autolabel_2um_lodestar_model_15.json"
-        )
-        try:
-            with open(_autolabel_cfg) as _f:
-                _prior = _json.load(_f)
-            if "cutoff" in _prior:
-                threshold = float(_prior["cutoff"])
-                print(f"Using LodeSTAR prior threshold: {threshold} (from autolabel config)")
-        except (FileNotFoundError, KeyError, ValueError, Exception):
-            pass
+    if model_type == "lodestar" and not threshold_from_cli and not threshold_from_cfg:
+        prior_threshold = lodestar_prior_threshold(SCRIPT_DIR)
+        if prior_threshold is not None:
+            threshold = prior_threshold
+            print(f"Using LodeSTAR prior threshold: {threshold} (from autolabel config)")
 
     raw_input = args.input or cfg_get(cfg, "input")
     if raw_input is None:
@@ -972,11 +1068,30 @@ def main():
     save_hexatic_order = args.hexatic_order or cfg_get(
         cfg, "analysis", "hexatic_order", default=False
     )
+    if preview_active:
+        # Preview default: skip both unless explicitly requested on the CLI (same
+        # explicit-flag-wins posture as video_labels/no_video_labels below).
+        if not args.save_trajectory_image:
+            save_trajectory_image = False
+        if not args.hexatic_order:
+            save_hexatic_order = False
     tiling_enabled = cfg_get(cfg, "tiling", "enabled", default=False)
     tiling_tile_size = cfg_get(cfg, "tiling", "tile_size", default=1024)
     tiling_overlap = cfg_get(cfg, "tiling", "overlap", default=100)
     tiling_nms_threshold = cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
+    max_frames = resolve_preview_max_frames(args.test, args.preview, args.max_frames)
+    if preview_active:
+        print(
+            f"Preview mode: capping to the first {max_frames} frame(s) "
+            f"(a full run would process all available frames)."
+        )
     save_video = args.save_video or cfg_get(cfg, "output", "save_video", default=False)
+    if args.video_labels:
+        video_labels = True
+    elif args.no_video_labels:
+        video_labels = False
+    else:
+        video_labels = cfg_get(cfg, "output", "video_labels", default=False)
     fps = args.fps or cfg_get(cfg, "output", "fps", default=30)
     trace_length = (
         args.trace_length
@@ -1081,6 +1196,8 @@ def main():
         if not frames:
             print("No frames found. Skipping.")
             continue
+        if max_frames is not None:
+            frames = frames[:max_frames]
         print(f"Found {len(frames)} frames.")
 
         # Probe mode: compute crop size and optionally suggest threshold, then continue
@@ -1239,8 +1356,24 @@ def main():
                     link_kwargs["adaptive_stop"] = adaptive_stop
                     link_kwargs["adaptive_step"] = adaptive_step
                 df = tp.link_df(df, **link_kwargs)
-                if stub_filter > 0:
-                    df = tp.filter_stubs(df, stub_filter)
+                effective_stub_filter = stub_filter
+                if preview_active and stub_filter is not None and stub_filter > 0:
+                    effective_stub_filter = resolve_preview_stub_filter(stub_filter, len(frames))
+                    full_run_track_count = count_tracks_at_stub_filter(df, stub_filter)
+                    if effective_stub_filter < stub_filter:
+                        print(
+                            f"Preview mode: relaxed stub_filter {stub_filter} -> "
+                            f"{effective_stub_filter} to fit the {len(frames)}-frame preview "
+                            f"(the full-run stub_filter would likely under-report tracks this short)."
+                        )
+                    print(
+                        f"Preview mode (log-only): the full-run stub_filter={stub_filter} would "
+                        f"produce {full_run_track_count} track(s) on these same {len(frames)} "
+                        f"preview frames — informational only, does not affect this run's "
+                        f"reported tracks."
+                    )
+                if effective_stub_filter is not None and effective_stub_filter > 0:
+                    df = tp.filter_stubs(df, effective_stub_filter)
                 df = df.rename(columns={"particle": "track_id"})
                 if bridge_gap is not None and not df.empty:
                     radius = bridge_radius if bridge_radius is not None else 2.0 * search_range
@@ -1324,9 +1457,10 @@ def main():
                     annotated_frame = box_annotator.annotate(
                         scene=annotated_frame, detections=detections
                     )
-                    annotated_frame = label_annotator.annotate(
-                        scene=annotated_frame, detections=detections, labels=labels
-                    )
+                    if video_labels:
+                        annotated_frame = label_annotator.annotate(
+                            scene=annotated_frame, detections=detections, labels=labels
+                        )
                 annotated_frames.append(annotated_frame)
 
             video_path = per_input_output_dir / "tracking_visualization.mp4"
