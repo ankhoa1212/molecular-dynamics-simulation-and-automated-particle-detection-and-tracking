@@ -18,15 +18,25 @@ model:
 
   device: "0"  # "0" for first GPU, "cpu" for CPU-only
 
-# Crop: restrict detection to a region of interest (useful when particle count exceeds the
-# model's per-frame detection limit, e.g. RF-DETR's 300-query ceiling).
+# Crop: restrict detection to a region of interest.
 # width/height: fraction of frame (0.0–1.0) or absolute pixels (> 1).
 # center: true  → crop is centred on the frame; x/y are ignored.
 # center: false → x/y set the top-left corner in pixels.
+# Set to null (or omit) to process the full frame (use tiling instead for dense scenes).
 crop:
-  center: true  # centre the crop on the frame
-  width: 0.5
-  height: 0.5
+
+# Tiling: split each frame into overlapping tiles and merge detections with NMS.
+# Enables the 300-query RF-DETR model to handle frames with >300 particles by
+# processing each tile independently (adapts to any input frame size at runtime).
+# tile_size: tile edge length in original frame pixels (each tile is resized to model
+#            resolution internally); tune so avg particles/tile stays under 300.
+# overlap:   pixel overlap between adjacent tiles so boundary particles aren't missed.
+# nms_threshold: IoU threshold for deduplicating detections in overlap regions.
+tiling:
+  enabled: true
+  tile_size: 1024
+  overlap: 100
+  nms_threshold: 0.3
 
 # Detection:
 detection:
@@ -49,6 +59,11 @@ tracking:
   adaptive_stop: 12  # minimum search_range before giving up (set to null to disable)
   adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
 
+  # Trackpy: reconnect track fragments separated by at most this many frames (disabled if null)
+  bridge_gap: null
+  # Trackpy: spatial search radius in pixels for gap-closing (default: 2 × search_range)
+  bridge_radius: null
+
   # ByteTrack: frames to keep a lost track alive before discarding it
   lost_track_buffer: 60
 
@@ -60,9 +75,13 @@ tracking:
 
 # Output:
 output:
-  dir: /mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/rf-detr-trial/
+  dir: /mnt/d/Particle Tracking Data/2um/rf-detr-trial/
 
-  save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
+  save_video: true  # Save an annotated MP4 with bounding boxes drawn
+
+  # Draw the "#<track_id>" label next to each bounding box in the output video.
+  # Off by default since the labels tend to clutter dense scenes.
+  video_labels: false
 
   fps: 30
 

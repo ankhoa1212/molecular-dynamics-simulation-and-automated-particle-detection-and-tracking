@@ -36,7 +36,6 @@ Ready-to-use configs for each strategy live in `configs/`:
 | `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
 | `configs/render_deeptrack.yaml` | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
 | `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
-| `configs/render_background_composite.yaml` | `background_composite` | Stamps calibrated Gaussian PSF particles onto a temporal-median background extracted from a real TIFF stack; Poisson noise applied to particle signal only; most realistic background texture |
 
 Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
 
@@ -54,14 +53,13 @@ uv run python calibrate_psf.py \
     --merge-config config.yaml
 
 # 2. Render with calibrated strategy
-#    For background_composite: also set synthetic.background_composite.video_path in config.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 
 # 3. Check rendering quality against real frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack randomized background_composite
+    --strategies procedural deeptrack randomized
 ```
 
 `--merge-config` writes calibrated values under `synthetic.psf`, `synthetic.particle`, `synthetic.background`, and `synthetic.noise` in `config.yaml`, preserving all existing keys. Omit it to print calibrated values to stdout instead (useful for inspection before committing).
@@ -78,11 +76,10 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_procedural.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_deeptrack.yaml
-uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_background_composite.yaml
 ```
 
 Outputs:
-- `verification_output/synthetic_frames/frame_NNNNN.tif` — 16-bit TIFFs
+- `verification_output/synthetic_frames/frame_NNNNN.png` — 8-bit PNG previews
 - `verification_output/ground_truth.json` — pixel positions per frame
 - `verification_output/ground_truth_tracks.csv` — stable per-particle tracks (frame, particle_id, x, y)
 
@@ -101,18 +98,17 @@ Key settings in `config.yaml` under `synthetic:`:
 
 | Key | Description |
 |-----|-------------|
-| `render_strategy` | `procedural` / `deeptrack` / `randomized` / `background_composite` |
+| `render_strategy` | `procedural` / `deeptrack` / `randomized` |
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
-| `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config`; used by `background_composite` |
+| `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config` |
 | `psf.na` / `psf.wavelength` / `psf.resolution` | DeepTrack2 PSF optics params |
 | `background.amplitude` | Max spatial background variation (ADU) |
 | `particle.peak_mean` / `particle.intensity_sigma` | Log-normal intensity distribution |
 | `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params |
 | `randomization.psf_sigma_range` / `.peak_range` / `.readout_noise_range` | Per-frame sampling ranges for `randomized` strategy |
-| `background_composite.video_path` | Path to real microscopy TIFF stack for background extraction (required for `background_composite`) |
-| `background_composite.n_frames_for_median` | Frames subsampled for temporal-median background (default: 50) |
+
 
 ## Step 2 — Benchmark detection and tracking accuracy
 
@@ -179,7 +175,7 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack background_composite
+    --strategies procedural deeptrack randomized
 
 # 3. Benchmark detection + tracking
 uv run python benchmark.py \
@@ -204,8 +200,8 @@ uv run pytest tests/ -v
 
 ```
 verification_output/
-├── synthetic_frames/           # 16-bit TIFFs (from render.py)
-│   └── frame_NNNNN.tif
+├── synthetic_frames/           # 8-bit PNG previews (from render.py)
+│   └── frame_NNNNN.png
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
 ├── accuracy_metrics.csv        # per-frame precision/recall/F1 (from benchmark.py)
