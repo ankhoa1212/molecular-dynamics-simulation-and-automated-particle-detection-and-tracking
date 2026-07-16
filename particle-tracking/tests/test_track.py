@@ -93,6 +93,42 @@ class TestCountTracksAtStubFilter:
         assert track.count_tracks_at_stub_filter(pd.DataFrame(), 5) == 0
 
 
+class TestDetectLodestarBeta:
+    """Regression coverage for the beta=1.0-alpha fix (was hardcoded to 0.5)."""
+
+    def _mock_lodestar_model(self):
+        import torch
+
+        model = MagicMock()
+        model.parameters.return_value = iter([torch.zeros(1, dtype=torch.float32)])
+        model.detect.return_value = [[]]  # batch-of-one, empty -> early-returns Detections.empty()
+        return model
+
+    def _frame(self):
+        return np.zeros((20, 20), dtype=np.uint16)
+
+    def test_beta_is_one_minus_alpha_for_0_3(self):
+        model = self._mock_lodestar_model()
+        track.detect_lodestar(model, self._frame(), threshold=0.1, device="cpu", alpha=0.3)
+
+        _, kwargs = model.detect.call_args
+        assert kwargs["beta"] == pytest.approx(0.7)
+
+    def test_beta_is_one_minus_alpha_for_default_0_5(self):
+        model = self._mock_lodestar_model()
+        track.detect_lodestar(model, self._frame(), threshold=0.1, device="cpu")
+
+        _, kwargs = model.detect.call_args
+        assert kwargs["beta"] == pytest.approx(0.5)
+
+    def test_beta_is_one_minus_alpha_for_0_9(self):
+        model = self._mock_lodestar_model()
+        track.detect_lodestar(model, self._frame(), threshold=0.1, device="cpu", alpha=0.9)
+
+        _, kwargs = model.detect.call_args
+        assert kwargs["beta"] == pytest.approx(0.1)
+
+
 class TestRunDetectorYoloDevice:
     def test_yolo_dispatch_passes_configured_device(self, monkeypatch):
         model = MagicMock()
