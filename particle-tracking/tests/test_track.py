@@ -1,3 +1,4 @@
+import json
 import sys
 from unittest.mock import MagicMock
 
@@ -352,3 +353,231 @@ class TestPreviewIntegration:
 
         trajectory_path = tmp_path / "out" / "dummy_input" / "trajectories.png"
         assert not trajectory_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Multi-input stem-collision dedup (main()'s used_stems logic)
+# ---------------------------------------------------------------------------
+
+
+def _write_multi_input_config(tmp_path, input_paths, stub_filter=90):
+    cfg = {
+        "input": input_paths,
+        "model": {
+            "type": "rf-detr",
+            "checkpoint": "dummy.pth",
+            "variant": "large",
+            "num_classes": 2,
+            "num_queries": 300,
+            "device": "cpu",
+        },
+        "tiling": {"enabled": False},
+        "detection": {"threshold": 0.3},
+        "tracking": {
+            "tracker": "trackpy",
+            "search_range": 25.0,
+            "memory": 5,
+            "stub_filter": stub_filter,
+        },
+        "output": {"dir": str(tmp_path / "out"), "save_video": False},
+    }
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    return cfg_path
+
+
+class TestMultiInputStemDedup:
+    def test_same_stem_different_parent_dirs_get_suffixed(self, tmp_path, run_main):
+        cfg_path = _write_multi_input_config(tmp_path, ["dirA/sample.tif", "dirB/sample.tif"])
+        run_main(
+            ["--config", str(cfg_path), "--preview", "5"],
+            _constant_detection_model(),
+            _fake_frames(5),
+        )
+
+        assert (tmp_path / "out" / "sample").is_dir()
+        assert (tmp_path / "out" / "sample_2").is_dir()
+
+    def test_identical_paths_still_get_suffixed(self, tmp_path, run_main):
+        # main()'s dedup keys only on filename stem, so even two literally-identical
+        # input paths get distinct output dirs rather than the second silently
+        # overwriting the first's output.
+        cfg_path = _write_multi_input_config(tmp_path, ["sample.tif", "sample.tif"])
+        run_main(
+            ["--config", str(cfg_path), "--preview", "5"],
+            _constant_detection_model(),
+            _fake_frames(5),
+        )
+
+        assert (tmp_path / "out" / "sample").is_dir()
+        assert (tmp_path / "out" / "sample_2").is_dir()
+
+    def test_three_way_collision_increments_suffix(self, tmp_path, run_main):
+        cfg_path = _write_multi_input_config(
+            tmp_path, ["a/sample.tif", "b/sample.tif", "c/sample.tif"]
+        )
+        run_main(
+            ["--config", str(cfg_path), "--preview", "5"],
+            _constant_detection_model(),
+            _fake_frames(5),
+        )
+
+        assert (tmp_path / "out" / "sample").is_dir()
+        assert (tmp_path / "out" / "sample_2").is_dir()
+        assert (tmp_path / "out" / "sample_3").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# New track.py helpers: run_density_probe, probe_threshold, bridge_track_gaps,
+# compute_and_save_metrics
+# ---------------------------------------------------------------------------
+
+
+class TestRunDensityProbe:
+    def test_returns_zero_for_no_frames(self):
+        assert track.run_density_probe([], MagicMock(), "rf-detr", 0.3) == (0.0, 0, 0)
+
+    def test_p95_count_and_frame_dims_from_sampled_detections(self):
+        model = MagicMock()
+        # 10 frames sampled; detector reports an increasing detection count per frame
+        # so p95 across [1..10] is close to 10.
+        model.predict.side_effect = [
+            sv.Detections(
+                xyxy=np.zeros((n, 4), dtype=np.float64),
+                confidence=np.ones(n, dtype=np.float64),
+            )
+            for n in range(1, 11)
+        ]
+        frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(10)]
+
+        p95, fw, fh = track.run_density_probe(frames, model, "rf-detr", threshold=0.3, n_samples=10)
+
+        assert (fh, fw) == (30, 40)  # frames[0].shape[:2] is (height, width) = (30, 40)
+        assert p95 >= 9.0
+
+
+class TestProbeThreshold:
+    def test_no_detections_returns_fallback(self):
+        model = MagicMock()
+        model.predict.return_value = sv.Detections.empty()
+        frames = [np.zeros((10, 10, 3), dtype=np.uint8) for _ in range(5)]
+
+        suggested, method = track.probe_threshold(frames, model, "rf-detr", n_samples=5)
+
+        assert suggested == 0.25
+        assert method == "fallback"
+
+    def test_bimodal_scores_use_valley_method(self):
+        model = MagicMock()
+        # Two well-separated confidence clusters (noise ~0.1, signal ~0.9) with a
+        # clear valley between them -> should pick the "valley" method.
+        low = np.full(40, 0.1)
+        high = np.full(40, 0.9)
+        scores = np.concatenate([low, high])
+        model.predict.return_value = sv.Detections(
+            xyxy=np.zeros((len(scores), 4), dtype=np.float64),
+            confidence=scores.astype(np.float64),
+        )
+        frames = [np.zeros((10, 10, 3), dtype=np.uint8) for _ in range(3)]
+
+        suggested, method = track.probe_threshold(frames, model, "rf-detr", n_samples=3)
+
+        assert method == "valley"
+        assert 0.1 < suggested < 0.9
+
+    def test_unimodal_scores_use_percentile_method(self):
+        model = MagicMock()
+        scores = np.linspace(0.4, 0.6, 50)
+        model.predict.return_value = sv.Detections(
+            xyxy=np.zeros((len(scores), 4), dtype=np.float64),
+            confidence=scores.astype(np.float64),
+        )
+        frames = [np.zeros((10, 10, 3), dtype=np.uint8) for _ in range(3)]
+
+        suggested, method = track.probe_threshold(frames, model, "rf-detr", n_samples=3)
+
+        assert method == "percentile"
+
+
+class TestBridgeTrackGaps:
+    def test_fragments_within_gap_and_radius_are_merged(self):
+        # track 0: frames 0-2 near (0,0); track 1: frames 4-6 near (0,0) --
+        # gap of 2 frames, 0 pixel distance -> should merge into one track_id.
+        df = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 4, 5, 6],
+                "x": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "track_id": [0, 0, 0, 1, 1, 1],
+            }
+        )
+        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
+
+        assert merged["track_id"].nunique() == 1
+
+    def test_fragments_beyond_max_gap_remain_unmerged(self):
+        df = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 20, 21, 22],
+                "x": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "track_id": [0, 0, 0, 1, 1, 1],
+            }
+        )
+        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
+
+        assert merged["track_id"].nunique() == 2
+
+    def test_fragments_beyond_search_radius_remain_unmerged(self):
+        df = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 4, 5, 6],
+                "x": [0.0, 0.0, 0.0, 500.0, 500.0, 500.0],
+                "y": [0.0, 0.0, 0.0, 500.0, 500.0, 500.0],
+                "track_id": [0, 0, 0, 1, 1, 1],
+            }
+        )
+        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
+
+        assert merged["track_id"].nunique() == 2
+
+    def test_empty_df_is_a_no_op(self):
+        df = pd.DataFrame(columns=["frame", "x", "y", "track_id"])
+        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
+
+        assert merged.empty
+
+
+class TestComputeAndSaveMetrics:
+    def test_writes_metrics_json_with_expected_keys(self, tmp_path):
+        df = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 0, 1],
+                "track_id": [0, 0, 0, 1, 1],
+                "conf": [0.9, 0.9, 0.9, 0.8, 0.8],
+            }
+        )
+        track.compute_and_save_metrics(
+            df, det_counts=[2, 2, 1], run_meta={"model_type": "rf-detr"}, output_dir=tmp_path
+        )
+
+        metrics_path = tmp_path / "metrics.json"
+        assert metrics_path.exists()
+        saved = json.loads(metrics_path.read_text())
+
+        assert saved["n_tracks"] == 2
+        assert saved["track_length_max"] == 3
+        assert saved["track_length_min"] == 2
+        assert saved["mean_confidence"] == pytest.approx(0.86, abs=0.01)
+        assert saved["n_frames"] == 3
+        assert saved["frames_with_zero_detections"] == 0
+        assert saved["model_type"] == "rf-detr"  # run_meta merged in
+
+    def test_empty_df_writes_zeroed_metrics(self, tmp_path):
+        track.compute_and_save_metrics(
+            pd.DataFrame(), det_counts=[], run_meta={}, output_dir=tmp_path
+        )
+
+        saved = json.loads((tmp_path / "metrics.json").read_text())
+        assert saved["n_tracks"] == 0
+        assert saved["mean_confidence"] is None
