@@ -4,21 +4,25 @@ import pytest
 import yaml
 
 from tracker_configs import (
-    _read_lodestar_threshold,
     parse_crop_dims,
+    read_lodestar_cutoff,
     write_lodestar_config,
     write_rfdetr_config,
 )
 
 
-@pytest.fixture(autouse=True)
-def _run_configs_dir(tmp_path):
-    # Mirrors run_tracking.main(), which creates `run_configs/` under script_dir
-    # before calling the config writers; the writers themselves don't create it.
-    (tmp_path / "run_configs").mkdir()
-
-
 class TestWriteRfdetrConfig:
+    def test_creates_run_configs_dir_when_absent(self, tmp_path):
+        # Regression: the writer previously assumed script_dir/run_configs/ already
+        # existed (only the caller-supplied output_dir was created), so any caller
+        # that didn't pre-create it -- e.g. model_comparison.py's --input mode --
+        # would hit FileNotFoundError on cfg_path.write_text() for every model.
+        assert not (tmp_path / "run_configs").exists()
+        write_rfdetr_config(
+            "sample", "/data/input.tif", str(tmp_path / "out"), None, None, None, tmp_path
+        )
+        assert (tmp_path / "run_configs").is_dir()
+
     def test_output_dir_rooted_at_given_path(self, tmp_path):
         output_dir = str(tmp_path / "custom_root" / "rf-detr" / "sample")
         cfg_path = write_rfdetr_config(
@@ -86,6 +90,13 @@ class TestWriteRfdetrConfig:
 
 
 class TestWriteLodestarConfig:
+    def test_creates_run_configs_dir_when_absent(self, tmp_path):
+        assert not (tmp_path / "run_configs").exists()
+        write_lodestar_config(
+            "sample", "/data/input.tif", str(tmp_path / "out"), None, None, None, tmp_path
+        )
+        assert (tmp_path / "run_configs").is_dir()
+
     def test_output_dir_rooted_at_given_path(self, tmp_path):
         output_dir = str(tmp_path / "custom_root" / "lodestar" / "sample")
         cfg_path = write_lodestar_config(
@@ -208,15 +219,48 @@ class TestInjectionSafety:
         assert parsed["output"]["dir"] == evil_output_dir
 
 
-class TestReadLodestarThreshold:
+class TestReadLodestarCutoff:
+    """read_lodestar_cutoff is the single source of truth for this read — both
+    write_lodestar_config (via its own 0.1 fallback) and track.py's default-threshold
+    lookup (via its own None-means-no-override handling) import this rather than
+    each re-implementing the read."""
+
+    def _fake_script_dir(self, tmp_path):
+        script_dir = tmp_path / "particle-tracking"
+        script_dir.mkdir()
+        return script_dir
+
+    def _write_autolabel_cfg(self, script_dir, content):
+        cfg_dir = (script_dir / ".." / "data-setup" / "configs").resolve()
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "autolabel_2um_lodestar_model_15.json").write_text(content)
+
     def test_reads_cutoff_from_real_autolabel_config(self):
         # particle-tracking/ is the real script_dir; the repo's autolabel config exists
         # at data-setup/configs/autolabel_2um_lodestar_model_15.json with cutoff: 0.1.
         script_dir = Path(__file__).resolve().parent.parent
-        assert _read_lodestar_threshold(script_dir) == 0.1
+        assert read_lodestar_cutoff(script_dir) == 0.1
 
-    def test_falls_back_to_default_on_missing_file(self, tmp_path):
-        assert _read_lodestar_threshold(tmp_path) == 0.1
+    def test_missing_config_returns_none(self, tmp_path):
+        assert read_lodestar_cutoff(self._fake_script_dir(tmp_path)) is None
+
+    def test_malformed_json_returns_none(self, tmp_path):
+        script_dir = self._fake_script_dir(tmp_path)
+        self._write_autolabel_cfg(script_dir, "{not valid json")
+
+        assert read_lodestar_cutoff(script_dir) is None
+
+    def test_non_numeric_cutoff_returns_none_not_raises(self, tmp_path):
+        script_dir = self._fake_script_dir(tmp_path)
+        self._write_autolabel_cfg(script_dir, '{"cutoff": "n/a"}')
+
+        assert read_lodestar_cutoff(script_dir) is None
+
+    def test_valid_cutoff_returned(self, tmp_path):
+        script_dir = self._fake_script_dir(tmp_path)
+        self._write_autolabel_cfg(script_dir, '{"cutoff": 0.42}')
+
+        assert read_lodestar_cutoff(script_dir) == 0.42
 
 
 class TestRunTrackingIntegration:

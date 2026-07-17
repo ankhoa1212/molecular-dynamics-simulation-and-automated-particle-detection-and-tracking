@@ -144,44 +144,9 @@ class TestRunDetectorYoloDevice:
         model.predict.assert_called_once_with(frame, conf=0.3, device="cuda:1", verbose=False)
 
 
-class TestLodestarPriorThreshold:
-    """lodestar_prior_threshold(script_dir) looks under script_dir/../data-setup/configs/.
-    Each test uses its own fake script_dir nested inside tmp_path so the sibling
-    data-setup/ directory stays scoped to that test's tmp_path, not shared across tests."""
-
-    def _fake_script_dir(self, tmp_path):
-        script_dir = tmp_path / "particle-tracking"
-        script_dir.mkdir()
-        return script_dir
-
-    def _write_autolabel_cfg(self, script_dir, content):
-        cfg_dir = (script_dir / ".." / "data-setup" / "configs").resolve()
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "autolabel_2um_lodestar_model_15.json").write_text(content)
-
-    def test_missing_config_returns_none(self, tmp_path):
-        script_dir = self._fake_script_dir(tmp_path)
-        assert track.lodestar_prior_threshold(script_dir) is None
-
-    def test_malformed_json_returns_none(self, tmp_path):
-        script_dir = self._fake_script_dir(tmp_path)
-        self._write_autolabel_cfg(script_dir, "{not valid json")
-
-        assert track.lodestar_prior_threshold(script_dir) is None
-
-    def test_non_numeric_cutoff_returns_none_not_raises(self, tmp_path):
-        # A non-numeric "cutoff" raises ValueError from float() -- must still be
-        # caught gracefully now that the trailing catch-all Exception is gone.
-        script_dir = self._fake_script_dir(tmp_path)
-        self._write_autolabel_cfg(script_dir, '{"cutoff": "n/a"}')
-
-        assert track.lodestar_prior_threshold(script_dir) is None
-
-    def test_valid_cutoff_returned(self, tmp_path):
-        script_dir = self._fake_script_dir(tmp_path)
-        self._write_autolabel_cfg(script_dir, '{"cutoff": 0.42}')
-
-        assert track.lodestar_prior_threshold(script_dir) == 0.42
+# Note: the LodeSTAR autolabel-cutoff reader itself now lives in tracker_configs.py
+# (read_lodestar_cutoff) as the single source of truth for both write_lodestar_config
+# and track.py's main() -- see tests/test_tracker_configs.py::TestReadLodestarCutoff.
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import model_comparison
 from model_comparison import (
     ModelSpec,
     _build_rfdetr_script,
@@ -516,6 +517,50 @@ class TestRunFullComparison:
 
         # lodestar still ran to completion despite rf-detr's timeout.
         assert by_type["lodestar"]["exit_code"] == 0
+
+    def test_timeout_kill_survives_process_already_exited(self, tmp_path):
+        """TOCTOU: the process can exit on its own between TimeoutExpired firing and
+        the kill attempt running, in which case os.getpgid/os.killpg raise
+        ProcessLookupError -- this must not propagate and crash the whole comparison."""
+        input_path = tmp_path / "video.tif"
+        input_path.write_bytes(b"fake")
+
+        args, parser = _parse_full_run_args(tmp_path, input_path, ["rf-detr:ckpt.pth"])
+
+        timed_out_proc = _mock_popen(None)
+        timed_out_proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd="track.py", timeout=args.model_timeout
+        )
+
+        with (
+            patch("tracker_configs.write_rfdetr_config", side_effect=_fake_rfdetr_writer),
+            patch("subprocess.Popen", return_value=timed_out_proc),
+            patch("os.getpgid", side_effect=ProcessLookupError),
+            patch("os.killpg") as mock_killpg,
+        ):
+            manifest_path, any_model_failed = run_full_comparison(args, parser)
+
+        assert any_model_failed is True
+        mock_killpg.assert_not_called()  # never reached -- getpgid raised first
+        manifest = json.loads(manifest_path.read_text())
+        assert "timed out" in manifest["models"][0]["error"]
+
+    def test_popen_invoked_with_correct_argv_and_process_group(self, tmp_path):
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text("input: x\n")
+
+        with patch("subprocess.Popen") as mock_popen_cls:
+            mock_popen_cls.return_value = _mock_popen(0)
+            model_comparison.run_model_tracking(config_path, timeout=30)
+
+        mock_popen_cls.assert_called_once_with(
+            ["uv", "run", "python", "-u", "track.py", "--config", str(config_path)],
+            cwd=model_comparison.SCRIPT_DIR,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        mock_popen_cls.return_value.communicate.assert_called_once_with(timeout=30)
 
     def test_duplicate_model_type_gets_suffixed_output_dir(self, tmp_path):
         """Two ModelSpecs sharing model_type='rf-detr' (different checkpoints) must not

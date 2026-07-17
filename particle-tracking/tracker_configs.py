@@ -63,6 +63,7 @@ def write_rfdetr_config(
     script_dir: Path,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    (script_dir / "run_configs").mkdir(parents=True, exist_ok=True)
 
     tracking = {
         "tracker": "trackpy",
@@ -101,7 +102,13 @@ def write_rfdetr_config(
     return cfg_path
 
 
-def _read_lodestar_threshold(script_dir: Path) -> float:
+def read_lodestar_cutoff(script_dir: Path) -> float | None:
+    """Read the LodeSTAR autolabel cutoff, or None if unavailable/malformed.
+
+    Single source of truth for this read — track.py's own default-threshold
+    lookup imports this rather than re-implementing it, so the two can't
+    silently diverge on what counts as a valid cutoff.
+    """
     import json as _json
 
     cfg_path = script_dir / ".." / "data-setup" / "configs" / "autolabel_2um_lodestar_model_15.json"
@@ -110,9 +117,9 @@ def _read_lodestar_threshold(script_dir: Path) -> float:
             cutoff = _json.load(f).get("cutoff")
         if cutoff is not None:
             return float(cutoff)
-    except Exception:
+    except (FileNotFoundError, ValueError):
         pass
-    return 0.1
+    return None
 
 
 def write_lodestar_config(
@@ -125,8 +132,11 @@ def write_lodestar_config(
     script_dir: Path,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    (script_dir / "run_configs").mkdir(parents=True, exist_ok=True)
 
-    threshold = _read_lodestar_threshold(script_dir)
+    threshold = read_lodestar_cutoff(script_dir)
+    if threshold is None:
+        threshold = 0.1
 
     tracking = {
         "tracker": "trackpy",

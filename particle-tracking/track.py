@@ -68,27 +68,6 @@ def _normalize_device(device):
     return s
 
 
-def lodestar_prior_threshold(script_dir):
-    """Read the LodeSTAR autolabel cutoff to use as a default detection threshold.
-
-    Returns None (falls back to the caller's own default) when the autolabel config
-    is missing, malformed, or has no 'cutoff' key — never raises.
-    """
-    import json as _json
-
-    autolabel_cfg = (
-        script_dir / ".." / "data-setup" / "configs" / "autolabel_2um_lodestar_model_15.json"
-    )
-    try:
-        with open(autolabel_cfg) as f:
-            prior = _json.load(f)
-        if "cutoff" in prior:
-            return float(prior["cutoff"])
-    except (FileNotFoundError, KeyError, ValueError):
-        pass
-    return None
-
-
 def get_rfdetr_model(variant, checkpoint, device, num_classes=None, num_queries=None):
     """Load RF-DETR from the venv in rf-detr/."""
     rf_detr_venv = SCRIPT_DIR / ".." / "rf-detr" / ".venv"
@@ -983,7 +962,9 @@ def main():
     threshold = args.threshold or cfg_get(cfg, "detection", "threshold", default=0.25)
     # Use the LodeSTAR autolabel cutoff as the default threshold when none was explicitly passed
     if model_type == "lodestar" and not threshold_from_cli and not threshold_from_cfg:
-        prior_threshold = lodestar_prior_threshold(SCRIPT_DIR)
+        from tracker_configs import read_lodestar_cutoff
+
+        prior_threshold = read_lodestar_cutoff(SCRIPT_DIR)
         if prior_threshold is not None:
             threshold = prior_threshold
             print(f"Using LodeSTAR prior threshold: {threshold} (from autolabel config)")

@@ -222,12 +222,12 @@ def run_detection(model, model_type: str, frame, threshold: float, device: str):
 # ────────────────────────────────────────────────────────────
 #
 # Each model runs as its own `uv run python track.py --config <yaml>`
-# subprocess — never in-process. track.py's RF-DETR loader evicts
-# torch/torchvision from sys.modules to bridge a CUDA version mismatch
-# (see track.py:71-122); that's tolerable once per single-frame inference
-# call (the --image mode above) but not safe across sequential multi-hour
-# tracking runs for other models sharing this interpreter. Do not
-# "simplify" this into an in-process loop.
+# subprocess — never in-process. track.py's get_rfdetr_model evicts
+# torch/torchvision from sys.modules to bridge a CUDA version mismatch;
+# that's tolerable once per single-frame inference call (the --image mode
+# above) but not safe across sequential multi-hour tracking runs for other
+# models sharing this interpreter. Do not "simplify" this into an
+# in-process loop.
 
 # Maps model_type -> tracker_configs.py writer function name. No writer
 # exists yet for "yolo" (a pre-existing gap in tracker_configs.py, see U6 of
@@ -301,9 +301,10 @@ def run_model_tracking(
 ) -> tuple[int | None, float, str]:
     """Run one model's full tracking pipeline as an isolated subprocess.
 
-    Matches run_tracking.py's run_batch subprocess shape
-    (particle-tracking/run_tracking.py:281-320), one model at a time
-    (sequential execution — see plan KTD "Sequential execution").
+    Matches run_tracking.py's run_batch subprocess shape, one model at a time
+    (sequential execution, not concurrent — see run_tracking.py's own
+    detect_parallelism, which only budgets GPU memory for one model type
+    at a time).
 
     Launched in its own process group (start_new_session=True) so a timeout can kill the
     whole group, not just the immediate `uv` wrapper — `uv run` spawns track.py as a child
@@ -331,8 +332,17 @@ def run_model_tracking(
         duration = time.monotonic() - start
         return proc.returncode, duration, stderr or ""
     except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        proc.wait()
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # process exited on its own between the timeout and this kill attempt
+        try:
+            # A second communicate() (not a bare wait()) drains and closes the stderr
+            # pipe rather than leaking it; bounded so a driver-level D-state process
+            # that SIGKILL can't immediately reap doesn't hang this call forever.
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
         duration = time.monotonic() - start
         return None, duration, f"timed out after {timeout}s"
 
@@ -405,7 +415,13 @@ def run_full_comparison(
             continue
 
         entry["config"] = str(config_path)
-        entry["tuning"] = _read_tuning(config_path)
+        try:
+            entry["tuning"] = _read_tuning(config_path)
+        except Exception as exc:
+            entry["error"] = str(exc)
+            print(f"[{model_type}] reading back generated config failed: {exc}")
+            model_entries.append(entry)
+            continue
 
         print(f"[{model_type}] running: uv run python -u track.py --config {config_path}")
         try:
@@ -454,7 +470,7 @@ def run_full_comparison(
         json.dump(manifest, f, indent=2)
 
     print(f"\nComparison manifest written to: {manifest_path}")
-    any_model_failed = any(e.get("error") for e in model_entries)
+    any_model_failed = any("error" in e for e in model_entries)
     return manifest_path, any_model_failed
 
 
