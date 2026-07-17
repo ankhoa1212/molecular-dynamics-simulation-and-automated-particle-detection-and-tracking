@@ -144,7 +144,7 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy):
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
-        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'background_composite'
+        strategy: 'procedural' | 'deeptrack' | 'randomized'
 
     Returns:
         uint16 numpy array of shape (H, W)
@@ -167,16 +167,6 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy):
         except ImportError:
             raise ImportError(
                 "Randomized rendering requires render_randomized.py. "
-                "Ensure the file exists in the verification/ directory."
-            )
-    elif strategy == "background_composite":
-        try:
-            from render_background_composite import render_frame_background_composite
-
-            return render_frame_background_composite(positions_lj, box, cfg, rng)
-        except ImportError:
-            raise ImportError(
-                "Background composite rendering requires render_background_composite.py. "
                 "Ensure the file exists in the verification/ directory."
             )
     else:
@@ -206,26 +196,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(args.seed)
-
-    # Pre-load background once for background_composite strategy (avoids per-frame I/O).
-    if strategy == "background_composite":
-        from render_background_composite import extract_background
-
-        bc_cfg = cfg.get("background_composite", {})
-        if not bc_cfg.get("video_path"):
-            raise ValueError(
-                "render_strategy: background_composite requires "
-                "synthetic.background_composite.video_path in config.yaml"
-            )
-        print(f"Loading background from: {bc_cfg['video_path']}")
-        cfg["_background_frame"] = extract_background(
-            bc_cfg["video_path"],
-            n_frames=bc_cfg.get("n_frames_for_median", 100),
-            percentile=bc_cfg.get("percentile", 10),
-            min_filter_radius=bc_cfg.get("min_filter_radius", 1),
-            opening_radius=bc_cfg.get("opening_radius", 50),
-        )
-        print("Background loaded.")
 
     ground_truth = []
     # Collect per-frame data for tracks CSV: list of (atom_ids, px_positions)

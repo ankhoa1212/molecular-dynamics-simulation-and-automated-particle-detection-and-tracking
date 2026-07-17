@@ -20,7 +20,7 @@ model:
 # Detection:
 detection:
   # LodeSTAR cutoff uses mode="ratio": fraction of the per-frame max score.
-  threshold: 0.1   # from autolabel_2um_lodestar_model_15.json (cutoff)
+  threshold: 0.01  # from autolabel_2um_lodestar_model_15.json (cutoff)
   alpha: 0.9        # weight score exponent (autolabel default)
   nms_distance: 30  # suppress detections within 30px of a higher-scoring one
   fp16: true        # run model in float16
@@ -55,7 +55,11 @@ tracking:
 output:
   dir: /mnt/d/Particle Tracking Data/2um/lodestar/
 
-  save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
+  save_video: true  # Save an annotated MP4 with bounding boxes drawn
+
+  # Draw the "#<track_id>" label next to each bounding box in the output video.
+  # Off by default since the labels tend to clutter dense scenes.
+  video_labels: false
 
   fps: 30
 

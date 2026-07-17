@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Benchmark RF-DETR detection accuracy on synthetic frames from render.py.
+"""Benchmark detection accuracy on synthetic frames from render.py.
 
-Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR
-(with optional tiling), matches detections to known particle positions,
-and reports per-frame precision/recall/F1 and mean position error.
+Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR (with
+optional tiling) or LodeSTAR (full-frame, no tiling) via --model-type,
+matches detections to known particle positions, and reports per-frame
+precision/recall/F1 and mean position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
 --ground-truth-tracks is supplied (CSV from render.py U1).
@@ -17,25 +18,85 @@ Usage:
     uv run python benchmark.py \\
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
-        --ground-truth-tracks verification_output/ground_truth_tracks.csv
+        --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
+        [--model-type rf-detr|lodestar]
 """
+
 import os
 import re
 import sys
 from pathlib import Path
 
-# Re-exec with rf-detr's Python if the current interpreter is a different minor version.
-# RF-DETR's C extensions (numpy, torch) are compiled for the venv's Python and won't
-# load under a different minor version (e.g. 3.13 host vs 3.11 venv).
-_SCRIPT_DIR = Path(__file__).parent
-_RF_DETR_PYTHON = (_SCRIPT_DIR / ".." / "rf-detr" / ".venv" / "bin" / "python").absolute()
+import yaml
 
-if _RF_DETR_PYTHON.exists():
-    _site_pkgs = list((_SCRIPT_DIR / ".." / "rf-detr" / ".venv").glob("lib/python*/site-packages"))
-    if _site_pkgs:
-        _m = re.search(r"python(\d+\.\d+)", str(_site_pkgs[0]))
-        if _m and _m.group(1) != f"{sys.version_info.major}.{sys.version_info.minor}":
-            os.execv(str(_RF_DETR_PYTHON), [str(_RF_DETR_PYTHON)] + sys.argv)
+SCRIPT_DIR = Path(__file__).parent
+
+# Venv holding each model type's compiled dependencies (torch, torchvision, and
+# either `rfdetr` or `deeplay`/`supervision`). Both run a different Python minor
+# version than this script's own venv, so C extensions compiled there won't
+# load under a mismatched interpreter without a matching-version re-exec.
+# The keys here are the single source of truth for valid --model-type values —
+# argparse's `choices` and this dict's default fallback both read from it.
+_MODEL_VENV_DIRS = {
+    "rf-detr": SCRIPT_DIR / ".." / "rf-detr" / ".venv",
+    "lodestar": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
+}
+_DEFAULT_MODEL_TYPE = "rf-detr"
+
+
+def _resolve_model_type(argv):
+    """Pre-parse --model-type (or config.yaml's benchmark.model_type) ahead of
+    the real argparse.ArgumentParser, so the correct venv can be selected
+    before any heavy import happens. Must stay consistent with main()'s
+    --model-type default/choices, both sourced from _MODEL_VENV_DIRS /
+    _DEFAULT_MODEL_TYPE."""
+    for i, arg in enumerate(argv):
+        if arg == "--model-type" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--model-type="):
+            return arg.split("=", 1)[1]
+
+    config_path = "config.yaml"
+    for i, arg in enumerate(argv):
+        if arg == "--config" and i + 1 < len(argv):
+            config_path = argv[i + 1]
+        elif arg.startswith("--config="):
+            config_path = arg.split("=", 1)[1]
+
+    # Resolve relative to cwd, matching _load_config()'s resolution in main() —
+    # both must agree on which file they're reading, or the pre-parse can pick
+    # the wrong venv while main() loads a config naming a different model_type.
+    config_path = Path(config_path)
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        model_type = (cfg.get("benchmark") or {}).get("model_type")
+        if model_type:
+            return model_type
+
+    return _DEFAULT_MODEL_TYPE
+
+
+def _reexec_for_model_venv(model_type):
+    """Re-exec with the resolved model's venv Python if the current interpreter
+    is a different minor version. Only called when running as __main__ —
+    importing this module (e.g. from tests) must never re-exec the process,
+    since re-exec blindly reuses sys.argv, which is only a valid `benchmark.py`
+    invocation when this script is actually the one being run."""
+    venv_dir = _MODEL_VENV_DIRS.get(model_type, _MODEL_VENV_DIRS["rf-detr"])
+    venv_python = (venv_dir / "bin" / "python").absolute()
+    if not venv_python.exists():
+        return
+    site_pkgs = list(venv_dir.glob("lib/python*/site-packages"))
+    if not site_pkgs:
+        return
+    m = re.search(r"python(\d+\.\d+)", str(site_pkgs[0]))
+    if m and m.group(1) != f"{sys.version_info.major}.{sys.version_info.minor}":
+        os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+
+
+if __name__ == "__main__":
+    _reexec_for_model_venv(_resolve_model_type(sys.argv[1:]))
 
 import argparse
 import csv
@@ -43,15 +104,12 @@ import json
 
 import matplotlib.image as mplimg
 import numpy as np
-import yaml
 from scipy.spatial import cKDTree
 
 # ---------------------------------------------------------------------------
 # RF-DETR loading and tiling — inlined from particle-tracking/track.py to
 # avoid importing the full script (which may execute module-level setup code).
 # ---------------------------------------------------------------------------
-
-SCRIPT_DIR = Path(__file__).parent
 
 RFDETR_VARIANTS = {
     "nano": "RFDETRNano",
@@ -103,6 +161,121 @@ def get_rfdetr_model(variant, checkpoint, device, num_queries=None):
     except ImportError:
         print("Error: 'rfdetr' not found. Run 'uv sync' inside rf-detr/.")
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# LodeSTAR loading and detection — inlined from particle-tracking/track.py to
+# match the existing RF-DETR "inlined helper" style in this file.
+# ---------------------------------------------------------------------------
+
+
+def get_lodestar_model(checkpoint, device, fp16=False):
+    """Load LodeSTAR from particle-tracking/.venv via site-packages injection."""
+    lodestar_venv = _MODEL_VENV_DIRS["lodestar"]
+    site_packages = list(lodestar_venv.glob("lib/python*/site-packages"))
+    if site_packages and str(site_packages[0]) not in sys.path:
+        sys.path.insert(0, str(site_packages[0]))
+        # Only evict when we actually injected a different venv's site-packages —
+        # otherwise this process's own native imports (e.g. after the top-level
+        # re-exec already landed on particle-tracking/.venv's interpreter) are
+        # already correct and evicting them would force a pointless re-import.
+        for mod in list(sys.modules):
+            if mod in ("torch", "torchvision", "supervision", "deeplay") or mod.startswith(
+                ("torch.", "torchvision.", "supervision.", "deeplay.")
+            ):
+                del sys.modules[mod]
+    try:
+        import deeplay as dl
+        import torch
+        import json as _json
+
+        config_path = Path(checkpoint).with_suffix(".json")
+        if config_path.exists():
+            with open(config_path) as f:
+                config = _json.load(f)
+            n_transforms = config.get("n_transforms", 8)
+            num_outputs = config.get("num_outputs", 3)
+        else:
+            n_transforms, num_outputs = 8, 3
+
+        model = dl.LodeSTAR(n_transforms=n_transforms, num_outputs=num_outputs).build()
+        model.load_state_dict(torch.load(str(checkpoint), map_location=device, weights_only=False))
+        model.to(device)
+        if fp16:
+            model.half()
+        model.eval()
+        return model
+    except ImportError:
+        print("Error: 'deeplay' not found. Run 'uv sync' inside particle-tracking/.")
+        sys.exit(1)
+
+
+def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=None, box_size=40):
+    """Run LodeSTAR on a full frame — no tiling (fully-convolutional, no
+    per-frame detection cap unlike RF-DETR's num_queries)."""
+    import torch
+    import supervision as sv
+
+    frame_f = frame.astype(np.float32)
+    if frame.ndim == 3:
+        frame_f = np.mean(frame_f, axis=2)
+
+    f_min, f_ptp = frame_f.min(), np.ptp(frame_f)
+    frame_norm = (frame_f - f_min) / f_ptp if f_ptp != 0 else frame_f - f_min
+
+    tensor = torch.from_numpy(frame_norm).unsqueeze(0).unsqueeze(0).to(device)
+    tensor = tensor.to(next(model.parameters()).dtype)
+
+    with torch.inference_mode():
+        detections_raw = model.detect(
+            tensor, alpha=alpha, beta=1.0 - alpha, cutoff=threshold, mode="ratio"
+        )
+
+    if isinstance(detections_raw, list):
+        detections_raw = detections_raw[0]
+
+    if detections_raw is None or len(detections_raw) == 0:
+        return sv.Detections.empty()
+
+    # LodeSTAR det[2] is the model's radius/sigma output, not a confidence score.
+    # The raw value is in model-space (typically < 1.0); scale to pixels when that's the case.
+    frame_scale = max(frame.shape[:2])
+    xyxy, confidences = [], []
+    for det in detections_raw:
+        y, x = det[0], det[1]
+        if len(det) >= 3:
+            sigma = abs(det[2])
+            r = sigma * frame_scale if sigma < 1.0 else sigma
+        else:
+            r = box_size / 2
+        xyxy.append([x - r, y - r, x + r, y + r])
+        confidences.append(1.0)  # all detections passed the same cutoff; ordering is secondary
+
+    result = sv.Detections(
+        xyxy=np.array(xyxy, dtype=np.float32),
+        confidence=np.array(confidences, dtype=np.float32),
+        class_id=np.zeros(len(xyxy), dtype=int),
+    )
+
+    if nms_distance and nms_distance > 0 and len(result) > 1:
+        centers = (result.xyxy[:, :2] + result.xyxy[:, 2:]) / 2
+        order = np.argsort(-result.confidence)
+        processed = np.zeros(len(result), dtype=bool)
+        keep = []
+        for idx in order:
+            if processed[idx]:
+                continue
+            keep.append(idx)
+            dists = np.sqrt(((centers - centers[idx]) ** 2).sum(axis=1))
+            processed[dists < nms_distance] = True
+        keep = np.array(keep)
+        result = sv.Detections(
+            xyxy=result.xyxy[keep],
+            confidence=result.confidence[keep],
+            class_id=result.class_id[keep],
+        )
+
+    return result
 
 
 def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
@@ -339,7 +512,7 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark RF-DETR on synthetic frames")
+    parser = argparse.ArgumentParser(description="Benchmark RF-DETR/LodeSTAR on synthetic frames")
     parser.add_argument(
         "--frames", required=True, help="Directory of synthetic PNG frames (from render.py)"
     )
@@ -352,21 +525,58 @@ def main():
         help="Path to ground_truth_tracks.csv (from render.py) — enables MOTA/IDF1 tracking metrics",
     )
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--device", default="0", help="CUDA device index or 'cpu'")
+    parser.add_argument(
+        "--model-type",
+        choices=list(_MODEL_VENV_DIRS),
+        default=None,
+        help=f"Detector to benchmark (default: {_DEFAULT_MODEL_TYPE}, or "
+        "benchmark.model_type from --config)",
+    )
+    parser.add_argument("--device", default=None, help="CUDA device index or 'cpu' (default: '0')")
     args = parser.parse_args()
 
     cfg = _load_config(args.config).get("benchmark", {})
-    checkpoint = Path(
-        _cfg_get(cfg, "checkpoint", default="../rf-detr/checkpoints/checkpoint_best_ema.pth")
-    )
-    variant = _cfg_get(cfg, "variant", default="large")
-    num_queries = _cfg_get(cfg, "num_queries", default=300)
-    threshold = _cfg_get(cfg, "threshold", default=0.3)
+    # Sourced from the same _MODEL_VENV_DIRS/_DEFAULT_MODEL_TYPE as the
+    # module-level _resolve_model_type pre-parse, so the two can't drift.
+    model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
     match_distance = _cfg_get(cfg, "match_distance", default=10)
-    tiling_enabled = _cfg_get(cfg, "tiling", "enabled", default=True)
-    tile_size = _cfg_get(cfg, "tiling", "tile_size", default=512)
-    overlap = _cfg_get(cfg, "tiling", "overlap", default=50)
-    nms_threshold = _cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
+
+    if model_type == "lodestar":
+        checkpoint = Path(
+            _cfg_get(
+                cfg,
+                "lodestar",
+                "checkpoint",
+                default="../data-setup/models/lodestar_model_15/model.pt",
+            )
+        )
+        threshold = _cfg_get(cfg, "lodestar", "threshold", default=0.1)
+        alpha = _cfg_get(cfg, "lodestar", "alpha", default=0.5)
+        nms_distance = _cfg_get(cfg, "lodestar", "nms_distance", default=None)
+        box_size = _cfg_get(cfg, "lodestar", "box_size", default=40)
+        fp16 = _cfg_get(cfg, "lodestar", "fp16", default=False)
+        device_raw = args.device or _cfg_get(cfg, "lodestar", "device", default=None)
+        # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
+        # read them (print, get_rfdetr_model, detect_with_tiling) are all gated
+        # behind `model_type != "lodestar"`, so no placeholder values are needed here.
+    else:
+        checkpoint = Path(
+            _cfg_get(cfg, "checkpoint", default="../rf-detr/checkpoints/checkpoint_best_ema.pth")
+        )
+        variant = _cfg_get(cfg, "variant", default="large")
+        num_queries = _cfg_get(cfg, "num_queries", default=300)
+        threshold = _cfg_get(cfg, "threshold", default=0.3)
+        tiling_enabled = _cfg_get(cfg, "tiling", "enabled", default=True)
+        tile_size = _cfg_get(cfg, "tiling", "tile_size", default=512)
+        overlap = _cfg_get(cfg, "tiling", "overlap", default=50)
+        nms_threshold = _cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
+        device_raw = args.device
+
+    # Apply the "0" default before normalizing (not after) — _normalize_device(None)
+    # returns None, so normalizing-then-defaulting would leave the raw, un-normalized
+    # "0" in place. get_rfdetr_model() re-normalizes internally as a second safety net,
+    # but get_lodestar_model()/detect_lodestar() trust this value as-is.
+    device = _normalize_device(device_raw or "0")
 
     if not checkpoint.exists():
         print(f"Error: checkpoint not found at {checkpoint}")
@@ -382,11 +592,18 @@ def main():
         print(f"Error: no frame_*.png files in {frames_dir}")
         sys.exit(1)
 
+    print(f"Model type: {model_type}")
     print(f"Checkpoint: {checkpoint}")
     print(f"Frames:     {len(tiff_files)}")
-    print(f"Tiling:     {'enabled' if tiling_enabled else 'disabled'} (tile_size={tile_size})")
+    if model_type == "lodestar":
+        print("Tiling:     n/a (LodeSTAR runs full-frame, no query cap to tile around)")
+    else:
+        print(f"Tiling:     {'enabled' if tiling_enabled else 'disabled'} (tile_size={tile_size})")
 
-    model = get_rfdetr_model(variant, checkpoint, args.device, num_queries=num_queries)
+    if model_type == "lodestar":
+        model = get_lodestar_model(checkpoint, device, fp16=fp16)
+    else:
+        model = get_rfdetr_model(variant, checkpoint, device, num_queries=num_queries)
 
     rows = []
     all_tp = all_fp = all_fn = 0
@@ -404,7 +621,17 @@ def main():
 
         img_rgb = _load_frame_rgb(png_path)
 
-        if tiling_enabled:
+        if model_type == "lodestar":
+            dets = detect_lodestar(
+                model,
+                img_rgb,
+                threshold,
+                device,
+                alpha=alpha,
+                nms_distance=nms_distance,
+                box_size=box_size,
+            )
+        elif tiling_enabled:
             dets = detect_with_tiling(model, img_rgb, threshold, tile_size, overlap, nms_threshold)
         else:
             dets = model.predict(img_rgb, threshold=threshold)

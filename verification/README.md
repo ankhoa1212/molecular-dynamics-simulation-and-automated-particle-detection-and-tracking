@@ -3,7 +3,7 @@
 End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering.
 
 1. **`render.py`** — converts a LAMMPS trajectory into synthetic microscopy TIFFs with known particle positions; writes `ground_truth.json` (per-frame positions) and `ground_truth_tracks.csv` (per-particle track ground truth for MOTA/IDF1).
-2. **`benchmark.py`** — runs RF-DETR on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
+2. **`benchmark.py`** — runs RF-DETR or LodeSTAR (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
@@ -15,10 +15,11 @@ cd verification/
 uv sync
 ```
 
-`benchmark.py` also needs the RF-DETR venv:
+`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default) and LodeSTAR each pull their compiled dependencies (torch, and either `rfdetr` or `deeplay`/`supervision`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv:
 
 ```bash
-cd ../rf-detr && uv sync
+cd ../rf-detr && uv sync             # --model-type rf-detr (default)
+cd ../particle-tracking && uv sync   # --model-type lodestar
 ```
 
 `compare.py` needs `freud` for hexatic order (optional — skipped if missing):
@@ -113,10 +114,16 @@ Key settings in `config.yaml` under `synthetic:`:
 ## Step 2 — Benchmark detection and tracking accuracy
 
 ```bash
-# Detection only
+# Detection only (RF-DETR, the default)
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
     --ground-truth verification_output/ground_truth.json
+
+# Detection only, LodeSTAR
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type lodestar
 
 # Detection + tracking metrics (MOTA/IDF1/fragmentation)
 uv run python benchmark.py \
@@ -131,6 +138,17 @@ Outputs:
 
 **Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
 
+### Model Selection
+
+`--model-type` (or `benchmark.model_type` in `config.yaml`; the CLI flag wins when both are set) picks the detector:
+
+| `--model-type` | Config keys read | Venv required | Notes |
+|----------------|-------------------|----------------|-------|
+| `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
+| `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
+
+`--device` is shared across model types; `benchmark.lodestar.device` overrides it for LodeSTAR specifically when set.
+
 Options:
 
 | Flag | Default | Description |
@@ -139,6 +157,7 @@ Options:
 | `--ground-truth` | *(required)* | `ground_truth.json` from render.py |
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
+| `--model-type` | `rf-detr` | `rf-detr` or `lodestar` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--device` | `0` | CUDA device index or `cpu` |
 
 Key settings in `config.yaml` under `tracking:`:

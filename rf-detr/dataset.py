@@ -18,6 +18,22 @@ def split_by_experiment(
     split_dir: str | Path | None = None,
 ) -> DatasetSplits:
     dataset_path = Path(dataset_path)
+
+    # Pre-split Roboflow/COCO format: train/, valid/, test/ already exist with _annotations.coco.json
+    if not (dataset_path / "annotations.json").exists():
+        train_dir = dataset_path / "train"
+        valid_dir = dataset_path / "valid"
+        test_dir = dataset_path / "test"
+        if train_dir.is_dir() and valid_dir.is_dir():
+            return DatasetSplits(
+                train_dir=train_dir,
+                valid_dir=valid_dir,
+                test_dir=test_dir if test_dir.is_dir() else valid_dir,
+            )
+        raise FileNotFoundError(
+            f"No annotations.json found and no train/valid subdirectories in {dataset_path}"
+        )
+
     images_dir = dataset_path / "images"
 
     if split_dir is None:

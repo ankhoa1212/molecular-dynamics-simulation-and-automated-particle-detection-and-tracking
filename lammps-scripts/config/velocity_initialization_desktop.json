@@ -1,0 +1,14 @@
+{
+    "input_file": "velocity_initialization.in",
+    "output_dir": "/mnt/c/Users/AnKhoa/Desktop/results/simulation/velocity_init",
+    "molecules": "100",
+    "molecules_end": "1500",
+    "molecules_step": "100",
+    "var_epsilon": "0.5",
+    "var_epsilon_end": "5.0",
+    "var_epsilon_step": "0.5",
+    "t_start": "1.0",
+    "t_stop": "0.05",
+    "steps": "15000",
+    "vel_force_scale": "9"
+}

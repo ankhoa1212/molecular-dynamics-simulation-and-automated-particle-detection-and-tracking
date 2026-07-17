@@ -1,4 +1,6 @@
 import argparse
+import csv
+import math
 from pathlib import Path
 
 import yaml
@@ -25,15 +27,26 @@ def flatten_config(config: dict, prefix: str = "") -> dict[str, str]:
     return flat
 
 
-_MODEL_CONSTRUCTOR_KEYS = {"num_queries", "amp", "gradient_checkpointing", "resolution"}
+_MODEL_CONSTRUCTOR_KEYS = {
+    "num_queries",
+    "num_select",
+    "amp",
+    "gradient_checkpointing",
+    "resolution",
+    "pretrain_weights",
+    "group_detr",
+}
 _OPTIONAL_TRAIN_KEYS = {"prefetch_factor", "persistent_workers"}
+# pretrain_weights=None has explicit meaning ("train from scratch"); always pass it.
+# resolution=None means "use library default"; omit so the library picks its default.
+_SKIP_WHEN_NONE = {"resolution"}
 
 
 def build_model_kwargs(model_cfg: dict) -> dict:
     return {
         k: model_cfg[k]
         for k in _MODEL_CONSTRUCTOR_KEYS
-        if k in model_cfg and model_cfg[k] is not None
+        if k in model_cfg and (model_cfg[k] is not None or k not in _SKIP_WHEN_NONE)
     }
 
 
@@ -64,19 +77,6 @@ def main() -> None:
         params=flatten_config(config),
     )
 
-    from rfdetr.util.callbacks import Callbacks
-
-    callbacks = Callbacks()
-
-    @callbacks.register("on_fit_epoch_end")
-    def _log_metrics(trainer) -> None:
-        metrics = {
-            key: float(value)
-            for key, value in trainer.metrics.items()
-            if isinstance(value, (int, float))
-        }
-        log_epoch_metrics(metrics, step=trainer.epoch)
-
     variant = model_cfg["variant"].lower()
     model_kwargs = build_model_kwargs(model_cfg)
 
@@ -103,16 +103,32 @@ def main() -> None:
         "num_workers": train_cfg.get("num_workers", 0),
         "pin_memory": train_cfg.get("pin_memory", False),
         "output_dir": str(checkpoint_dir),
-        "callbacks": callbacks,
         "early_stopping": train_cfg.get("early_stopping", False),
         "early_stopping_patience": train_cfg.get("early_stopping_patience", 10),
         "early_stopping_min_delta": train_cfg.get("early_stopping_min_delta", 0.001),
         "early_stopping_use_ema": train_cfg.get("early_stopping_use_ema", False),
+        "eval_max_dets": train_cfg.get("eval_max_dets", 500),
     }
     for key in _OPTIONAL_TRAIN_KEYS:
         if train_cfg.get(key) is not None:
             train_kwargs[key] = train_cfg[key]
     model.train(**train_kwargs)
+
+    metrics_csv = checkpoint_dir / "metrics.csv"
+    if metrics_csv.exists():
+        with open(metrics_csv, newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    step = int(float(row["step"]))
+                except (KeyError, ValueError, TypeError):
+                    continue
+                metrics = {
+                    k: float(v)
+                    for k, v in row.items()
+                    if k not in ("epoch", "step") and v and not math.isnan(float(v))
+                }
+                if metrics:
+                    log_epoch_metrics(metrics, step=step)
 
     for ckpt in sorted(checkpoint_dir.glob("*.pth")):
         log_artifact(str(ckpt))

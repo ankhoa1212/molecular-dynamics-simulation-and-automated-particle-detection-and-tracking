@@ -1,0 +1,36 @@
+# PersistentVolumeClaims for RF-DETR training
+#
+# Apply with:
+#   kubectl apply -f k8s-pvcs.yaml -n ryu-classroom
+#
+# If you get a "no default StorageClass" error, first run:
+#   kubectl get storageclass
+# then add the line:
+#   storageClassName: <name-from-above>
+# under each spec.
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rf-detr-data
+  namespace: ryu-classroom
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 80Gi     # 64GB actual image data + headroom
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rf-detr-outputs
+  namespace: ryu-classroom
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi     # checkpoints + mlflow.db

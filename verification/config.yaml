@@ -3,7 +3,7 @@
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
-  render_strategy: procedural   # procedural | deeptrack | randomized | background_composite
+  render_strategy: procedural   # procedural | deeptrack | randomized
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
@@ -14,7 +14,6 @@ synthetic:
 
   # --- PSF parameters ---
   # sigma_px is written here by: uv run python calibrate_psf.py --merge-config config.yaml
-  # Consumed by render_strategy: background_composite as Gaussian PSF kernel width.
   # deeptrack ignores sigma_px and uses na/wavelength/resolution instead.
   psf:
     na: 1.4                     # numerical aperture
@@ -46,25 +45,39 @@ synthetic:
     peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
     readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
 
-  # --- Real-background compositing (render_strategy: background_composite) ---
-  # Requires psf.sigma_px (set by calibrate_psf.py --merge-config) or falls back to psf_sigma: 5.0
-  background_composite:
-    video_path: null            # path to real microscopy TIFF stack (required)
-    n_frames_for_median: 50     # frames subsampled for temporal-median background extraction
-
-# --- benchmark.py: RF-DETR accuracy on synthetic frames ---
+# --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth
+  model_type: rf-detr       # rf-detr | lodestar — overridden by --model-type
+  match_distance: 10        # pixels — max center-to-center dist to count a detection as TP; shared across model types
+
+  # --- model_type: rf-detr ---
+  # checkpoints/checkpoint_best_ema.pth (May) is an undertrained/stale run —
+  # confidence never exceeds ~0.04 on any input, real or synthetic, so it
+  # produces 0 detections at any reasonable threshold. checkpoints-a40/ is the
+  # completed K8s A40 training run (confidence up to ~0.74 on real data);
+  # verified via debugging session on 2026-07-17.
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
   variant: large            # nano | small | medium | large
   num_queries: 300
-  threshold: 0.3            # detection confidence threshold
-  match_distance: 10        # pixels — max center-to-center dist to count a detection as TP
+  threshold: 0.2            # detection confidence threshold — 0.2 peaks F1 (0.47) on the
+                             # checkpoints-a40 model; swept 0.05-0.3 on 2026-07-17, see
+                             # docs/plans/2026-07-16-002-feat-lodestar-verification-benchmark-plan.md
 
   tiling:
     enabled: true
     tile_size: 512           # set < image size if the frame has >300 particles
     overlap: 50
     nms_threshold: 0.3
+
+  # --- model_type: lodestar (requires particle-tracking/.venv — run `uv sync` there first) ---
+  lodestar:
+    checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+    threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
+    alpha: 0.9                # weight score exponent
+    nms_distance: null        # pixels; null disables NMS
+    box_size: 40               # fallback box size (px) when a detection has no sigma output
+    fp16: false                # run model in float16
+    device: null                # used only when --device is not passed on the CLI; --device always wins
 
 # --- benchmark.py: tracking metrics (requires ground_truth_tracks.csv from render.py) ---
 tracking:

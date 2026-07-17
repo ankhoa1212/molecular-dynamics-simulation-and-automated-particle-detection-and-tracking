@@ -1,0 +1,15 @@
+data:
+  dir: "/mnt/d/Particle Tracking Data/2um-yolov12/"             # path to directory containing data.yaml and images (absolute or relative to this config file)
+
+model:
+  weights: yolo12m.pt    # medium variant: better spatial feature depth for dense single-class detection
+  imgsz: 640             # 1280 OOMs on RTX 4070 12GB due to YOLO12 attention quadratic cost
+
+training:
+  epochs: 100
+  batch: 16
+  device: "0"
+  name: yolo12m-particles
+
+mlflow:
+  experiment_name: yolov12

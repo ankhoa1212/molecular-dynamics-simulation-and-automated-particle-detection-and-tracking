@@ -51,7 +51,11 @@ tracking:
 output:
   dir: /mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/lodestar/
 
-  save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
+  save_video: true  # Save an annotated MP4 with bounding boxes drawn
+
+  # Draw the "#<track_id>" label next to each bounding box in the output video.
+  # Off by default since the labels tend to clutter dense scenes.
+  video_labels: false
 
   fps: 30
 
