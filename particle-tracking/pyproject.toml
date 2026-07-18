@@ -23,6 +23,7 @@ dependencies = [
     "looseversion>=1.3.0",
     "torch>=2.5.1",
     "torchvision>=0.20.0",
+    "detectors-common",
 ]
 
 # Note: rfdetr is intentionally excluded — it is loaded at runtime from
@@ -40,6 +41,7 @@ torch = [
 torchvision = [
     { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+detectors-common = { path = "../detectors-common", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

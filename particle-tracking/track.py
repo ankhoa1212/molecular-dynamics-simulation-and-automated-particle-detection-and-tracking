@@ -8,16 +8,17 @@ from pathlib import Path
 from tqdm import tqdm
 from PIL import Image, ImageSequence
 
-SCRIPT_DIR = Path(__file__).parent
+# Re-exported from detectors_common.rfdetr_loader — edit there, not here.
+# particle-tracking/.venv has detectors-common installed natively, so this is
+# a plain module-scope re-export (unlike verification/benchmark.py, whose venv
+# never installs detectors-common — see that file for the lazy-wrapper variant).
+from detectors_common.rfdetr_loader import (
+    RFDETR_VARIANTS,
+    _normalize_device,
+    get_rfdetr_model as _shared_get_rfdetr_model,
+)
 
-# RF-DETR variant name → class name in the rfdetr package
-RFDETR_VARIANTS = {
-    "nano": "RFDETRNano",
-    "small": "RFDETRSmall",
-    "medium": "RFDETRMedium",
-    "large": "RFDETRLarge",
-    "base": "RFDETRBase",  # kept for backward compatibility
-}
+SCRIPT_DIR = Path(__file__).parent
 
 
 def load_config(config_path):
@@ -54,72 +55,15 @@ def resolve_path(p):
 # ---------------------------------------------------------------------------
 
 
-def _normalize_device(device):
-    """Map shorthand device strings to torch-style strings rfdetr accepts.
-
-    rfdetr validates device via torch.device(), so bare integers like "0"
-    are invalid. Map them to "cuda:N" so users can write device: "0" in config.
-    """
-    if device is None:
-        return None
-    s = str(device).strip()
-    if s.lstrip("-").isdigit():
-        return f"cuda:{s}"
-    return s
-
-
 def get_rfdetr_model(variant, checkpoint, device, num_classes=None, num_queries=None):
-    """Load RF-DETR from the venv in rf-detr/."""
+    """Load RF-DETR, supplying particle-tracking's own rf-detr/.venv path to
+    the shared loader (detectors_common.rfdetr_loader.get_rfdetr_model takes
+    the venv directory as a required parameter rather than hardcoding it,
+    since verification/benchmark.py resolves a different path)."""
     rf_detr_venv = SCRIPT_DIR / ".." / "rf-detr" / ".venv"
-    site_packages = list(rf_detr_venv.glob("lib/python*/site-packages"))
-    if site_packages and str(site_packages[0]) not in sys.path:
-        sys.path.insert(0, str(site_packages[0]))
-    # If torch was already imported from the particle-tracking venv before this
-    # path injection, torchvision from rf-detr's venv will conflict.  Evict the
-    # stale torch/torchvision entries from sys.modules so they reload from
-    # rf-detr's site-packages (which are now at position 0).
-    for mod in list(sys.modules):
-        if (
-            mod == "torch"
-            or mod.startswith("torch.")
-            or mod == "torchvision"
-            or mod.startswith("torchvision.")
-        ):
-            del sys.modules[mod]
-
-    try:
-        import rfdetr as _rfdetr
-
-        cls_name = RFDETR_VARIANTS.get(variant)
-        if cls_name is None:
-            print(
-                f"Error: unknown RF-DETR variant '{variant}'. Choose from: {', '.join(RFDETR_VARIANTS)}"
-            )
-            sys.exit(1)
-
-        cls = getattr(_rfdetr, cls_name, None)
-        if cls is None:
-            print(f"Error: '{cls_name}' not found in installed rfdetr package.")
-            sys.exit(1)
-
-        # rfdetr manages device internally — pass normalized device string so
-        # shorthand "0" becomes "cuda:0". Omit when None to let rfdetr auto-detect.
-        kwargs = {"pretrain_weights": str(checkpoint)}
-        normalized = _normalize_device(device)
-        if normalized is not None:
-            kwargs["device"] = normalized
-        if num_classes is not None:
-            kwargs["num_classes"] = num_classes
-        if num_queries is not None:
-            kwargs["num_queries"] = num_queries
-        model = cls(**kwargs)
-        if hasattr(model, "optimize_for_inference"):
-            print("Optimizing RF-DETR model for inference...")
-            model.optimize_for_inference()
-        return model
-    except ImportError:
-        print("Error: 'rfdetr' not found. Run 'uv sync' inside rf-detr/.")
-        sys.exit(1)
+    return _shared_get_rfdetr_model(
+        variant, checkpoint, device, rf_detr_venv, num_classes=num_classes, num_queries=num_queries
+    )
 
 
 def get_yolo_model(checkpoint):
@@ -947,7 +891,7 @@ def main():
     # Resolve final values: CLI arg → config → built-in default
     model_type = args.model_type or cfg_get(cfg, "model", "type", default="rf-detr")
     checkpoint = args.checkpoint or cfg_get(
-        cfg, "model", "checkpoint", default="../rf-detr/checkpoints/checkpoint_best_ema.pth"
+        cfg, "model", "checkpoint", default="../rf-detr/checkpoints/checkpoint_best_regular.pth"
     )
     variant = args.variant or cfg_get(cfg, "model", "variant", default="large")
     num_classes = (

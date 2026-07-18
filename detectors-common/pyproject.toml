@@ -1,0 +1,24 @@
+[project]
+name = "detectors-common"
+version = "0.1.0"
+description = "Shared detector-loading, tiling, and config-merge primitives for RF-DETR and LodeSTAR, consumed by rf-detr/ and particle-tracking/ as a local editable dependency."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26.0",
+    "supervision>=0.21.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["detectors_common"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
