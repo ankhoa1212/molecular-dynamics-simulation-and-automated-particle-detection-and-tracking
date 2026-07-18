@@ -1,6 +1,7 @@
 """Tests for benchmark.py — U6: tracking metrics (MOTA/IDF1/fragmentation);
 U1-U3: LodeSTAR model-type support."""
 
+import ast
 import csv
 import json
 import sys
@@ -363,6 +364,24 @@ class TestLoadLodestarDefaultsWrapper:
             "lodestar", cfg, {"nms_distance": "lodestar.nms_distance", "alpha": "lodestar.alpha"}
         )
         assert result == sentinel_result
+
+
+class TestNoQualifiedDetectorsCommonCallSites:
+    def test_no_call_site_uses_the_qualified_detectors_common_path(self):
+        """Static guard: every call in benchmark.py must go through one of the
+        lazy-wrapper functions, never `detectors_common.<module>.<name>(`
+        directly — a stray qualified call would silently bypass test mocks
+        and reintroduce the drift this package exists to eliminate."""
+        source = Path(benchmark.__file__).read_text()
+        tree = ast.parse(source)
+        qualified_calls = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                value = node.func.value
+                if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                    if value.value.id == "detectors_common":
+                        qualified_calls.append(f"detectors_common.{value.attr}.{node.func.attr}")
+        assert qualified_calls == []
 
 
 class TestDetectLodestarIntegration:

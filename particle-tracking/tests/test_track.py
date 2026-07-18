@@ -1,6 +1,8 @@
+import ast
 import json
 import sys
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -9,6 +11,73 @@ import supervision as sv
 import yaml
 
 import track
+import detectors_common.rfdetr_loader
+import detectors_common.lodestar_loader
+import detectors_common.tiling
+
+# ---------------------------------------------------------------------------
+# detectors_common re-exports — U8: guards against the re-export convention
+# silently eroding. A locally-defined function shadowing one of these imports
+# wouldn't fail at collection time, only much later when someone tries to
+# patch a name that no longer points at the shared implementation.
+# ---------------------------------------------------------------------------
+
+
+class TestDetectorsCommonReExports:
+    def test_normalize_device_is_the_shared_implementation(self):
+        assert track._normalize_device is detectors_common.rfdetr_loader._normalize_device
+
+    def test_rfdetr_variants_is_the_shared_implementation(self):
+        assert track.RFDETR_VARIANTS is detectors_common.rfdetr_loader.RFDETR_VARIANTS
+
+    def test_get_lodestar_model_is_the_shared_implementation(self):
+        assert track.get_lodestar_model is detectors_common.lodestar_loader.get_lodestar_model
+
+    def test_detect_lodestar_is_the_shared_implementation(self):
+        assert track.detect_lodestar is detectors_common.lodestar_loader.detect_lodestar
+
+    def test_detect_with_tiling_is_the_shared_implementation(self):
+        assert track.detect_with_tiling is detectors_common.tiling.detect_with_tiling
+
+    def test_get_rfdetr_model_delegates_to_shared_implementation(self):
+        """get_rfdetr_model is a thin wrapper (not a bare re-export) since it
+        must supply particle-tracking's own rf-detr venv path — proven here by
+        patching track's own bound reference to the shared implementation
+        (captured at import time via `as _shared_get_rfdetr_model`, so
+        patching detectors_common.rfdetr_loader's attribute after the fact
+        wouldn't reach it) and confirming the wrapper calls through rather
+        than reimplementing the logic inline."""
+        sentinel_model = MagicMock()
+        with patch.object(
+            track, "_shared_get_rfdetr_model", return_value=sentinel_model
+        ) as mock_impl:
+            result = track.get_rfdetr_model("large", "ckpt.pth", "0", num_classes=2)
+
+        mock_impl.assert_called_once_with(
+            "large",
+            "ckpt.pth",
+            "0",
+            track.SCRIPT_DIR / ".." / "rf-detr" / ".venv",
+            num_classes=2,
+            num_queries=None,
+        )
+        assert result is sentinel_model
+
+    def test_no_call_site_uses_the_qualified_detectors_common_path(self):
+        """Static guard: every call in track.py must go through the local
+        (re-exported or wrapper) name, never `detectors_common.<module>.<name>(`
+        directly — a stray qualified call would silently bypass test mocks and
+        reintroduce the drift this package exists to eliminate."""
+        source = Path(track.__file__).read_text()
+        tree = ast.parse(source)
+        qualified_calls = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                value = node.func.value
+                if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                    if value.value.id == "detectors_common":
+                        qualified_calls.append(f"detectors_common.{value.attr}.{node.func.attr}")
+        assert qualified_calls == []
 
 
 # ---------------------------------------------------------------------------
