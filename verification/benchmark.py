@@ -177,6 +177,16 @@ def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshol
     return _impl(model, frame, threshold, tile_size, overlap, nms_threshold)
 
 
+def _load_lodestar_defaults(cfg):
+    """Canonical nms_distance/alpha, merged over this config's own
+    benchmark.lodestar.* values — see detectors_common.defaults."""
+    from detectors_common.defaults import load_detector_config
+
+    return load_detector_config(
+        "lodestar", cfg, {"nms_distance": "lodestar.nms_distance", "alpha": "lodestar.alpha"}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -410,8 +420,9 @@ def main():
             )
         )
         threshold = _cfg_get(cfg, "lodestar", "threshold", default=0.1)
-        alpha = _cfg_get(cfg, "lodestar", "alpha", default=0.5)
-        nms_distance = _cfg_get(cfg, "lodestar", "nms_distance", default=None)
+        _lodestar_defaults = _load_lodestar_defaults(cfg)
+        alpha = _lodestar_defaults.get("alpha", 0.5)
+        nms_distance = _lodestar_defaults.get("nms_distance")
         box_size = _cfg_get(cfg, "lodestar", "box_size", default=40)
         fp16 = _cfg_get(cfg, "lodestar", "fp16", default=False)
         device_raw = args.device or _cfg_get(cfg, "lodestar", "device", default=None)

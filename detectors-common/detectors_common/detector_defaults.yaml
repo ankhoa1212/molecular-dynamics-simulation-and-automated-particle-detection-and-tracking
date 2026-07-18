@@ -1,0 +1,20 @@
+# Canonical, already-converged production values for detector parameters.
+#
+# Only values genuinely consistent across every real config in the repo
+# belong here — this file is deliberately NOT a place to force convergence
+# on values that are still legitimately split (see
+# docs/plans/2026-07-17-001-refactor-consolidate-verification-particle-tracking-plan.md
+# Scope Boundaries). Known-divergent keys (LodeSTAR fp16, RF-DETR tile_size)
+# are intentionally absent — their presence here would look like an endorsed
+# canonical value when none has been agreed on yet.
+
+lodestar:
+  # The value whose drift (verification/config.yaml had this as null/disabled)
+  # motivated this file existing in the first place. Consistent across every
+  # real particle-tracking lodestar config (lodestar_config.yaml,
+  # basic_lodestar_config.yaml, multi_lodestar_config.yaml) and verification's.
+  nms_distance: 30
+  # Weight score exponent. basic_lodestar_config.yaml's 0.3 override is a
+  # deliberate choice (documented: "lower = less selective, better for dim
+  # early frames"), not drift — tool configs may still override this.
+  alpha: 0.9

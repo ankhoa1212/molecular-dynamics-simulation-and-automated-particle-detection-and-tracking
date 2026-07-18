@@ -19,6 +19,15 @@ from detectors_common.rfdetr_loader import (
 )
 from detectors_common.lodestar_loader import get_lodestar_model, detect_lodestar
 from detectors_common.tiling import detect_with_tiling
+from detectors_common.defaults import load_detector_config
+
+# Maps canonical detector_defaults.yaml keys to this config's own dotted path.
+# particle-tracking nests detector params by pipeline concern (detection.*),
+# unlike verification's benchmark.lodestar.* — see defaults.py.
+_LODESTAR_KEY_MAP = {
+    "nms_distance": "detection.nms_distance",
+    "alpha": "detection.alpha",
+}
 
 SCRIPT_DIR = Path(__file__).parent
 
@@ -835,15 +844,19 @@ def main():
         if args.track_activation_threshold is not None
         else cfg_get(cfg, "tracking", "track_activation_threshold", default=0.25)
     )
+    # nms_distance/alpha fall back through detector_defaults.yaml's canonical
+    # values (via the shared key-path-mapped merge) before this file's own
+    # None default — CLI arg still wins over everything.
+    _lodestar_defaults = load_detector_config("lodestar", cfg, _LODESTAR_KEY_MAP)
     lodestar_alpha = (
         args.lodestar_alpha
         if args.lodestar_alpha is not None
-        else cfg_get(cfg, "detection", "alpha", default=0.5)
+        else _lodestar_defaults.get("alpha", 0.5)
     )
     lodestar_nms_distance = (
         args.lodestar_nms_distance
         if args.lodestar_nms_distance is not None
-        else cfg_get(cfg, "detection", "nms_distance", default=None)
+        else _lodestar_defaults.get("nms_distance")
     )
     lodestar_fp16 = args.lodestar_fp16 or cfg_get(cfg, "detection", "fp16", default=False)
     save_trajectory_image = args.save_trajectory_image or cfg_get(

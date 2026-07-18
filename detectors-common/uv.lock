@@ -206,6 +206,7 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pyyaml" },
     { name = "supervision" },
 ]
 
@@ -217,6 +218,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.26.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "supervision", specifier = ">=0.21.0" },
 ]
 

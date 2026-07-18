@@ -328,6 +328,27 @@ class TestGetLodestarModelWrapper:
         assert result is sentinel_model
 
 
+class TestLoadLodestarDefaultsWrapper:
+    def test_delegates_to_shared_merge_with_benchmark_lodestar_key_map(self):
+        """U6: proves _load_lodestar_defaults calls through to the real
+        detectors_common.defaults.load_detector_config with the correct
+        model_type and key_path_map — the TestMainModelTypeWiring tests all
+        stub this function's return value directly, so nothing else in this
+        file exercises the actual wiring."""
+        sentinel_result = {"nms_distance": 30, "alpha": 0.9}
+        fake_impl = mock.Mock(return_value=sentinel_result)
+        fake_defaults_module = mock.MagicMock(load_detector_config=fake_impl)
+        cfg = {"lodestar": {"nms_distance": 30}}
+
+        with mock.patch.dict(sys.modules, {"detectors_common.defaults": fake_defaults_module}):
+            result = benchmark._load_lodestar_defaults(cfg)
+
+        fake_impl.assert_called_once_with(
+            "lodestar", cfg, {"nms_distance": "lodestar.nms_distance", "alpha": "lodestar.alpha"}
+        )
+        assert result == sentinel_result
+
+
 class TestDetectLodestarIntegration:
     def test_output_flows_through_match_detections_unchanged(self):
         """Integration: detect_lodestar's sv.Detections output (as produced by
@@ -417,7 +438,9 @@ class TestMainModelTypeWiring:
             benchmark, "detect_lodestar", return_value=_sv_preload.Detections.empty()
         ) as mock_detect_lodestar, mock.patch.object(
             benchmark, "detect_with_tiling"
-        ) as mock_detect_tiling:
+        ) as mock_detect_tiling, mock.patch.object(
+            benchmark, "_load_lodestar_defaults", return_value={}
+        ):
             benchmark.main()
 
         mock_get_lodestar.assert_called_once()
@@ -459,6 +482,8 @@ class TestMainModelTypeWiring:
             benchmark, "get_lodestar_model", return_value=mock.Mock()
         ) as mock_get_lodestar, mock.patch.object(
             benchmark, "detect_lodestar", return_value=_sv_preload.Detections.empty()
+        ), mock.patch.object(
+            benchmark, "_load_lodestar_defaults", return_value={}
         ):
             benchmark.main()
 
@@ -533,8 +558,9 @@ class TestMainModelTypeWiring:
         ]
         monkeypatch.setattr(sys, "argv", argv)
 
-        with pytest.raises(SystemExit):
-            benchmark.main()
+        with mock.patch.object(benchmark, "_load_lodestar_defaults", return_value={}):
+            with pytest.raises(SystemExit):
+                benchmark.main()
 
         assert "Error: checkpoint not found" in capsys.readouterr().out
 
@@ -576,7 +602,9 @@ class TestMainModelTypeWiring:
             benchmark, "detect_lodestar", return_value=_sv_preload.Detections.empty()
         ), mock.patch.object(
             benchmark, "_run_tracking_metrics", return_value=None
-        ) as mock_tracking_metrics:
+        ) as mock_tracking_metrics, mock.patch.object(
+            benchmark, "_load_lodestar_defaults", return_value={}
+        ):
             benchmark.main()
 
         mock_tracking_metrics.assert_called_once()
