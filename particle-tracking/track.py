@@ -8,7 +8,7 @@ from pathlib import Path
 from tqdm import tqdm
 from PIL import Image, ImageSequence
 
-# Re-exported from detectors_common.rfdetr_loader — edit there, not here.
+# Re-exported from detectors_common — edit there, not here.
 # particle-tracking/.venv has detectors-common installed natively, so this is
 # a plain module-scope re-export (unlike verification/benchmark.py, whose venv
 # never installs detectors-common — see that file for the lazy-wrapper variant).
@@ -17,6 +17,7 @@ from detectors_common.rfdetr_loader import (
     _normalize_device,
     get_rfdetr_model as _shared_get_rfdetr_model,
 )
+from detectors_common.lodestar_loader import get_lodestar_model, detect_lodestar
 
 SCRIPT_DIR = Path(__file__).parent
 
@@ -76,103 +77,9 @@ def get_yolo_model(checkpoint):
         sys.exit(1)
 
 
-def get_lodestar_model(checkpoint, device, fp16=False):
-    try:
-        import deeplay as dl
-        import torch
-        import json
-
-        config_path = Path(checkpoint).with_suffix(".json")
-        if config_path.exists():
-            with open(config_path) as f:
-                config = json.load(f)
-            n_transforms = config.get("n_transforms", 8)
-            num_outputs = config.get("num_outputs", 3)
-        else:
-            n_transforms, num_outputs = 8, 3
-
-        model = dl.LodeSTAR(n_transforms=n_transforms, num_outputs=num_outputs).build()
-        model.load_state_dict(torch.load(str(checkpoint), map_location=device, weights_only=False))
-        model.to(device)
-        if fp16:
-            model.half()
-        model.eval()
-        return model
-    except ImportError:
-        print("Error: 'deeplay' or 'torch' not found. Run 'pip install deeplay deeptrack'.")
-        sys.exit(1)
-
-
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
-
-
-def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=None, box_size=40):
-    import torch
-    import supervision as sv
-
-    frame_f = frame.astype(np.float32)
-    if frame.ndim == 3:
-        frame_f = np.mean(frame_f, axis=2)
-
-    f_min, f_ptp = frame_f.min(), np.ptp(frame_f)
-    frame_norm = (frame_f - f_min) / f_ptp if f_ptp != 0 else frame_f - f_min
-
-    tensor = torch.from_numpy(frame_norm).unsqueeze(0).unsqueeze(0).to(device)
-    # Match model dtype (e.g. float16 when fp16=True)
-    tensor = tensor.to(next(model.parameters()).dtype)
-
-    with torch.inference_mode():
-        detections_raw = model.detect(
-            tensor, alpha=alpha, beta=1.0 - alpha, cutoff=threshold, mode="ratio"
-        )
-
-    if isinstance(detections_raw, list):
-        detections_raw = detections_raw[0]
-
-    if detections_raw is None or len(detections_raw) == 0:
-        return sv.Detections.empty()
-
-    # LodeSTAR det[2] is the model's radius/sigma output, not a confidence score.
-    # The raw value is in model-space (typically < 1.0); scale to pixels when that's the case.
-    frame_scale = max(frame.shape[:2])
-    xyxy, confidences = [], []
-    for det in detections_raw:
-        y, x = det[0], det[1]
-        if len(det) >= 3:
-            sigma = abs(det[2])
-            r = sigma * frame_scale if sigma < 1.0 else sigma
-        else:
-            r = box_size / 2
-        xyxy.append([x - r, y - r, x + r, y + r])
-        confidences.append(1.0)  # all detections passed the same cutoff; ordering is secondary
-
-    result = sv.Detections(
-        xyxy=np.array(xyxy, dtype=np.float32),
-        confidence=np.array(confidences, dtype=np.float32),
-        class_id=np.zeros(len(xyxy), dtype=int),
-    )
-
-    if nms_distance and nms_distance > 0 and len(result) > 1:
-        centers = (result.xyxy[:, :2] + result.xyxy[:, 2:]) / 2
-        order = np.argsort(-result.confidence)
-        processed = np.zeros(len(result), dtype=bool)
-        keep = []
-        for idx in order:
-            if processed[idx]:
-                continue
-            keep.append(idx)
-            dists = np.sqrt(((centers - centers[idx]) ** 2).sum(axis=1))
-            processed[dists < nms_distance] = True
-        keep = np.array(keep)
-        result = sv.Detections(
-            xyxy=result.xyxy[keep],
-            confidence=result.confidence[keep],
-            class_id=result.class_id[keep],
-        )
-
-    return result
 
 
 def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
