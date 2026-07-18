@@ -186,6 +186,22 @@ class TestResolveModelType:
         monkeypatch.chdir(tmp_path)
         assert benchmark._resolve_model_type([]) == "rf-detr"
 
+    def test_default_config_path_is_script_dir_anchored_not_cwd_relative(
+        self, tmp_path, monkeypatch
+    ):
+        """U7: --config's default (and this pre-parse's fallback, which must
+        stay consistent with it) resolves relative to SCRIPT_DIR, matching
+        particle-tracking/track.py — not the caller's cwd. Proven by chdir-ing
+        elsewhere and confirming a SCRIPT_DIR-anchored config.yaml still
+        resolves, which a bare cwd-relative "config.yaml" string could not."""
+        (tmp_path / "config.yaml").write_text("benchmark:\n  model_type: lodestar\n")
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        with mock.patch.object(benchmark, "SCRIPT_DIR", tmp_path):
+            assert benchmark._resolve_model_type([]) == "lodestar"
+
     def test_reads_model_type_flag_space_separated(self):
         assert benchmark._resolve_model_type(["--model-type", "lodestar"]) == "lodestar"
 

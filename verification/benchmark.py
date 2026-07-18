@@ -56,16 +56,18 @@ def _resolve_model_type(argv):
         if arg.startswith("--model-type="):
             return arg.split("=", 1)[1]
 
-    config_path = "config.yaml"
+    config_path = str(SCRIPT_DIR / "config.yaml")
     for i, arg in enumerate(argv):
         if arg == "--config" and i + 1 < len(argv):
             config_path = argv[i + 1]
         elif arg.startswith("--config="):
             config_path = arg.split("=", 1)[1]
 
-    # Resolve relative to cwd, matching _load_config()'s resolution in main() —
-    # both must agree on which file they're reading, or the pre-parse can pick
-    # the wrong venv while main() loads a config naming a different model_type.
+    # SCRIPT_DIR-anchored default (matching particle-tracking/track.py's
+    # --config default), matching _load_config()'s resolution in main() — both
+    # must agree on which file they're reading, or the pre-parse can pick the
+    # wrong venv while main() loads a config naming a different model_type. An
+    # explicit --config value (relative or absolute) is still resolved as-is.
     config_path = Path(config_path)
     if config_path.exists():
         with open(config_path) as f:
@@ -393,7 +395,7 @@ def main():
         default=None,
         help="Path to ground_truth_tracks.csv (from render.py) — enables MOTA/IDF1 tracking metrics",
     )
-    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--config", default=str(SCRIPT_DIR / "config.yaml"))
     parser.add_argument(
         "--model-type",
         choices=list(_MODEL_VENV_DIRS),
@@ -401,7 +403,7 @@ def main():
         help=f"Detector to benchmark (default: {_DEFAULT_MODEL_TYPE}, or "
         "benchmark.model_type from --config)",
     )
-    parser.add_argument("--device", default=None, help="CUDA device index or 'cpu' (default: '0')")
+    parser.add_argument("--device", default=None, help="Inference device (e.g. 0 or cpu)")
     args = parser.parse_args()
 
     cfg = _load_config(args.config).get("benchmark", {})
