@@ -296,190 +296,62 @@ class TestReexecForModelVenv:
 
 
 # ---------------------------------------------------------------------------
-# get_lodestar_model — U2: LodeSTAR model loading
+# get_lodestar_model / detect_lodestar — now thin lazy-import wrappers
+# delegating to detectors_common.lodestar_loader (see that package's own
+# test suite for the loading/scaling/NMS coverage this file used to carry
+# directly). What remains here is specific to benchmark.py: that the
+# wrapper delegates to the shared implementation with the right venv, and
+# that the shared implementation's output still flows into this file's own
+# _match_detections.
 # ---------------------------------------------------------------------------
 
 
-def _fake_deeplay_module(built_model):
-    fake_dl = mock.MagicMock()
-    fake_dl.LodeSTAR.return_value.build.return_value = built_model
-    return fake_dl
-
-
-@pytest.fixture
-def no_lodestar_venv(tmp_path):
-    """Point _MODEL_VENV_DIRS['lodestar'] at a directory with no
-    site-packages, so get_lodestar_model's injection/eviction step is a
-    no-op and a sys.modules-injected fake deeplay/torch survives untouched."""
-    with mock.patch.dict(benchmark._MODEL_VENV_DIRS, {"lodestar": tmp_path / "no-such-venv"}):
-        yield
-
-
-class TestGetLodestarModel:
-    def test_reads_companion_json_for_n_transforms_and_num_outputs(
-        self, tmp_path, no_lodestar_venv
-    ):
+class TestGetLodestarModelWrapper:
+    def test_delegates_to_shared_implementation_with_configured_venv(self, tmp_path):
         checkpoint = tmp_path / "model.pt"
         checkpoint.write_bytes(b"")
-        (tmp_path / "model.json").write_text('{"n_transforms": 4, "num_outputs": 5}')
+        sentinel_model = mock.Mock()
+        fake_impl = mock.Mock(return_value=sentinel_model)
+        fake_lodestar_loader = mock.MagicMock(get_lodestar_model=fake_impl)
 
-        built_model = mock.MagicMock()
-        fake_dl = _fake_deeplay_module(built_model)
-        fake_torch = mock.MagicMock()
+        with mock.patch.dict(
+            sys.modules, {"detectors_common.lodestar_loader": fake_lodestar_loader}
+        ):
+            result = benchmark.get_lodestar_model(str(checkpoint), device="cpu", fp16=True)
 
-        with mock.patch.dict(sys.modules, {"deeplay": fake_dl, "torch": fake_torch}):
-            result = benchmark.get_lodestar_model(str(checkpoint), device="cpu")
-
-        fake_dl.LodeSTAR.assert_called_once_with(n_transforms=4, num_outputs=5)
-        assert result is built_model
-        built_model.eval.assert_called_once()
-
-    def test_missing_companion_json_falls_back_to_defaults(self, tmp_path, no_lodestar_venv):
-        checkpoint = tmp_path / "model.pt"
-        checkpoint.write_bytes(b"")  # no sibling .json
-
-        built_model = mock.MagicMock()
-        fake_dl = _fake_deeplay_module(built_model)
-        fake_torch = mock.MagicMock()
-
-        with mock.patch.dict(sys.modules, {"deeplay": fake_dl, "torch": fake_torch}):
-            benchmark.get_lodestar_model(str(checkpoint), device="cpu")
-
-        fake_dl.LodeSTAR.assert_called_once_with(n_transforms=8, num_outputs=3)
-
-    def test_fp16_calls_half_on_model(self, tmp_path, no_lodestar_venv):
-        checkpoint = tmp_path / "model.pt"
-        checkpoint.write_bytes(b"")
-
-        built_model = mock.MagicMock()
-        fake_dl = _fake_deeplay_module(built_model)
-        fake_torch = mock.MagicMock()
-
-        with mock.patch.dict(sys.modules, {"deeplay": fake_dl, "torch": fake_torch}):
-            benchmark.get_lodestar_model(str(checkpoint), device="cpu", fp16=True)
-
-        built_model.half.assert_called_once()
-
-    def test_missing_deeplay_prints_error_and_exits(self, tmp_path, no_lodestar_venv):
-        checkpoint = tmp_path / "model.pt"
-        checkpoint.write_bytes(b"")
-
-        # Neither deeplay nor torch is installed in verification's own venv —
-        # letting the real import fail reproduces the actual missing-dependency path.
-        with mock.patch.dict(sys.modules, {"deeplay": None}):
-            with pytest.raises(SystemExit):
-                benchmark.get_lodestar_model(str(checkpoint), device="cpu")
-
-
-# ---------------------------------------------------------------------------
-# detect_lodestar — U2: LodeSTAR detection, sigma scaling, NMS
-# ---------------------------------------------------------------------------
-
-
-def _fake_torch_module():
-    fake_torch = mock.MagicMock()
-    fake_model = mock.MagicMock()
-    fake_model.parameters.return_value = iter([mock.Mock(dtype="float32")])
-    return fake_torch, fake_model
-
-
-class TestDetectLodestar:
-    def test_converts_raw_detection_to_scaled_pixel_box(self):
-        fake_torch, fake_model = _fake_torch_module()
-        # sigma=0.01 (normalized, < 1.0) on a 512px frame -> radius = 0.01 * 512 = 5.12px
-        fake_model.detect.return_value = np.array([[100.0, 200.0, 0.01]])
-        frame = np.zeros((512, 512), dtype=np.float32)
-
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
-
-        assert len(result) == 1
-        cx = (result.xyxy[0][0] + result.xyxy[0][2]) / 2
-        cy = (result.xyxy[0][1] + result.xyxy[0][3]) / 2
-        # det[0]=y=100, det[1]=x=200 -> center (x=200, y=100)
-        assert cx == pytest.approx(200.0, abs=0.5)
-        assert cy == pytest.approx(100.0, abs=0.5)
-        radius = (result.xyxy[0][2] - result.xyxy[0][0]) / 2
-        assert radius == pytest.approx(0.01 * 512, rel=0.05)
-
-    def test_sigma_already_in_pixel_units_is_not_rescaled(self):
-        fake_torch, fake_model = _fake_torch_module()
-        # sigma=12.0 (>= 1.0) is treated as already-pixel radius, not rescaled by frame_scale.
-        fake_model.detect.return_value = np.array([[100.0, 200.0, 12.0]])
-        frame = np.zeros((512, 512), dtype=np.float32)
-
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
-
-        radius = (result.xyxy[0][2] - result.xyxy[0][0]) / 2
-        assert radius == pytest.approx(12.0, rel=0.01)
-
-    def test_empty_detections_returns_empty(self):
-        fake_torch, fake_model = _fake_torch_module()
-        fake_model.detect.return_value = np.zeros((0, 3))
-        frame = np.zeros((64, 64), dtype=np.float32)
-
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
-
-        assert len(result) == 0
-
-    def test_none_detections_returns_empty(self):
-        fake_torch, fake_model = _fake_torch_module()
-        fake_model.detect.return_value = None
-        frame = np.zeros((64, 64), dtype=np.float32)
-
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
-
-        assert len(result) == 0
-
-    def test_list_wrapped_detections_unwraps_first_element(self):
-        """model.detect() sometimes returns a list of per-image detection
-        arrays (batch dimension) — detect_lodestar must unwrap it."""
-        fake_torch, fake_model = _fake_torch_module()
-        fake_model.detect.return_value = [np.array([[10.0, 20.0, 0.02]])]
-        frame = np.zeros((100, 100), dtype=np.float32)
-
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
-
-        assert len(result) == 1
-
-    def test_nms_distance_suppresses_nearby_duplicates(self):
-        fake_torch, fake_model = _fake_torch_module()
-        # Two detections 3px apart (well within nms_distance=10), one far away.
-        fake_model.detect.return_value = np.array(
-            [
-                [100.0, 100.0, 0.01],
-                [100.0, 103.0, 0.01],
-                [400.0, 400.0, 0.01],
-            ]
+        fake_impl.assert_called_once_with(
+            str(checkpoint),
+            "cpu",
+            inject_venv_site_packages=benchmark._MODEL_VENV_DIRS["lodestar"],
+            fp16=True,
         )
-        frame = np.zeros((512, 512), dtype=np.float32)
+        assert result is sentinel_model
 
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(
-                fake_model, frame, threshold=0.1, device="cpu", nms_distance=10
-            )
 
-        assert len(result) == 2  # the near-duplicate pair collapses to one
-
+class TestDetectLodestarIntegration:
     def test_output_flows_through_match_detections_unchanged(self):
-        """Integration: detect_lodestar's sv.Detections output is consumable
-        by the same _match_detections logic used for RF-DETR, with no
-        LodeSTAR-specific matching code."""
-        fake_torch, fake_model = _fake_torch_module()
-        fake_model.detect.return_value = np.array(
-            [
-                [100.0, 100.0, 0.01],  # matches GT particle 1
-                [300.0, 300.0, 0.01],  # false positive
-            ]
+        """Integration: detect_lodestar's sv.Detections output (as produced by
+        the shared implementation) is consumable by the same
+        _match_detections logic used for RF-DETR, with no LodeSTAR-specific
+        matching code."""
+        fake_result = _sv_preload.Detections(
+            xyxy=np.array(
+                [
+                    [95.0, 95.0, 105.0, 105.0],  # matches GT particle 1
+                    [295.0, 295.0, 305.0, 305.0],  # false positive
+                ],
+                dtype=np.float32,
+            ),
+            confidence=np.array([1.0, 1.0], dtype=np.float32),
+            class_id=np.zeros(2, dtype=int),
         )
+        fake_lodestar_loader = mock.MagicMock(detect_lodestar=mock.Mock(return_value=fake_result))
         frame = np.zeros((512, 512), dtype=np.float32)
 
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = benchmark.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
+        with mock.patch.dict(
+            sys.modules, {"detectors_common.lodestar_loader": fake_lodestar_loader}
+        ):
+            result = benchmark.detect_lodestar(mock.Mock(), frame, threshold=0.1, device="cpu")
 
         pred_centers = (result.xyxy[:, :2] + result.xyxy[:, 2:]) / 2
         gt_centers = np.array([[100.0, 100.0]])  # (x, y) — one real particle at det 1's location

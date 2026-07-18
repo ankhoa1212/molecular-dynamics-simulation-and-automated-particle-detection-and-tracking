@@ -107,20 +107,28 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 # ---------------------------------------------------------------------------
-# RF-DETR loading and tiling — inlined from particle-tracking/track.py to
-# avoid importing the full script (which may execute module-level setup code).
+# Re-exported from detectors_common — edit there, not here.
+#
+# verification/.venv never installs detectors_common (only rf-detr/.venv and
+# particle-tracking/.venv do), and it only becomes reachable once this
+# script's own re-exec above has landed in one of those venvs. Every wrapper
+# below therefore imports detectors_common lazily inside its own body rather
+# than at module scope — a module-scope import would make `import benchmark`
+# (used directly by this file's own test suite, which never re-execs) fail
+# with ModuleNotFoundError before a single test runs.
 # ---------------------------------------------------------------------------
-
-RFDETR_VARIANTS = {
-    "nano": "RFDETRNano",
-    "small": "RFDETRSmall",
-    "medium": "RFDETRMedium",
-    "large": "RFDETRLarge",
-    "base": "RFDETRBase",
-}
 
 
 def _normalize_device(device):
+    """Deliberately NOT re-exported from detectors_common, unlike everything
+    else in this section: this helper has zero external dependencies (pure
+    string mapping, no torch/rfdetr/deeplay), but main() calls it
+    unconditionally on every invocation regardless of --model-type. Lazily
+    importing it from a package verification/.venv never installs would force
+    every test that exercises main() to mock this one dependency-free
+    function — friction with no corresponding drift risk, since there's
+    nothing here that can drift the way venv-injection or model-loading
+    logic can. Kept identical to detectors_common.rfdetr_loader's copy."""
     if device is None:
         return None
     s = str(device).strip()
@@ -129,193 +137,44 @@ def _normalize_device(device):
     return s
 
 
-def get_rfdetr_model(variant, checkpoint, device, num_queries=None):
-    """Load RF-DETR from rf-detr/.venv via site-packages injection."""
-    rf_detr_venv = SCRIPT_DIR / ".." / "rf-detr" / ".venv"
-    site_packages = list(rf_detr_venv.glob("lib/python*/site-packages"))
-    if site_packages and str(site_packages[0]) not in sys.path:
-        sys.path.insert(0, str(site_packages[0]))
-    for mod in list(sys.modules):
-        if mod in ("torch", "torchvision") or mod.startswith(("torch.", "torchvision.")):
-            del sys.modules[mod]
-    try:
-        import rfdetr as _rfdetr
+def get_rfdetr_model(variant, checkpoint, device, num_classes=None, num_queries=None):
+    """Load RF-DETR, injecting rf-detr/.venv's site-packages via the shared loader."""
+    from detectors_common.rfdetr_loader import get_rfdetr_model as _impl
 
-        cls_name = RFDETR_VARIANTS.get(variant)
-        if cls_name is None:
-            print(
-                f"Error: unknown RF-DETR variant '{variant}'. Choose from: {', '.join(RFDETR_VARIANTS)}"
-            )
-            sys.exit(1)
-        cls = getattr(_rfdetr, cls_name)
-        kwargs = {"pretrain_weights": str(checkpoint)}
-        normalized = _normalize_device(device)
-        if normalized is not None:
-            kwargs["device"] = normalized
-        if num_queries is not None:
-            kwargs["num_queries"] = num_queries
-        model = cls(**kwargs)
-        if hasattr(model, "optimize_for_inference"):
-            model.optimize_for_inference()
-        return model
-    except ImportError:
-        print("Error: 'rfdetr' not found. Run 'uv sync' inside rf-detr/.")
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# LodeSTAR loading and detection — inlined from particle-tracking/track.py to
-# match the existing RF-DETR "inlined helper" style in this file.
-# ---------------------------------------------------------------------------
+    return _impl(
+        variant,
+        checkpoint,
+        device,
+        _MODEL_VENV_DIRS["rf-detr"],
+        num_classes=num_classes,
+        num_queries=num_queries,
+    )
 
 
 def get_lodestar_model(checkpoint, device, fp16=False):
-    """Load LodeSTAR from particle-tracking/.venv via site-packages injection."""
-    lodestar_venv = _MODEL_VENV_DIRS["lodestar"]
-    site_packages = list(lodestar_venv.glob("lib/python*/site-packages"))
-    if site_packages and str(site_packages[0]) not in sys.path:
-        sys.path.insert(0, str(site_packages[0]))
-        # Only evict when we actually injected a different venv's site-packages —
-        # otherwise this process's own native imports (e.g. after the top-level
-        # re-exec already landed on particle-tracking/.venv's interpreter) are
-        # already correct and evicting them would force a pointless re-import.
-        for mod in list(sys.modules):
-            if mod in ("torch", "torchvision", "supervision", "deeplay") or mod.startswith(
-                ("torch.", "torchvision.", "supervision.", "deeplay.")
-            ):
-                del sys.modules[mod]
-    try:
-        import deeplay as dl
-        import torch
-        import json as _json
+    """Load LodeSTAR, injecting particle-tracking/.venv's site-packages via the shared loader."""
+    from detectors_common.lodestar_loader import get_lodestar_model as _impl
 
-        config_path = Path(checkpoint).with_suffix(".json")
-        if config_path.exists():
-            with open(config_path) as f:
-                config = _json.load(f)
-            n_transforms = config.get("n_transforms", 8)
-            num_outputs = config.get("num_outputs", 3)
-        else:
-            n_transforms, num_outputs = 8, 3
-
-        model = dl.LodeSTAR(n_transforms=n_transforms, num_outputs=num_outputs).build()
-        model.load_state_dict(torch.load(str(checkpoint), map_location=device, weights_only=False))
-        model.to(device)
-        if fp16:
-            model.half()
-        model.eval()
-        return model
-    except ImportError:
-        print("Error: 'deeplay' not found. Run 'uv sync' inside particle-tracking/.")
-        sys.exit(1)
+    return _impl(
+        checkpoint,
+        device,
+        inject_venv_site_packages=_MODEL_VENV_DIRS["lodestar"],
+        fp16=fp16,
+    )
 
 
 def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=None, box_size=40):
-    """Run LodeSTAR on a full frame — no tiling (fully-convolutional, no
-    per-frame detection cap unlike RF-DETR's num_queries)."""
-    import torch
-    import supervision as sv
+    from detectors_common.lodestar_loader import detect_lodestar as _impl
 
-    frame_f = frame.astype(np.float32)
-    if frame.ndim == 3:
-        frame_f = np.mean(frame_f, axis=2)
-
-    f_min, f_ptp = frame_f.min(), np.ptp(frame_f)
-    frame_norm = (frame_f - f_min) / f_ptp if f_ptp != 0 else frame_f - f_min
-
-    tensor = torch.from_numpy(frame_norm).unsqueeze(0).unsqueeze(0).to(device)
-    tensor = tensor.to(next(model.parameters()).dtype)
-
-    with torch.inference_mode():
-        detections_raw = model.detect(
-            tensor, alpha=alpha, beta=1.0 - alpha, cutoff=threshold, mode="ratio"
-        )
-
-    if isinstance(detections_raw, list):
-        detections_raw = detections_raw[0]
-
-    if detections_raw is None or len(detections_raw) == 0:
-        return sv.Detections.empty()
-
-    # LodeSTAR det[2] is the model's radius/sigma output, not a confidence score.
-    # The raw value is in model-space (typically < 1.0); scale to pixels when that's the case.
-    frame_scale = max(frame.shape[:2])
-    xyxy, confidences = [], []
-    for det in detections_raw:
-        y, x = det[0], det[1]
-        if len(det) >= 3:
-            sigma = abs(det[2])
-            r = sigma * frame_scale if sigma < 1.0 else sigma
-        else:
-            r = box_size / 2
-        xyxy.append([x - r, y - r, x + r, y + r])
-        confidences.append(1.0)  # all detections passed the same cutoff; ordering is secondary
-
-    result = sv.Detections(
-        xyxy=np.array(xyxy, dtype=np.float32),
-        confidence=np.array(confidences, dtype=np.float32),
-        class_id=np.zeros(len(xyxy), dtype=int),
+    return _impl(
+        model, frame, threshold, device, alpha=alpha, nms_distance=nms_distance, box_size=box_size
     )
-
-    if nms_distance and nms_distance > 0 and len(result) > 1:
-        centers = (result.xyxy[:, :2] + result.xyxy[:, 2:]) / 2
-        order = np.argsort(-result.confidence)
-        processed = np.zeros(len(result), dtype=bool)
-        keep = []
-        for idx in order:
-            if processed[idx]:
-                continue
-            keep.append(idx)
-            dists = np.sqrt(((centers - centers[idx]) ** 2).sum(axis=1))
-            processed[dists < nms_distance] = True
-        keep = np.array(keep)
-        result = sv.Detections(
-            xyxy=result.xyxy[keep],
-            confidence=result.confidence[keep],
-            class_id=result.class_id[keep],
-        )
-
-    return result
 
 
 def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
-    """Run RF-DETR on overlapping tiles, merge with NMS. Falls back to
-    a single predict() call when the frame fits within tile_size."""
-    import supervision as sv
+    from detectors_common.tiling import detect_with_tiling as _impl
 
-    H, W = frame.shape[:2]
-    if H <= tile_size and W <= tile_size:
-        return model.predict(frame, threshold=threshold)
-
-    stride = tile_size - overlap
-
-    def tile_starts(length):
-        starts = list(range(0, length - tile_size, stride))
-        starts.append(length - tile_size)
-        return starts
-
-    all_xyxy, all_conf, all_class_id = [], [], []
-    for y0 in tile_starts(H):
-        for x0 in tile_starts(W):
-            tile = frame[y0 : y0 + tile_size, x0 : x0 + tile_size]
-            dets = model.predict(tile, threshold=threshold)
-            if len(dets) > 0:
-                boxes = dets.xyxy.copy()
-                boxes[:, [0, 2]] += x0
-                boxes[:, [1, 3]] += y0
-                all_xyxy.append(boxes)
-                all_conf.append(dets.confidence)
-                all_class_id.append(dets.class_id)
-
-    if not all_xyxy:
-        return sv.Detections.empty()
-
-    merged = sv.Detections(
-        xyxy=np.concatenate(all_xyxy),
-        confidence=np.concatenate(all_conf),
-        class_id=np.concatenate(all_class_id),
-    )
-    return merged.with_nms(threshold=nms_threshold)
+    return _impl(model, frame, threshold, tile_size, overlap, nms_threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -668,10 +527,11 @@ def main():
             }
         )
 
-    # Write per-frame CSV
+    # Write per-frame CSV. Named per model_type — a fixed filename would let a
+    # later run of the other model type silently overwrite these results.
     output_dir = Path("verification_output")
     output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / "accuracy_metrics.csv"
+    csv_path = output_dir / f"accuracy_metrics_{model_type}.csv"
     if rows:
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -703,7 +563,7 @@ def main():
             all_detections_by_frame, args.ground_truth_tracks, full_cfg
         )
         if tracking_metrics:
-            tracking_csv_path = output_dir / "tracking_metrics.csv"
+            tracking_csv_path = output_dir / f"tracking_metrics_{model_type}.csv"
             with open(tracking_csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=list(tracking_metrics.keys()))
                 writer.writeheader()
