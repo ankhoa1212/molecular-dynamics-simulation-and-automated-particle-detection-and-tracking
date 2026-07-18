@@ -739,12 +739,14 @@ version = "0.1.0"
 source = { editable = "../detectors-common" }
 dependencies = [
     { name = "numpy" },
+    { name = "pyyaml" },
     { name = "supervision" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.26.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "supervision", specifier = ">=0.21.0" },
 ]
 
