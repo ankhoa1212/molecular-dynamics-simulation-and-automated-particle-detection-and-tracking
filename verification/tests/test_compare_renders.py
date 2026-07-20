@@ -334,6 +334,248 @@ class TestOutputPng:
 
 
 # ---------------------------------------------------------------------------
+# U5: deeptrack-real / deeptrack-procedural strategy variants
+# ---------------------------------------------------------------------------
+
+
+def _base_synth_cfg(**extra):
+    cfg = {
+        "image_height": 32,
+        "image_width": 32,
+        "psf_sigma": 2.0,
+        "peak_intensity": 1000,
+        "shot_noise": False,
+        "readout_noise": 0.0,
+    }
+    cfg.update(extra)
+    return {"synthetic": cfg}
+
+
+class TestCropSourceStrategyVariants:
+    def test_strategies_accept_crop_source_variants_without_argparse_error(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(cr_module, "_load_config", lambda p: _base_synth_cfg())
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-real",
+                "deeptrack-procedural",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()  # must not raise a SystemExit from argparse
+
+        assert (out_dir / "snr_psd_scores.csv").exists()
+
+    def test_deeptrack_real_dispatches_as_deeptrack_with_crop_source_real(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(cr_module, "_load_config", lambda p: _base_synth_cfg())
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-real",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        call = _RENDER_STUB._dispatch_render.call_args
+        # positional args: (positions_lj, box, cfg, rng, strategy)
+        called_cfg, called_strategy = call.args[2], call.args[4]
+        assert called_strategy == "deeptrack"
+        assert called_cfg["crop_source"] == "real"
+
+    def test_deeptrack_procedural_dispatches_as_deeptrack_with_crop_source_procedural(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(cr_module, "_load_config", lambda p: _base_synth_cfg())
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-procedural",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        call = _RENDER_STUB._dispatch_render.call_args
+        called_cfg, called_strategy = call.args[2], call.args[4]
+        assert called_strategy == "deeptrack"
+        assert called_cfg["crop_source"] == "procedural"
+
+    def test_plain_deeptrack_strategy_leaves_crop_source_unset(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        """'deeptrack' (no suffix) must not have crop_source injected — it
+        keeps calling with crop_source unset (defaults to physics)."""
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(cr_module, "_load_config", lambda p: _base_synth_cfg())
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        call = _RENDER_STUB._dispatch_render.call_args
+        called_cfg, called_strategy = call.args[2], call.args[4]
+        assert called_strategy == "deeptrack"
+        assert "crop_source" not in called_cfg
+
+
+class TestSourceDistinctnessWarning:
+    def test_warning_fires_when_real_frame_matches_harvesting_video_path(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        real_frame_path = tmp_path / "shared.tif"
+        real_frame_path.write_bytes(
+            b"not-a-real-tif"
+        )  # only the path is used before tifffile.imread
+        monkeypatch.setattr(
+            cr_module, "tifffile", mock.MagicMock(imread=lambda p: np.zeros((32, 32)))
+        )
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(
+            cr_module,
+            "_load_config",
+            lambda p: _base_synth_cfg(crop_template={"video_paths": [str(real_frame_path)]}),
+        )
+
+        captured_warnings = []
+        monkeypatch.setattr(
+            warnings, "warn", lambda msg, *a, **k: captured_warnings.append(str(msg))
+        )
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--real-frame",
+                str(real_frame_path),
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-real",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        assert any("memorization" in w for w in captured_warnings)
+
+    def test_no_warning_when_paths_are_distinct(self, cr_module, tmp_path, monkeypatch):
+        real_frame_path = tmp_path / "real.tif"
+        real_frame_path.write_bytes(b"not-a-real-tif")
+        harvest_path = tmp_path / "harvest.tif"
+        monkeypatch.setattr(
+            cr_module, "tifffile", mock.MagicMock(imread=lambda p: np.zeros((32, 32)))
+        )
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(
+            cr_module,
+            "_load_config",
+            lambda p: _base_synth_cfg(crop_template={"video_paths": [str(harvest_path)]}),
+        )
+
+        captured_warnings = []
+        monkeypatch.setattr(
+            warnings, "warn", lambda msg, *a, **k: captured_warnings.append(str(msg))
+        )
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--real-frame",
+                str(real_frame_path),
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-real",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        assert not any("memorization" in w for w in captured_warnings)
+
+
+# ---------------------------------------------------------------------------
 # Procedural strategy runs without deeptrack
 # ---------------------------------------------------------------------------
 

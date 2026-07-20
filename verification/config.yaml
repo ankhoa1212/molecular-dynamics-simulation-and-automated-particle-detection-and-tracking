@@ -45,6 +45,29 @@ synthetic:
     peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
     readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
 
+  # --- Particle appearance source (render_strategy: deeptrack) ---
+  crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above
+
+  # --- Empirical crop-template library (crop_source: real) ---
+  # Built once via render_crop_templates.build_template_library(), then cached; see
+  # docs/plans/2026-07-19-001-feat-crop-based-particle-rendering-plan.md.
+  crop_template:
+    video_paths: []              # real .tif video(s) to harvest particle crops from
+    crop_half: 20                # half-width (px) of the harvested crop window
+    min_sep: 40                  # min candidate separation (px); also the contamination exclusion radius
+    percentile: 95.0             # candidate-detection brightness percentile
+    min_area: 20                 # min connected-component pixel area to count as a candidate
+    max_area: 400                # max connected-component pixel area (excludes merged/oversized blobs)
+    target_half: 12              # half-width (px) of the final registered template
+    n_clusters: 5                # number of empirical templates to build
+    cache_path: crop_templates.npz   # cached template library (.npz)
+
+  # --- Procedural particle shape generator (crop_source: procedural) ---
+  procedural_shape:
+    size: 41                       # generated shape side length (px)
+    sigma: 5.0                     # base sigma (px)
+    asymmetry_range: [0.8, 1.2]    # per-axis sigma multiplier range (1.0 = round)
+
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
   model_type: rf-detr       # rf-detr | lodestar | trackpy — overridden by --model-type

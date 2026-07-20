@@ -594,3 +594,277 @@ class TestRandomizedStrategy:
         )
         assert frame.dtype == np.uint16
         assert frame.shape == (32, 32)
+
+
+# ---------------------------------------------------------------------------
+# U4: crop_source (physics | real | procedural)
+# ---------------------------------------------------------------------------
+
+
+def _import_deeptrack_with_mock(fake_kernel):
+    """Same stub pattern as TestDeeptrackStrategy._import_with_mock_deeptrack,
+    factored out for reuse by crop_source tests that don't subclass it."""
+    import types
+
+    for key in list(sys.modules.keys()):
+        if "render_deeptrack" in key:
+            del sys.modules[key]
+
+    fake_pipeline = mock.MagicMock()
+    fake_pipeline.update.return_value = fake_pipeline
+    fake_pipeline.resolve.return_value = fake_kernel
+
+    fake_optics_instance = mock.MagicMock(return_value=fake_pipeline)
+    deeptrack_stub = types.ModuleType("deeptrack")
+    deeptrack_stub.Fluorescence = mock.MagicMock(return_value=fake_optics_instance)
+    deeptrack_stub.PointParticle = mock.MagicMock()
+
+    sys.modules["deeptrack"] = deeptrack_stub
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    import render_deeptrack as rdt
+
+    return rdt
+
+
+def _fake_template_library(n=3, size=9):
+    """A small library of distinguishable normalized templates (each with a
+    single bright pixel at a different location, sum == 1)."""
+    templates = []
+    for i in range(n):
+        t = np.zeros((size, size), dtype=np.float32)
+        t[size // 2, (size // 2 + i) % size] = 1.0
+        templates.append(t)
+    return np.stack(templates, axis=0)
+
+
+class TestCropSourcePhysicsRegression:
+    def test_default_and_explicit_physics_are_byte_identical(self):
+        """crop_source omitted vs. crop_source: 'physics' must render
+        byte-identical output for the same seed — the default fallback must
+        route through the exact same code path as an explicit 'physics'."""
+        H, W = 32, 32
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        positions = np.array([[5.0, 5.0], [3.0, 7.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+
+        cfg_default = _deeptrack_cfg(H, W)
+        cfg_explicit = _deeptrack_cfg(H, W)
+        cfg_explicit["crop_source"] = "physics"
+
+        frame_default = rdt.render_frame_deeptrack(
+            positions, box, cfg_default, np.random.default_rng(42)
+        )
+        frame_explicit = rdt.render_frame_deeptrack(
+            positions, box, cfg_explicit, np.random.default_rng(42)
+        )
+
+        assert np.array_equal(frame_default, frame_explicit)
+
+    def test_unknown_crop_source_raises_value_error(self):
+        H, W = 32, 32
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "not_a_real_source"
+
+        with pytest.raises(ValueError, match="not_a_real_source"):
+            rdt.render_frame_deeptrack(
+                np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(0)
+            )
+
+
+class TestCropSourceReal:
+    def test_elevated_intensity_at_particle_positions_with_varying_templates(self, monkeypatch):
+        H, W = 64, 64
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        import render_crop_templates as rct
+
+        templates = _fake_template_library(n=4, size=9)
+        monkeypatch.setattr(rct, "load_template_library", lambda path: templates)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "real"
+        cfg["crop_template"] = {"cache_path": "unused-because-mocked.npz"}
+        cfg["background"]["amplitude"] = 0
+        cfg["noise"]["gain_sigma"] = 0.0
+        cfg["noise"]["read_noise"] = 0.0
+
+        positions = np.array([[2.0, 2.0], [8.0, 8.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(3))
+
+        assert frame.dtype == np.uint16
+        assert frame.max() > 0  # some particle intensity landed on the canvas
+
+    def test_missing_cache_path_key_raises_informative_error(self):
+        H, W = 32, 32
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "real"
+        cfg["crop_template"] = {}  # no cache_path
+
+        with pytest.raises(ValueError, match="crop_template.cache_path"):
+            rdt.render_frame_deeptrack(
+                np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(0)
+            )
+
+    def test_nonexistent_cache_file_raises_informative_error_not_bare_exception(self):
+        H, W = 32, 32
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "real"
+        cfg["crop_template"] = {"cache_path": "/nonexistent/path/templates.npz"}
+
+        with pytest.raises(FileNotFoundError, match="pre-built template library"):
+            rdt.render_frame_deeptrack(
+                np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(0)
+            )
+
+    def test_ground_truth_position_matches_lj_to_pixels_rounded_location(self, monkeypatch):
+        H, W = 64, 64
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        import render_crop_templates as rct
+
+        # Single-peak template so the brightest canvas pixel is unambiguous.
+        template = np.zeros((9, 9), dtype=np.float32)
+        template[4, 4] = 1.0
+        monkeypatch.setattr(rct, "load_template_library", lambda path: np.stack([template]))
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "real"
+        cfg["crop_template"] = {"cache_path": "unused.npz"}
+        cfg["background"]["amplitude"] = 0
+        cfg["noise"]["gain_sigma"] = 0.0
+        cfg["noise"]["read_noise"] = 0.0
+
+        box = (0.0, 10.0, 0.0, 10.0)
+        positions = np.array([[6.3, 4.7]])
+        expected_px = rdt._lj_to_pixels(positions, box, H, W)[0]
+        expected_row, expected_col = int(round(expected_px[1])), int(round(expected_px[0]))
+
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(5))
+
+        brightest = np.unravel_index(np.argmax(frame), frame.shape)
+        assert abs(brightest[0] - expected_row) <= 1
+        assert abs(brightest[1] - expected_col) <= 1
+
+    def test_particle_near_edge_is_clipped_not_out_of_range(self, monkeypatch):
+        H, W = 32, 32
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        import render_crop_templates as rct
+
+        templates = _fake_template_library(n=2, size=21)  # half-width 10, larger than edge margin
+        monkeypatch.setattr(rct, "load_template_library", lambda path: templates)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "real"
+        cfg["crop_template"] = {"cache_path": "unused.npz"}
+
+        # Particle right at the corner — template patch extends past all four edges.
+        positions = np.array([[0.0, 0.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(0))
+
+        assert frame.shape == (H, W)  # no exception, canvas size unaffected
+
+
+class TestCropSourceProcedural:
+    def test_produces_frame_with_no_cache_dependency(self):
+        H, W = 48, 48
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "procedural"
+        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0, "asymmetry_range": [0.8, 1.2]}
+
+        positions = np.array([[3.0, 3.0], [7.0, 7.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(9))
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+
+
+class TestCropSourceBackgroundNoiseInvariance:
+    def test_background_and_noise_statistics_match_across_crop_sources(self, monkeypatch):
+        """Given the same clean canvas (no particles, so crop_source's own
+        compositing/convolution differences are moot), background + noise
+        output statistics must be identical regardless of crop_source."""
+        H, W = 32, 32
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        import render_crop_templates as rct
+
+        monkeypatch.setattr(rct, "load_template_library", lambda path: _fake_template_library())
+
+        box = (0.0, 10.0, 0.0, 10.0)
+        positions = np.zeros((0, 2))
+
+        frames = {}
+        for source in ("physics", "real", "procedural"):
+            cfg = _deeptrack_cfg(H, W)
+            cfg["crop_source"] = source
+            cfg["crop_template"] = {"cache_path": "unused.npz"}
+            cfg["procedural_shape"] = {"size": 9, "sigma": 2.0}
+            cfg["background"]["amplitude"] = 500
+            frames[source] = rdt.render_frame_deeptrack(
+                positions, box, cfg, np.random.default_rng(11)
+            )
+
+        assert np.array_equal(frames["physics"], frames["real"])
+        assert np.array_equal(frames["physics"], frames["procedural"])
+
+
+class TestCropSourceDispatchIntegration:
+    """Mirrors TestRenderStrategyDispatch + TestDeeptrackStrategy's stub setup —
+    exercises config -> _dispatch_render -> render_frame_deeptrack -> compositing
+    -> noise together, not just individual functions in isolation."""
+
+    def test_dispatch_real_and_procedural_each_return_valid_frame(self, render_module, monkeypatch):
+        H, W = 40, 40
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+        monkeypatch.setitem(sys.modules, "render_deeptrack", rdt)
+
+        import render_crop_templates as rct
+
+        templates = _fake_template_library(n=3, size=9)
+        monkeypatch.setattr(rct, "load_template_library", lambda path: templates)
+
+        positions = np.array([[4.0, 4.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+
+        cfg_real = _deeptrack_cfg(H, W)
+        cfg_real["crop_source"] = "real"
+        cfg_real["crop_template"] = {"cache_path": "unused.npz"}
+        frame_real = render_module._dispatch_render(
+            positions, box, cfg_real, np.random.default_rng(1), "deeptrack"
+        )
+
+        cfg_proc = _deeptrack_cfg(H, W)
+        cfg_proc["crop_source"] = "procedural"
+        cfg_proc["procedural_shape"] = {"size": 11, "sigma": 2.5}
+        frame_proc = render_module._dispatch_render(
+            positions, box, cfg_proc, np.random.default_rng(2), "deeptrack"
+        )
+
+        for frame in (frame_real, frame_proc):
+            assert frame.dtype == np.uint16
+            assert frame.shape == (H, W)

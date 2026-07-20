@@ -99,7 +99,13 @@ def main():
         "--strategies",
         nargs="+",
         default=["procedural"],
-        choices=["procedural", "deeptrack", "randomized"],
+        choices=[
+            "procedural",
+            "deeptrack",
+            "randomized",
+            "deeptrack-real",
+            "deeptrack-procedural",
+        ],
     )
     parser.add_argument("--output-dir", default="verification_output/")
     args = parser.parse_args()
@@ -118,15 +124,41 @@ def main():
     if real_frame is None:
         warnings.warn("--real-frame not provided; PSD comparison skipped.", stacklevel=2)
 
+    if args.real_frame and "deeptrack-real" in args.strategies:
+        real_frame_path = Path(args.real_frame).resolve()
+        harvest_paths = {
+            Path(p).resolve() for p in synth_cfg.get("crop_template", {}).get("video_paths", [])
+        }
+        if real_frame_path in harvest_paths:
+            warnings.warn(
+                "--real-frame resolves to the same file as a configured "
+                "synthetic.crop_template.video_paths entry — the 'deeptrack-real' comparison may "
+                "be measuring memorization of the reference frame rather than generalization.",
+                stacklevel=2,
+            )
+
+    # "deeptrack-real"/"deeptrack-procedural" both dispatch through the plain
+    # "deeptrack" strategy string with crop_source overridden on a copy of
+    # synth_cfg — _dispatch_render only recognizes literal "deeptrack" (see
+    # render.py:_dispatch_render), so these suffixed names can't be passed
+    # through directly.
+    _CROP_SOURCE_BY_STRATEGY = {
+        "deeptrack-real": "real",
+        "deeptrack-procedural": "procedural",
+    }
+
     rendered = {}
     for strategy in args.strategies:
-        if strategy == "deeptrack":
+        crop_source = _CROP_SOURCE_BY_STRATEGY.get(strategy)
+        dispatch_strategy = "deeptrack" if crop_source else strategy
+        if dispatch_strategy == "deeptrack":
             try:
                 import render_deeptrack  # noqa: F401
             except ImportError:
                 print(f"WARNING: deeptrack not installed — skipping '{strategy}'.")
                 continue
-        rendered[strategy] = _dispatch_render(positions_lj, box, synth_cfg, rng, strategy)
+        cfg = dict(synth_cfg, crop_source=crop_source) if crop_source else synth_cfg
+        rendered[strategy] = _dispatch_render(positions_lj, box, cfg, rng, dispatch_strategy)
 
     rows = []
     for strategy, frame in rendered.items():
