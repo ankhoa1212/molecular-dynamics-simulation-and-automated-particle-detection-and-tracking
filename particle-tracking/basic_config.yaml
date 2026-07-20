@@ -9,7 +9,7 @@ input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-
 model:
   type: rf-detr  # rf-detr | yolo | lodestar
 
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth  # model checkpoint
+  checkpoint: ../rf-detr/checkpoints/checkpoint_best_regular.pth  # model checkpoint
 
   # Only used when model.type is rf-detr
   variant: large  # nano | small | medium | large

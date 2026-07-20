@@ -42,7 +42,7 @@ class TestWriteRfdetrConfig:
 
         assert parsed["input"] == "/videos/vid1.tif"
         assert parsed["model"]["type"] == "rf-detr"
-        assert parsed["model"]["checkpoint"] == "../rf-detr/checkpoints/checkpoint_best_ema.pth"
+        assert parsed["model"]["checkpoint"] == "../rf-detr/checkpoints/checkpoint_best_regular.pth"
         assert parsed["model"]["variant"] == "large"
         assert parsed["detection"]["threshold"] == 0.3
         assert parsed["tracking"]["search_range"] == 25
@@ -207,7 +207,7 @@ class TestInjectionSafety:
         )
         parsed = yaml.safe_load(cfg_path.read_text())
 
-        assert parsed["model"]["checkpoint"] == "../rf-detr/checkpoints/checkpoint_best_ema.pth"
+        assert parsed["model"]["checkpoint"] == "../rf-detr/checkpoints/checkpoint_best_regular.pth"
         assert parsed["input"] == evil_input
 
     def test_crafted_output_dir_cannot_inject_keys(self, tmp_path):

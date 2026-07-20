@@ -92,7 +92,7 @@ def probe_crop_size(input_path: str, script_dir: Path) -> tuple[int, int] | None
             "--model-type",
             "rf-detr",
             "--checkpoint",
-            "../rf-detr/checkpoints/checkpoint_best_ema.pth",
+            "../rf-detr/checkpoints/checkpoint_best_regular.pth",
             "--variant",
             "large",
             "--num-classes",

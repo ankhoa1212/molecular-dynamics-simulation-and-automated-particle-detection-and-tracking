@@ -9,12 +9,22 @@ input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-
 model:
   type: rf-detr  # rf-detr | yolo | lodestar
 
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth  # model checkpoint
+  checkpoint: ../rf-detr/checkpoints/checkpoint_best_regular.pth  # model checkpoint
+                     # checkpoint_best_ema.pth is from a training run that crashed at epoch 0 (only 449
+                     # steps logged, val metrics never ran) and produces ZERO detections on real frames —
+                     # do not use it. checkpoint_best_regular.pth is from the May 6 run that completed 20
+                     # epochs with val/mAP_50=0.91, recall=0.87, precision=0.94 (see
+                     # rf-detr/checkpoints/events.out.tfevents.1778071247.*) and correctly detects all 70/70
+                     # particles on a held-out test frame.
 
   # Only used when model.type is rf-detr
   variant: large  # nano | small | medium | large
   num_classes: 2  # number of classes in the checkpoint (2 = particle/background)
-  num_queries: 300  # max detections per frame; must match the trained checkpoint (checkpoint_best_ema was trained with default 300)
+  num_queries: 300  # max detections per frame; must match the trained checkpoint. checkpoint_best_regular
+                     # was trained with num_queries=300 (refpoint_embed/query_feat are 300*group_detr=3900
+                     # rows) — rfdetr's loader (rfdetr/detr.py:_load_pretrain_weights_into) silently
+                     # truncates these to num_queries*group_detr before load_state_dict if this is wrong,
+                     # discarding trained queries with no error or warning.
 
   device: "0"  # "0" for first GPU, "cpu" for CPU-only
 

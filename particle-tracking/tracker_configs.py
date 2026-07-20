@@ -78,7 +78,7 @@ def write_rfdetr_config(
         "input": input_path,
         "model": {
             "type": "rf-detr",
-            "checkpoint": "../rf-detr/checkpoints/checkpoint_best_ema.pth",
+            "checkpoint": "../rf-detr/checkpoints/checkpoint_best_regular.pth",
             "variant": "large",
             "num_classes": 2,
             "num_queries": 300,

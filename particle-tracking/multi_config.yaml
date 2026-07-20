@@ -13,12 +13,12 @@ input:
 model:
   type: rf-detr  # rf-detr | yolo | lodestar
 
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth  # model checkpoint
+  checkpoint: ../rf-detr/checkpoints/checkpoint_best_regular.pth  # model checkpoint
 
   # Only used when model.type is rf-detr
   variant: large  # nano | small | medium | large
   num_classes: 2  # number of classes in the checkpoint (2 = particle/background)
-  num_queries: 300  # max detections per frame; must match the trained checkpoint (checkpoint_best_ema was trained with default 300)
+  num_queries: 300  # max detections per frame; must match the trained checkpoint (checkpoint_best_regular was trained with num_queries=300)
 
   device: "0"  # "0" for first GPU, "cpu" for CPU-only
 
