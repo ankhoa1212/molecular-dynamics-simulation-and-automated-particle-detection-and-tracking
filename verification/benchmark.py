@@ -2,7 +2,8 @@
 """Benchmark detection accuracy on synthetic frames from render.py.
 
 Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR (with
-optional tiling) or LodeSTAR (full-frame, no tiling) via --model-type,
+optional tiling), LodeSTAR (full-frame, no tiling), or trackpy (classical
+brightness-thresholding baseline, no venv/checkpoint needed) via --model-type,
 matches detections to known particle positions, and reports per-frame
 precision/recall/F1 and mean position error.
 
@@ -19,7 +20,7 @@ Usage:
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
-        [--model-type rf-detr|lodestar]
+        [--model-type rf-detr|lodestar|trackpy]
 """
 
 import os
@@ -37,9 +38,14 @@ SCRIPT_DIR = Path(__file__).parent
 # load under a mismatched interpreter without a matching-version re-exec.
 # The keys here are the single source of truth for valid --model-type values —
 # argparse's `choices` and this dict's default fallback both read from it.
+#
+# A value of None means "no compiled/CUDA dependency — runs natively in this
+# script's own venv, skip re-exec entirely" (see trackpy below, which is
+# already a plain dependency of verification/pyproject.toml).
 _MODEL_VENV_DIRS = {
     "rf-detr": SCRIPT_DIR / ".." / "rf-detr" / ".venv",
     "lodestar": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
+    "trackpy": None,
 }
 _DEFAULT_MODEL_TYPE = "rf-detr"
 
@@ -86,6 +92,8 @@ def _reexec_for_model_venv(model_type):
     since re-exec blindly reuses sys.argv, which is only a valid `benchmark.py`
     invocation when this script is actually the one being run."""
     venv_dir = _MODEL_VENV_DIRS.get(model_type, _MODEL_VENV_DIRS["rf-detr"])
+    if venv_dir is None:
+        return
     venv_python = (venv_dir / "bin" / "python").absolute()
     if not venv_python.exists():
         return
@@ -177,6 +185,38 @@ def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshol
     from detectors_common.tiling import detect_with_tiling as _impl
 
     return _impl(model, frame, threshold, tile_size, overlap, nms_threshold)
+
+
+# ---------------------------------------------------------------------------
+# trackpy detection — NOT re-exported from detectors_common. Unlike RF-DETR
+# and LodeSTAR, trackpy has no CUDA/compiled-extension dependency and is
+# already a native dependency of verification/pyproject.toml (used today for
+# the tracking-metrics pass below), so it needs no cross-venv site-packages
+# injection and no re-exec (see _MODEL_VENV_DIRS["trackpy"] = None above).
+# It has exactly one consumer (this file), so routing it through the shared
+# package would add indirection with no sharing benefit.
+# ---------------------------------------------------------------------------
+
+
+def detect_trackpy(frame, diameter, minmass=None, separation=None):
+    """Locate particles with trackpy's classical brightness-thresholding
+    algorithm and return an sv.Detections object shaped like the other two
+    detectors' output (xyxy boxes, confidence left unset — see plan KTDs on
+    why trackpy's `mass` isn't surfaced as a confidence score)."""
+    import trackpy as tp
+    import supervision as sv
+
+    gray = frame.astype(np.float64).mean(axis=2) if frame.ndim == 3 else frame.astype(np.float64)
+    features = tp.locate(gray, diameter, minmass=minmass, separation=separation)
+
+    if features.empty:
+        return sv.Detections.empty()
+
+    xs = features["x"].to_numpy()
+    ys = features["y"].to_numpy()
+    half = diameter / 2.0
+    xyxy = np.stack([xs - half, ys - half, xs + half, ys + half], axis=1).astype(np.float32)
+    return sv.Detections(xyxy=xyxy, class_id=np.zeros(len(xyxy), dtype=int))
 
 
 def _load_lodestar_defaults(cfg):
@@ -383,7 +423,9 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark RF-DETR/LodeSTAR on synthetic frames")
+    parser = argparse.ArgumentParser(
+        description="Benchmark RF-DETR/LodeSTAR/trackpy on synthetic frames"
+    )
     parser.add_argument(
         "--frames", required=True, help="Directory of synthetic PNG frames (from render.py)"
     )
@@ -412,6 +454,15 @@ def main():
     model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
     match_distance = _cfg_get(cfg, "match_distance", default=10)
 
+    # Shared defaults every branch below may override. `tiling_enabled = False`
+    # for lodestar/trackpy is a defensive belt-and-suspenders default, not just
+    # documentation — it means the detection dispatch's `elif tiling_enabled:`
+    # branch stays correct (false, so skipped) even if a future edit reorders
+    # that chain relative to the `model_type ==` checks that currently
+    # short-circuit before it's ever evaluated for these two model types.
+    device_raw = args.device
+    tiling_enabled = False
+
     if model_type == "lodestar":
         checkpoint = Path(
             _cfg_get(
@@ -431,6 +482,14 @@ def main():
         # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
         # read them (print, get_rfdetr_model, detect_with_tiling) are all gated
         # behind `model_type != "lodestar"`, so no placeholder values are needed here.
+    elif model_type == "trackpy":
+        # trackpy has no checkpoint file and no loaded model object — a real
+        # absence, not a placeholder path (see plan KTDs). device is computed
+        # (shared default above) but unused — trackpy is CPU-only.
+        checkpoint = None
+        diameter = _cfg_get(cfg, "trackpy", "diameter", default=15)
+        minmass = _cfg_get(cfg, "trackpy", "minmass", default=None)
+        separation = _cfg_get(cfg, "trackpy", "separation", default=None)
     else:
         checkpoint = Path(
             _cfg_get(cfg, "checkpoint", default="../rf-detr/checkpoints/checkpoint_best_ema.pth")
@@ -442,7 +501,6 @@ def main():
         tile_size = _cfg_get(cfg, "tiling", "tile_size", default=512)
         overlap = _cfg_get(cfg, "tiling", "overlap", default=50)
         nms_threshold = _cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
-        device_raw = args.device
 
     # Apply the "0" default before normalizing (not after) — _normalize_device(None)
     # returns None, so normalizing-then-defaulting would leave the raw, un-normalized
@@ -450,7 +508,7 @@ def main():
     # but get_lodestar_model()/detect_lodestar() trust this value as-is.
     device = _normalize_device(device_raw or "0")
 
-    if not checkpoint.exists():
+    if checkpoint is not None and not checkpoint.exists():
         print(f"Error: checkpoint not found at {checkpoint}")
         sys.exit(1)
 
@@ -465,15 +523,23 @@ def main():
         sys.exit(1)
 
     print(f"Model type: {model_type}")
-    print(f"Checkpoint: {checkpoint}")
+    if model_type == "trackpy":
+        print(f"Parameters: diameter={diameter}, minmass={minmass}, separation={separation}")
+    else:
+        print(f"Checkpoint: {checkpoint}")
     print(f"Frames:     {len(tiff_files)}")
-    if model_type == "lodestar":
-        print("Tiling:     n/a (LodeSTAR runs full-frame, no query cap to tile around)")
+    if model_type in ("lodestar", "trackpy"):
+        print(
+            "Tiling:     n/a (LodeSTAR is fully-convolutional with no query cap to tile around; "
+            "trackpy is a classical algorithm with no detection cap at all)"
+        )
     else:
         print(f"Tiling:     {'enabled' if tiling_enabled else 'disabled'} (tile_size={tile_size})")
 
     if model_type == "lodestar":
         model = get_lodestar_model(checkpoint, device, fp16=fp16)
+    elif model_type == "trackpy":
+        model = None
     else:
         model = get_rfdetr_model(variant, checkpoint, device, num_queries=num_queries)
 
@@ -502,6 +568,13 @@ def main():
                 alpha=alpha,
                 nms_distance=nms_distance,
                 box_size=box_size,
+            )
+        elif model_type == "trackpy":
+            # Must stay before `elif tiling_enabled:` below — tiling_enabled is
+            # only ever assigned in the rf-detr branch of config resolution
+            # above and is never bound on the trackpy code path.
+            dets = detect_trackpy(
+                img_rgb, diameter=diameter, minmass=minmass, separation=separation
             )
         elif tiling_enabled:
             dets = detect_with_tiling(model, img_rgb, threshold, tile_size, overlap, nms_threshold)

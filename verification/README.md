@@ -3,10 +3,11 @@
 End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering.
 
 1. **`render.py`** — converts a LAMMPS trajectory into synthetic microscopy TIFFs with known particle positions; writes `ground_truth.json` (per-frame positions) and `ground_truth_tracks.csv` (per-particle track ground truth for MOTA/IDF1).
-2. **`benchmark.py`** — runs RF-DETR or LodeSTAR (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
+2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
+6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error across `benchmark.py`'s per-model-type outputs, for comparing detector performance side by side.
 
 ## Setup
 
@@ -15,11 +16,12 @@ cd verification/
 uv sync
 ```
 
-`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default) and LodeSTAR each pull their compiled dependencies (torch, and either `rfdetr` or `deeplay`/`supervision`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv:
+`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default) and LodeSTAR each pull their compiled dependencies (torch, and either `rfdetr` or `deeplay`/`supervision`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv. `trackpy` needs no sibling-project venv — it's a classical, non-CUDA algorithm and already a native dependency of `verification/`'s own venv (installed by the `uv sync` above):
 
 ```bash
 cd ../rf-detr && uv sync             # --model-type rf-detr (default)
 cd ../particle-tracking && uv sync   # --model-type lodestar
+# --model-type trackpy needs nothing further — runs natively in verification/.venv
 ```
 
 `compare.py` needs `freud` for hexatic order (optional — skipped if missing):
@@ -125,6 +127,12 @@ uv run python benchmark.py \
     --ground-truth verification_output/ground_truth.json \
     --model-type lodestar
 
+# Detection only, trackpy (classical baseline, no venv/checkpoint needed)
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type trackpy
+
 # Detection + tracking metrics (MOTA/IDF1/fragmentation)
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
@@ -132,9 +140,9 @@ uv run python benchmark.py \
     --ground-truth-tracks verification_output/ground_truth_tracks.csv
 ```
 
-Outputs:
-- `verification_output/accuracy_metrics.csv` — per-frame precision/recall/F1
-- `verification_output/tracking_metrics.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
+Outputs (named per `--model-type` so a run of one model doesn't overwrite the other's results):
+- `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1
+- `verification_output/tracking_metrics_{model_type}.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
 
 **Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
 
@@ -146,8 +154,9 @@ Outputs:
 |----------------|-------------------|----------------|-------|
 | `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
 | `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
+| `trackpy` | `benchmark.trackpy.*` (`diameter`, `minmass`, `separation`) | none — runs natively in `verification/.venv` | Classical brightness-thresholding baseline (`trackpy.locate`), not a learned model; no checkpoint file, no loaded model object |
 
-`--device` is shared across model types; `benchmark.lodestar.device` overrides it for LodeSTAR specifically when set.
+`--device` is shared across model types; `benchmark.lodestar.device` overrides it for LodeSTAR specifically when set. `trackpy` is CPU-only and ignores `--device`.
 
 Options:
 
@@ -157,7 +166,7 @@ Options:
 | `--ground-truth` | *(required)* | `ground_truth.json` from render.py |
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
-| `--model-type` | `rf-detr` | `rf-detr` or `lodestar` — overridden by `benchmark.model_type` in config when the flag is omitted |
+| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--device` | `0` | CUDA device index or `cpu` |
 
 Key settings in `config.yaml` under `tracking:`:
@@ -223,8 +232,9 @@ verification_output/
 │   └── frame_NNNNN.png
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
-├── accuracy_metrics.csv        # per-frame precision/recall/F1 (from benchmark.py)
-├── tracking_metrics.csv        # MOTA/IDF1/fragmentation (from benchmark.py)
+├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1 (from benchmark.py)
+├── tracking_metrics_{model_type}.csv   # MOTA/IDF1/fragmentation (from benchmark.py)
+├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
 ├── renders_comparison.png      # side-by-side strategy comparison (from compare_renders.py)
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
 ├── hexatic_order.png           # structural order comparison (from compare.py)

@@ -47,7 +47,7 @@ synthetic:
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
-  model_type: rf-detr       # rf-detr | lodestar — overridden by --model-type
+  model_type: rf-detr       # rf-detr | lodestar | trackpy — overridden by --model-type
   match_distance: 10        # pixels — max center-to-center dist to count a detection as TP; shared across model types
 
   # --- model_type: rf-detr ---
@@ -74,10 +74,24 @@ benchmark:
     checkpoint: ../data-setup/models/lodestar_model_15/model.pt
     threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
     alpha: 0.9                # weight score exponent
-    nms_distance: null        # pixels; null disables NMS
+    nms_distance: 30          # pixels; matches particle-tracking/{lodestar,multi_lodestar,basic_lodestar}_config.yaml —
+                              # null (disabled) previously let unsuppressed detections balloon to 10x+ ground truth
     box_size: 40               # fallback box size (px) when a detection has no sigma output
     fp16: false                # run model in float16
     device: null                # used only when --device is not passed on the CLI; --device always wins
+
+  # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
+  # runs natively in verification/.venv, trackpy is already a dependency here) ---
+  trackpy:
+    diameter: 15               # must be odd — trackpy.locate raises otherwise. Documented starting
+                                # value only, not yet empirically tuned against this repo's synthetic
+                                # frames (see docs/plans/2026-07-18-001-feat-trackpy-benchmark-comparison-plan.md);
+                                # should be somewhat larger than a particle's visible pixel diameter.
+    minmass: null               # minimum integrated brightness; null lets trackpy use its own default
+                                 # (0 — no mass-based filtering; trackpy.locate's percentile filter,
+                                 # default 64, still applies regardless of this value)
+    separation: null            # minimum pixel distance between distinct features; null lets trackpy
+                                 # default to diameter + 1
 
 # --- benchmark.py: tracking metrics (requires ground_truth_tracks.csv from render.py) ---
 tracking:

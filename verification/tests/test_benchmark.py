@@ -295,6 +295,14 @@ class TestReexecForModelVenv:
                 benchmark._reexec_for_model_venv("lodestar")  # must not raise
             fake_execv.assert_not_called()
 
+    def test_trackpy_skips_reexec_entirely(self):
+        """trackpy has no compiled/CUDA dependency and runs natively in this
+        script's own venv — _MODEL_VENV_DIRS["trackpy"] is None, and
+        _reexec_for_model_venv must return without touching os.execv."""
+        with mock.patch.object(benchmark.os, "execv") as fake_execv:
+            benchmark._reexec_for_model_venv("trackpy")  # must not raise
+        fake_execv.assert_not_called()
+
     def test_matching_python_version_does_not_reexec(self, tmp_path, monkeypatch):
         """When the target venv's Python minor version already matches the
         running interpreter, no re-exec should fire."""
@@ -416,6 +424,49 @@ class TestDetectLodestarIntegration:
         assert tp == 1
         assert fp == 1
         assert fn == 0
+
+
+# ---------------------------------------------------------------------------
+# detect_trackpy — native (no venv injection) classical-detector baseline
+# ---------------------------------------------------------------------------
+
+
+def _make_gaussian_blob_frame(size=64, center=(32, 32), sigma=3.0, peak=200.0):
+    """A single bright Gaussian blob on a dark background, uint8 RGB —
+    matches this codebase's bright-particle-on-dark-background convention
+    (see render.py / detect_lodestar)."""
+    yy, xx = np.mgrid[0:size, 0:size]
+    cx, cy = center
+    gray = peak * np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma**2)))
+    gray = gray.clip(0, 255).astype(np.uint8)
+    return np.stack([gray, gray, gray], axis=-1)
+
+
+class TestDetectTrackpy:
+    def test_locates_single_bright_blob_near_true_center(self):
+        frame = _make_gaussian_blob_frame(center=(32, 32))
+        result = benchmark.detect_trackpy(frame, diameter=11)
+
+        assert len(result) == 1
+        cx = (result.xyxy[0][0] + result.xyxy[0][2]) / 2
+        cy = (result.xyxy[0][1] + result.xyxy[0][3]) / 2
+        assert abs(cx - 32) < 1.0
+        assert abs(cy - 32) < 1.0
+
+    def test_dark_frame_returns_empty_detections(self):
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        result = benchmark.detect_trackpy(frame, diameter=11, minmass=1.0)
+        assert len(result) == 0
+
+    def test_minmass_none_runs_without_error(self):
+        frame = _make_gaussian_blob_frame(center=(32, 32))
+        result = benchmark.detect_trackpy(frame, diameter=11, minmass=None)
+        assert len(result) >= 0  # runs without raising; count is not asserted
+
+
+class TestModelTypeChoices:
+    def test_trackpy_is_a_valid_model_type_choice(self):
+        assert "trackpy" in list(benchmark._MODEL_VENV_DIRS)
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +694,117 @@ class TestMainModelTypeWiring:
             benchmark.main()
 
         mock_tracking_metrics.assert_called_once()
+
+    def test_trackpy_model_type_skips_checkpoint_and_model_loading(self, tmp_path, monkeypatch):
+        """trackpy has no checkpoint and no loaded model — main() must not call
+        either loader and must not require a checkpoint file to exist."""
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        with mock.patch.object(benchmark, "get_rfdetr_model") as mock_get_rfdetr, mock.patch.object(
+            benchmark, "get_lodestar_model"
+        ) as mock_get_lodestar, mock.patch.object(
+            benchmark, "detect_trackpy", return_value=_sv_preload.Detections.empty()
+        ) as mock_detect_trackpy:
+            benchmark.main()  # must not raise despite no checkpoint file existing anywhere
+
+        mock_get_rfdetr.assert_not_called()
+        mock_get_lodestar.assert_not_called()
+        mock_detect_trackpy.assert_called_once()
+        called_kwargs = mock_detect_trackpy.call_args.kwargs
+        assert called_kwargs["diameter"] == 11
+
+    def test_trackpy_accumulates_detections_like_other_model_types(self, tmp_path, monkeypatch):
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--ground-truth-tracks",
+            str(tmp_path / "gt_tracks.csv"),  # missing file: tracking metrics warn+skip, not raise
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+        fake_detections = _sv_preload.Detections(
+            xyxy=np.array([[10.0, 10.0, 20.0, 20.0]], dtype=np.float32),
+            class_id=np.zeros(1, dtype=int),
+        )
+
+        with mock.patch.object(
+            benchmark, "detect_trackpy", return_value=fake_detections
+        ) as mock_detect_trackpy, mock.patch.object(
+            benchmark, "_run_tracking_metrics", return_value=None
+        ) as mock_tracking_metrics:
+            benchmark.main()
+
+        mock_detect_trackpy.assert_called_once()
+        # all_detections_by_frame must have flowed into _run_tracking_metrics
+        # the same generic way it does for rf-detr/lodestar.
+        mock_tracking_metrics.assert_called_once()
+        all_detections_arg = mock_tracking_metrics.call_args[0][0]
+        assert 0 in all_detections_arg
+        assert all_detections_arg[0].shape == (1, 2)
+
+    def test_rf_detr_and_lodestar_unchanged_by_trackpy_addition(self, tmp_path, monkeypatch):
+        """Regression guard: adding the trackpy branch must not alter rf-detr's
+        or lodestar's existing checkpoint enforcement or model loading."""
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        missing_checkpoint = tmp_path / "does-not-exist.pth"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"benchmark:\n  checkpoint: {missing_checkpoint}\n  tiling:\n    enabled: false\n"
+        )
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--config",
+            str(config_path),
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        with pytest.raises(SystemExit):
+            benchmark.main()
 
     def test_unknown_model_type_rejected_by_argparse(self, tmp_path, monkeypatch):
         frames_dir = tmp_path / "frames"
