@@ -31,7 +31,13 @@ synthetic:
   # --- Per-particle intensity distribution (render_strategy: deeptrack) ---
   particle:
     intensity_distribution: lognormal   # fixed | lognormal
-    peak_mean: 40000            # mean peak intensity (ADU)
+    peak_mean: 40000            # mean peak intensity (ADU). Represents each particle's own peak
+                                 # brightness (before background/noise), consistently across all
+                                 # crop_source values (physics/real/procedural) — each source's
+                                 # template/kernel is peak-normalized (max value 1) rather than
+                                 # sum-normalized, so peak_mean's meaning doesn't drift with template
+                                 # spatial extent or PSF optical spread. See docs/plans/2026-07-21-001-
+                                 # fix-peak-normalized-particle-brightness-plan.md.
     intensity_sigma: 0.3        # log-normal sigma
 
   # --- sCMOS noise model (render_strategy: deeptrack) ---
@@ -46,20 +52,51 @@ synthetic:
     readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
 
   # --- Particle appearance source (render_strategy: deeptrack) ---
-  crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above
+  crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above.
+                          # All three peak-normalize their template/kernel (max value 1, not sum 1),
+                          # so peak_mean means the same thing (particle's own peak brightness)
+                          # regardless of which source is selected.
 
   # --- Empirical crop-template library (crop_source: real) ---
   # Built once via render_crop_templates.build_template_library(), then cached; see
   # docs/plans/2026-07-19-001-feat-crop-based-particle-rendering-plan.md.
   crop_template:
     video_paths: []              # real .tif video(s) to harvest particle crops from
-    crop_half: 20                # half-width (px) of the harvested crop window
+    crop_half: 90                # half-width (px) of the harvested crop window — covers the measured
+                                  # diffraction-ring extent (bright core, first dark ring, secondary
+                                  # bright ring); see docs/plans/2026-07-20-001-fix-crop-template-
+                                  # harvest-quality-plan.md
+    fit_half: 20                 # half-width (px) of the small sub-window _fit_crop_gaussian actually
+                                  # fits — decoupled from crop_half so a larger crop_half doesn't
+                                  # multiply per-crop curve_fit cost
     min_sep: 40                  # min candidate separation (px); also the contamination exclusion radius
     percentile: 95.0             # candidate-detection brightness percentile
     min_area: 20                 # min connected-component pixel area to count as a candidate
     max_area: 400                # max connected-component pixel area (excludes merged/oversized blobs)
-    target_half: 12              # half-width (px) of the final registered template
+    target_half: 65              # half-width (px) of the final registered template — raised to cover
+                                  # through the measured secondary bright ring (~r=50-58); must stay
+                                  # <= crop_half or the ring data captured by crop_half is thrown away
     n_clusters: 5                # number of empirical templates to build
+    min_sigma: 3.0                # reject fits at/near curve_fit's 0.5px floor (hot pixels/shot-noise
+                                   # spikes, not real particles) — see docs/plans/2026-07-20-001-fix-
+                                   # crop-template-harvest-quality-plan.md
+    max_sigma: 15.0                # reject fits above this — genuine but out-of-focus particles
+                                    # (defocus blur broadens + lowers contrast), not hot pixels/noise but
+                                    # not in-focus PSF either; mixing them in washes out the dark-ring
+                                    # contrast (found via /ce-debug). null disables the upper bound.
+    ring_method: empirical         # empirical | model | hybrid — how each cluster's template is built.
+                                    # empirical: today's sigma-clipped raw-pixel average (default,
+                                    # unchanged behavior). model: fit a parametric ring function to the
+                                    # measured radial profile, generate a smoother/denoised template from
+                                    # the fit. hybrid: empirical core blended with a modeled ring.
+                                    # All three are implemented so template quality can be visually
+                                    # compared before picking a default — once a default is chosen, the
+                                    # unchosen ring_method code paths should be pruned rather than kept
+                                    # as a permanent three-way fork (see plan Scope Boundaries).
+    core_radius: 20.0              # (ring_method: hybrid only) radius (px) where the blend transitions
+                                    # from the empirical core to the modeled ring
+    transition_width: 10.0         # (ring_method: hybrid only) width (px) of the crossfade band centered
+                                    # on core_radius
     cache_path: crop_templates.npz   # cached template library (.npz)
 
   # --- Procedural particle shape generator (crop_source: procedural) ---
