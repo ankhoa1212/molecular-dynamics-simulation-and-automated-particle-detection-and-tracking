@@ -41,7 +41,7 @@ def _build_psf_kernel(cfg, H, W):
         H, W: image height/width in pixels
 
     Returns:
-        2-D float32 array, normalised so kernel.sum() == 1.
+        2-D float32 array, normalised so kernel.max() == 1.
     """
     try:
         import deeptrack  # noqa: PLC0415
@@ -76,27 +76,29 @@ def _build_psf_kernel(cfg, H, W):
     kernel = np.abs(np.array(kernel, dtype=np.float64).squeeze())
 
     # Guard against all-zero kernel (e.g., PSF entirely outside output_region)
-    total = kernel.sum()
-    if total == 0.0:
+    if kernel.sum() == 0.0:
         # Fall back to a small unit-impulse so stamping still works
         kernel = np.zeros_like(kernel)
         kernel[H // 2, W // 2] = 1.0
-        total = 1.0
-
-    kernel = (kernel / total).astype(np.float32)
 
     # Crop to a small patch around the PSF centre so that
-    # scipy.ndimage.convolve doesn't allocate O(image_size^4) memory.
-    # 32-pixel half-width covers >5σ for any physically realistic PSF at
-    # the resolutions used here; re-normalise after crop.
+    # scipy.ndimage.convolve doesn't allocate O(image_size^4) memory. The
+    # crop radius is a memory/performance bound, not a guarantee of
+    # capturing the PSF's full energy -- measured at this module's default
+    # NA/wavelength/resolution, only ~41% of the kernel's total energy
+    # lies within r=10px of a 65x65 (r=32) crop, so the PSF here is
+    # considerably broader than a naive "tightly concentrated" assumption.
+    # Peak-normalizing (rather than sum-normalizing) after the crop makes
+    # rendered brightness insensitive to how much of that tail the crop
+    # radius happens to capture.
     cy, cx = H // 2, W // 2
     r = min(32, cy, cx)
     kernel = kernel[cy - r : cy + r + 1, cx - r : cx + r + 1]
-    s = kernel.sum()
-    if s > 0:
-        kernel = kernel / s
+    peak = kernel.max()
+    if peak > 0:
+        kernel = kernel / peak
 
-    return kernel
+    return kernel.astype(np.float32)
 
 
 def _composite_crop_templates(pixel_positions, intensities, cfg, rng, H, W):

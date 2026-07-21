@@ -6,6 +6,7 @@ Usage:
 
 Prints a YAML fragment ready to paste into config.yaml under synthetic:.
 """
+
 import argparse
 import re
 import sys
@@ -44,6 +45,11 @@ def _gaussian_2d(xy, A, x0, y0, sx, sy, B):
 
 
 def _fit_gaussian(crop: np.ndarray):
+    """Fit a 2-D Gaussian to `crop`, returning (sx, sy, A) -- the fitted
+    sigmas and the background-subtracted peak amplitude -- or None on
+    failure. `A` is the particle's own fitted contribution, excluding the
+    local background baseline `B` (also fitted, but not needed by callers
+    today)."""
     H, W = crop.shape
     xs, ys = np.arange(W, dtype=np.float64), np.arange(H, dtype=np.float64)
     xx, yy = np.meshgrid(xs, ys)
@@ -67,9 +73,9 @@ def _fit_gaussian(crop: np.ndarray):
             bounds=([0, 0, 0, 0.5, 0.5, -np.inf], [np.inf, W, H, H, W, np.inf]),
             maxfev=2000,
         )
-        sx, sy = abs(popt[3]), abs(popt[4])
+        A, sx, sy = popt[0], abs(popt[3]), abs(popt[4])
         if 0.5 < sx < _CROP_HALF and 0.5 < sy < _CROP_HALF:
-            return float(sx), float(sy)
+            return float(sx), float(sy), float(A)
     except (RuntimeError, ValueError):
         pass
     return None
@@ -131,7 +137,12 @@ def calibrate_from_frames(
                 fit = _fit_gaussian(frame[r0:r1, c0:c1])
                 if fit is not None:
                     sigma_ests.append((fit[0] + fit[1]) / 2)
-                    peak_vals.append(float(frame[r0:r1, c0:c1].max()))
+                    # fit[2] is the fitted amplitude A, background-subtracted --
+                    # matches what render_deeptrack.py treats peak_mean as (the
+                    # particle's own contribution, separate from background).
+                    # The raw crop max used previously included the local
+                    # background baseline, inflating peak_mean.
+                    peak_vals.append(fit[2])
                     psf_sigma = float(np.mean(sigma_ests))
 
             # Mask particle for background

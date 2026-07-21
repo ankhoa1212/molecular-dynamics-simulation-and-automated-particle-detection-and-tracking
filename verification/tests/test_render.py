@@ -832,6 +832,101 @@ class TestCropSourceBackgroundNoiseInvariance:
         assert np.array_equal(frames["physics"], frames["procedural"])
 
 
+class TestPeakBrightnessMatchesSampledIntensity:
+    """R4 regression (docs/plans/2026-07-21-001-fix-peak-normalized-particle-
+    brightness-plan.md): a single isolated particle's peak pixel (before
+    background/noise) matches its own sampled intensity within tolerance,
+    consistently across physics/real/procedural. This is the direct
+    regression test for the dilution bug found this session -- it fails
+    against the pre-fix sum-normalized contract (where a wide `real`
+    template or a broad `physics` kernel dilutes the peak far below the
+    sampled intensity) and passes once each strategy peak-normalizes.
+    """
+
+    def _isolated_particle_cfg(self, H, W, peak_mean):
+        cfg = _deeptrack_cfg(H, W)
+        cfg["particle"]["peak_mean"] = peak_mean
+        cfg["particle"]["intensity_sigma"] = 0.0  # deterministic: sampled intensity == peak_mean
+        cfg["background"]["amplitude"] = 0
+        cfg["noise"]["gain_sigma"] = 0.0
+        cfg["noise"]["read_noise"] = 0.0
+        return cfg
+
+    def _assert_particle_pixel_matches_intensity(self, frame, row, col, intensity):
+        # Check the value at the particle's own pixel, not frame.max() --
+        # scipy.ndimage.convolve(mode="reflect") can produce a brighter
+        # boundary-reflection artifact elsewhere in the frame when the
+        # kernel/template radius approaches the image size, which is a
+        # pre-existing boundary-handling property unrelated to this fix.
+        # Only remaining noise source is Poisson shot noise (std = sqrt(intensity));
+        # a 5% relative tolerance is comfortably wider than that at these peak_mean scales.
+        assert abs(float(frame[row, col]) - intensity) < 0.05 * intensity
+
+    def test_physics_peak_matches_sampled_intensity(self):
+        H, W = 128, 128
+        peak_mean = 50000
+        # A broad fake kernel spanning most of the crop window -- the same
+        # shape category measured for physics's real DeepTrack2 output at
+        # config.yaml defaults this session.
+        cy, cx = H // 2, W // 2
+        yy, xx = np.mgrid[0:H, 0:W]
+        r2 = (yy - cy) ** 2 + (xx - cx) ** 2
+        broad_kernel = np.exp(-r2 / (2 * 30.0**2))
+        rdt = _import_deeptrack_with_mock(broad_kernel)
+
+        cfg = self._isolated_particle_cfg(H, W, peak_mean)
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        row, col = rdt._lj_to_pixels(positions, box, H, W)[0][::-1].astype(int)
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(0))
+
+        self._assert_particle_pixel_matches_intensity(frame, row, col, peak_mean)
+
+    def test_real_peak_matches_sampled_intensity_regardless_of_template_size(self, monkeypatch):
+        H, W = 128, 128
+        peak_mean = 50000
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        import render_crop_templates as rct
+
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        row, col = rdt._lj_to_pixels(positions, box, H, W)[0][::-1].astype(int)
+
+        for size in (9, 65):  # narrow vs. the wide template_half that caused this session's bug
+            # Single-peak template so the checked pixel receives exactly the
+            # sampled intensity (not diluted by which offset pixel is 1.0).
+            template = np.zeros((size, size), dtype=np.float32)
+            template[size // 2, size // 2] = 1.0
+            monkeypatch.setattr(
+                rct, "load_template_library", lambda path, t=template: np.stack([t])
+            )
+
+            cfg = self._isolated_particle_cfg(H, W, peak_mean)
+            cfg["crop_source"] = "real"
+            cfg["crop_template"] = {"cache_path": "unused.npz"}
+            frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(0))
+
+            self._assert_particle_pixel_matches_intensity(frame, row, col, peak_mean)
+
+    def test_procedural_peak_matches_sampled_intensity(self):
+        H, W = 128, 128
+        peak_mean = 50000
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        cfg = self._isolated_particle_cfg(H, W, peak_mean)
+        cfg["crop_source"] = "procedural"
+        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0, "asymmetry_range": [1.0, 1.0]}
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        row, col = rdt._lj_to_pixels(positions, box, H, W)[0][::-1].astype(int)
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(0))
+
+        self._assert_particle_pixel_matches_intensity(frame, row, col, peak_mean)
+
+
 class TestCropSourceDispatchIntegration:
     """Mirrors TestRenderStrategyDispatch + TestDeeptrackStrategy's stub setup —
     exercises config -> _dispatch_render -> render_frame_deeptrack -> compositing

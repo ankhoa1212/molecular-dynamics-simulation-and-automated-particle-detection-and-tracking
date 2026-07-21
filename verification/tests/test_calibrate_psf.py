@@ -26,7 +26,6 @@ sys.modules.setdefault("lammps_parser", mock.MagicMock())
 
 import calibrate_psf
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -113,6 +112,56 @@ class TestRecoveredSigma:
         assert (
             abs(recovered - true_sigma) / true_sigma <= 0.10
         ), f"Recovered sigma {recovered:.3f} is not within 10% of ground truth {true_sigma}"
+
+
+# ---------------------------------------------------------------------------
+# R4 regression (docs/plans/2026-07-21-001-fix-peak-normalized-particle-
+# brightness-plan.md, U4): peak_mean must be background-subtracted, not the
+# raw crop maximum. _make_synthetic_frame's procedural renderer has no
+# background field (always 0), so it can't exercise this -- these tests
+# build a frame with an explicit nonzero background baseline directly.
+# ---------------------------------------------------------------------------
+
+
+def _make_frame_with_background(
+    height: int, width: int, spots: list, sigma: float, amplitude: float, background: float
+) -> np.ndarray:
+    """A frame of isolated Gaussian particles of known background-subtracted
+    `amplitude`, sitting on a known constant `background` baseline."""
+    yy, xx = np.mgrid[0:height, 0:width].astype(np.float64)
+    frame = np.full((height, width), background, dtype=np.float64)
+    for row, col in spots:
+        frame += amplitude * np.exp(-(((xx - col) ** 2 + (yy - row) ** 2) / (2 * sigma**2)))
+    return frame.astype(np.float32)
+
+
+class TestPeakMeanBackgroundSubtraction:
+    def test_calibrated_peak_mean_matches_amplitude_not_amplitude_plus_background(self):
+        true_amplitude = 20000.0
+        true_background = 5000.0
+        spots = [(r, c) for r in (40, 88) for c in (40, 88)]
+        frame = _make_frame_with_background(
+            128, 128, spots, sigma=5.0, amplitude=true_amplitude, background=true_background
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # few-fits warning expected; not under test here
+            params = calibrate_psf.calibrate_from_frames([frame])
+
+        recovered = params["particle"]["peak_mean"]
+        assert (
+            abs(recovered - true_amplitude) / true_amplitude < 0.05
+        ), f"peak_mean {recovered} should match the background-subtracted amplitude {true_amplitude}, not amplitude+background ({true_amplitude + true_background})"
+
+    def test_fit_gaussian_returns_amplitude_as_third_element(self):
+        frame = _make_frame_with_background(
+            64, 64, [(32, 32)], sigma=4.0, amplitude=1000.0, background=200.0
+        )
+        fit = calibrate_psf._fit_gaussian(frame)
+
+        assert fit is not None
+        sx, sy, amplitude = fit
+        assert abs(amplitude - 1000.0) / 1000.0 < 0.05
 
 
 # ---------------------------------------------------------------------------
