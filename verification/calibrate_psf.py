@@ -322,12 +322,19 @@ def _normalize_flow_empty_mappings(lines: list[str]) -> list[str]:
 def _merge_params_into_config(config_path: Path, params: dict) -> None:
     """Merge calibrated params into an existing config.yaml file under synthetic:.
 
-    Preserves all existing keys not in the four calibrated sub-dicts (psf, particle,
-    background, noise), including comments and formatting — this patches only the
-    specific lines being updated (or appends new ones) rather than re-dumping the
-    whole file, since a full yaml.safe_load -> yaml.dump round-trip silently drops
-    every comment in the file. Strips _gain_sigma_note from noise and drops _meta
-    entirely (both are internal-only fields, never written).
+    Preserves all existing keys not in `params`'s own top-level sections (e.g.
+    psf, particle, background, noise -- or procedural_shape for
+    fit_procedural_ring.py's ring parameters), including comments and
+    formatting — this patches only the specific lines being updated (or
+    appends new ones) rather than re-dumping the whole file, since a full
+    yaml.safe_load -> yaml.dump round-trip silently drops every comment in
+    the file. Strips _gain_sigma_note from noise and drops _meta entirely
+    (both are internal-only fields, never written).
+
+    Iterates over whatever sections `params` actually contains rather than a
+    fixed tuple, so any caller-defined section (not just the four
+    calibrate_psf.py itself always calibrates) can be merged without changes
+    here.
 
     Raises FileNotFoundError if config_path does not exist.
     """
@@ -343,7 +350,9 @@ def _merge_params_into_config(config_path: Path, params: dict) -> None:
         lines.append("synthetic:\n")
         synthetic_idx = len(lines) - 1
 
-    for section in ("psf", "particle", "background", "noise"):
+    for section in params:
+        if section.startswith("_"):
+            continue  # internal-only, e.g. calibrate_from_frames' _meta -- never written
         calibrated = dict(params[section])
         if section == "noise":
             calibrated.pop("_gain_sigma_note", None)

@@ -353,6 +353,37 @@ class TestMergeConfig:
         with pytest.raises(FileNotFoundError):
             calibrate_psf._merge_params_into_config(absent, _FAKE_PARAMS)
 
+    def test_arbitrary_section_not_in_the_original_four_is_merged(self, tmp_path):
+        """docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U2:
+        the section loop iterates over whatever `params` contains, not a fixed
+        tuple, so a caller (fit_procedural_ring.py) can merge a section this
+        module never calibrates itself."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(cfg_path, {"synthetic": {}})
+
+        calibrate_psf._merge_params_into_config(
+            cfg_path, {"procedural_shape": {"ring_r1": 12.5, "ring_s1": 2.0}}
+        )
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert result["synthetic"]["procedural_shape"]["ring_r1"] == 12.5
+        assert result["synthetic"]["procedural_shape"]["ring_s1"] == 2.0
+
+    def test_underscore_prefixed_top_level_key_is_never_written(self, tmp_path):
+        """A hypothetical caller passing another internal-only top-level key
+        (beyond _meta) must not have it written as a config section --
+        matches the existing _meta/`_gain_sigma_note` convention."""
+        cfg_path = tmp_path / "config.yaml"
+        self._write_config(cfg_path, {"synthetic": {}})
+
+        calibrate_psf._merge_params_into_config(
+            cfg_path, {"particle": {"peak_mean": 1.0}, "_internal": {"n": 1}}
+        )
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert "_internal" not in result
+        assert "_internal" not in result["synthetic"]
+
     def test_psf_sigma_alongside_existing_psf_keys(self, tmp_path):
         """Merged psf.sigma_px coexists with pre-existing psf.na and psf.wavelength."""
         cfg_path = tmp_path / "config.yaml"
