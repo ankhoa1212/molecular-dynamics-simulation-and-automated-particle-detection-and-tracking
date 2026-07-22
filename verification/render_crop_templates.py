@@ -677,43 +677,54 @@ def radial_profile_from_crops(crops: list, n_bins: int):
 # ---------------------------------------------------------------------------
 
 
-def generate_procedural_shape(
-    size: int, sigma: float, rng: np.random.Generator, asymmetry_range: tuple
-) -> np.ndarray:
+def _ring_window_size(ring_params: tuple, min_size: int = 5) -> int:
+    """Compute an odd window side length large enough to contain a
+    `_ring_model` ring (radius `r1`, width `s1`) without clipping, per the
+    2026-07-20 harvest-quality plan's window-size-coupling incident this
+    helper exists to avoid repeating. Clamped to `min_size` so degenerate
+    (near-zero) fitted parameters can't produce a non-positive or
+    unreasonably small window."""
+    _, _, s0, _, r1, s1 = ring_params
+    radius = max(abs(r1), abs(s0)) + 4.0 * max(abs(s1), 1.0)
+    size = 2 * int(np.ceil(radius)) + 1
+    return max(size, min_size)
+
+
+def generate_procedural_shape(size: int, sigma: float, ring_params=None) -> np.ndarray:
     """Generate a parametric particle shape as a no-real-data alternative to
     the empirical template library.
 
-    Builds an asymmetric Gaussian: independent x/y sigmas (ellipticity) and a
-    random rotation, both sampled from `rng` within `asymmetry_range`, giving
-    per-call shape diversity without any dependency on harvested crops. The
-    output shares the empirical templates' contract: a `(size, size)`
-    float32 array peak-normalized so its maximum value is 1.
+    With no ring parameters, builds a plain circular Gaussian -- real
+    diffraction-limited particles are circularly symmetric, so this no
+    longer randomizes ellipticity or rotation the way earlier versions did.
+    With `ring_params` (the six-value `(B, A0, s0, A1, r1, s1)` tuple
+    `_ring_model`/`fit_ring_model` use), evaluates that same
+    difference-of-Gaussians ring model radially via `generate_ring_template`,
+    sized by `_ring_window_size` to contain the ring without clipping, then
+    applies `_finalize_template`'s edge-taper + peak-normalize -- the ring's
+    additive dark-ring term means the raw evaluation no longer peaks at
+    exactly 1 by construction, unlike the plain-Gaussian branch below.
 
     Args:
-        size: output side length (odd recommended, for a centered peak).
-        sigma: base sigma in pixels; asymmetry_range scales it per axis.
-        rng: numpy.random.Generator, for per-call randomization.
-        asymmetry_range: (min, max) multiplicative range applied
-            independently to sigma along the major/minor axes (1.0 = round).
+        size: fallback output side length used only when `ring_params` is
+            None (odd recommended, for a centered peak).
+        sigma: base sigma in pixels for the no-ring circular Gaussian.
+        ring_params: optional `(B, A0, s0, A1, r1, s1)` tuple. When given,
+            the window is sized from the ring radius (`r1`) plus a margin
+            derived from the ring width (`s1`), overriding `size`.
 
     Returns:
-        (size, size) float32 array, peak-normalized so its maximum is 1.
+        (N, N) float32 array, peak-normalized so its maximum is 1.
     """
-    lo, hi = asymmetry_range
-    sigma_major = sigma * rng.uniform(lo, hi)
-    sigma_minor = sigma * rng.uniform(lo, hi)
-    angle = rng.uniform(0, np.pi)
+    if ring_params is not None:
+        window = _ring_window_size(tuple(ring_params))
+        return _finalize_template(generate_ring_template(window, tuple(ring_params)))
 
     center = (size - 1) / 2.0
     ys, xs = np.mgrid[0:size, 0:size].astype(np.float64)
     dx, dy = xs - center, ys - center
 
-    cos_a, sin_a = np.cos(angle), np.sin(angle)
-    u = dx * cos_a + dy * sin_a
-    v = -dx * sin_a + dy * cos_a
-
-    # u == v == 0 at the center pixel for any sigma/angle combination, so
-    # the raw Gaussian already peaks at exactly 1.0 there -- no division
-    # needed.
-    shape = np.exp(-(u**2 / (2 * sigma_major**2) + v**2 / (2 * sigma_minor**2)))
+    # dx == dy == 0 at the center pixel, so the raw circular Gaussian already
+    # peaks at exactly 1.0 there -- no division needed.
+    shape = np.exp(-(dx**2 + dy**2) / (2 * sigma**2))
     return shape.astype(np.float32)

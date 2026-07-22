@@ -101,9 +101,23 @@ synthetic:
 
   # --- Procedural particle shape generator (crop_source: procedural) ---
   procedural_shape:
-    size: 41                       # generated shape side length (px)
-    sigma: 5.0                     # base sigma (px)
-    asymmetry_range: [0.8, 1.2]    # per-axis sigma multiplier range (1.0 = round)
+    size: 41                       # fallback shape side length (px), used only when no
+                                    # ring_* keys below are set (plain circular Gaussian)
+    sigma: 5.0                     # base sigma (px) for the fallback circular Gaussian
+    # ring_B / ring_A0 / ring_s0 / ring_A1 / ring_r1 / ring_s1 -- fitted
+    # _ring_model parameters (see verification/render_crop_templates.py's
+    # _ring_model/fit_ring_model), filled in by:
+    #   uv run python fit_procedural_ring.py --merge-config config.yaml
+    # When all six are set, generate_procedural_shape renders a circular
+    # core + dark ring sized to fit ring_r1 without clipping, instead of the
+    # fallback Gaussian above. See docs/plans/2026-07-22-001-fix-procedural-
+    # particle-realism-plan.md.
+    # ring_B: 0.0
+    # ring_A0: 0.0
+    # ring_s0: 0.0
+    # ring_A1: 0.0
+    # ring_r1: 0.0
+    # ring_s1: 0.0
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:

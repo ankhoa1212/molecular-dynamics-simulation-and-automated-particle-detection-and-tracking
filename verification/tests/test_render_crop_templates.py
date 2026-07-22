@@ -26,13 +26,16 @@ U2 test scenarios from the plan:
 - normalization: every built template sums to 1.0
 
 U3 test scenarios from the plan:
-- happy path: generated shape sums to 1.0 with a single dominant peak near
+- happy path: generated shape peaks at 1.0 with a single dominant peak near
   center
-- randomization: two calls with different rng seeds produce visibly
-  different shapes
-- determinism: two calls with identical seeded rng state produce identical
-  shapes
-- asymmetry bounds: generated ellipticity stays within asymmetry_range
+
+docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U1 test
+scenarios (superseding the ellipticity/randomization scenarios above, which
+no longer apply now that the shape is circular and deterministic):
+- no ring params: shape is circularly symmetric (no ellipticity)
+- ring params: a genuine dark ring between the core and the outer edge
+- large ring radius: the window grows to contain the ring without clipping
+- degenerate ring params: no NaN, negative dimensions, or crash
 
 Fix-plan (docs/plans/2026-07-20-001-fix-crop-template-harvest-quality-plan.md)
 test scenarios below, under "Fix-plan UN: ..." headers — these units are the
@@ -376,62 +379,73 @@ class TestBuildTemplateLibrary:
 
 
 class TestGenerateProceduralShape:
+    """docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U1:
+    circular (no ellipticity/rotation) by default; ring-shaped when
+    `ring_params` is supplied."""
+
     def test_peaks_at_one_with_single_dominant_peak_near_center(self):
-        rng = np.random.default_rng(0)
         size = 21
-        shape = rct.generate_procedural_shape(size, sigma=3.0, rng=rng, asymmetry_range=(0.8, 1.2))
+        shape = rct.generate_procedural_shape(size, sigma=3.0)
 
         assert abs(float(shape.max()) - 1.0) < 1e-4
         peak_row, peak_col = np.unravel_index(np.argmax(shape), shape.shape)
         center = (size - 1) / 2.0
         assert abs(peak_row - center) <= 2 and abs(peak_col - center) <= 2
 
-    def test_different_seeds_produce_visibly_different_shapes(self):
-        size = 21
-        a = rct.generate_procedural_shape(
-            size, sigma=3.0, rng=np.random.default_rng(1), asymmetry_range=(0.5, 2.0)
-        )
-        b = rct.generate_procedural_shape(
-            size, sigma=3.0, rng=np.random.default_rng(2), asymmetry_range=(0.5, 2.0)
-        )
-        assert np.abs(a - b).max() > 1e-3
-
-    def test_identical_seeded_rng_state_produces_identical_shapes(self):
-        size = 21
-        a = rct.generate_procedural_shape(
-            size, sigma=3.0, rng=np.random.default_rng(42), asymmetry_range=(0.5, 2.0)
-        )
-        b = rct.generate_procedural_shape(
-            size, sigma=3.0, rng=np.random.default_rng(42), asymmetry_range=(0.5, 2.0)
-        )
-        assert np.array_equal(a, b)
-
-    def test_asymmetry_stays_within_configured_range(self):
-        rng = np.random.default_rng(7)
+    def test_no_ring_params_produces_circularly_symmetric_shape(self):
+        # Second moments along x and y (and their covariance) must match --
+        # a circular Gaussian has no preferred axis, unlike the old
+        # ellipticity-randomized version.
         size = 41
-        sigma = 3.0
-        asymmetry_range = (0.5, 1.5)
-        for _ in range(20):
-            shape = rct.generate_procedural_shape(
-                size, sigma=sigma, rng=rng, asymmetry_range=asymmetry_range
-            )
-            # Recover an effective sigma range via second moments; a Gaussian
-            # (possibly rotated/elliptical) shape's major/minor axis std
-            # devs must fall within sigma * asymmetry_range (with slack for
-            # discretization on a small grid).
-            ys, xs = np.mgrid[0 : shape.shape[0], 0 : shape.shape[1]].astype(np.float64)
-            center = (size - 1) / 2.0
-            dx, dy = xs - center, ys - center
-            w = shape / shape.sum()
-            var_x = float((w * dx**2).sum())
-            var_y = float((w * dy**2).sum())
-            cov_xy = float((w * dx * dy).sum())
-            cov = np.array([[var_x, cov_xy], [cov_xy, var_y]])
-            eigvals = np.linalg.eigvalsh(cov)
-            axis_sigmas = np.sqrt(np.clip(eigvals, 0, None))
-            lo, hi = asymmetry_range
-            for axis_sigma in axis_sigmas:
-                assert sigma * lo * 0.5 <= axis_sigma <= sigma * hi * 1.5
+        shape = rct.generate_procedural_shape(size, sigma=5.0)
+        ys, xs = np.mgrid[0:size, 0:size].astype(np.float64)
+        center = (size - 1) / 2.0
+        dx, dy = xs - center, ys - center
+        w = shape / shape.sum()
+        var_x = float((w * dx**2).sum())
+        var_y = float((w * dy**2).sum())
+        cov_xy = float((w * dx * dy).sum())
+        assert abs(var_x - var_y) < 1e-6
+        assert abs(cov_xy) < 1e-6
+
+    def test_ring_params_produce_dark_ring_between_core_and_edge(self):
+        # (B, A0, s0, A1, r1, s1): bright core near center, dark ring at r1=10.
+        ring_params = (0.0, 1.0, 2.0, 0.8, 10.0, 2.0)
+        shape = rct.generate_procedural_shape(size=41, sigma=5.0, ring_params=ring_params)
+
+        assert abs(float(shape.max()) - 1.0) < 1e-4
+        center = (shape.shape[0] - 1) / 2.0
+        ys, xs = np.mgrid[0 : shape.shape[0], 0 : shape.shape[1]].astype(np.float64)
+        r = np.sqrt((xs - center) ** 2 + (ys - center) ** 2)
+        core_value = float(shape[r < 2].mean())
+        ring_value = float(shape[(r > 8) & (r < 12)].min())
+        assert ring_value < core_value
+
+    def test_large_ring_radius_grows_window_without_clipping(self):
+        # r1=30 is well beyond the old static default of 41px/2 -- the
+        # window must grow to keep the ring's minimum inside array bounds
+        # (the exact class of bug docs/plans/2026-07-20-...-harvest-quality
+        # -plan.md shipped once already).
+        ring_params = (0.0, 1.0, 2.0, 0.8, 30.0, 2.0)
+        shape = rct.generate_procedural_shape(size=41, sigma=5.0, ring_params=ring_params)
+
+        assert shape.shape[0] > 41
+        center = (shape.shape[0] - 1) / 2.0
+        ys, xs = np.mgrid[0 : shape.shape[0], 0 : shape.shape[1]].astype(np.float64)
+        r = np.sqrt((xs - center) ** 2 + (ys - center) ** 2)
+        min_idx = np.unravel_index(
+            np.argmin(np.where((r > 25) & (r < 35), shape, np.inf)), shape.shape
+        )
+        # The minimum must not sit on the array's outer edge.
+        assert 1 <= min_idx[0] <= shape.shape[0] - 2
+        assert 1 <= min_idx[1] <= shape.shape[1] - 2
+
+    def test_degenerate_ring_params_do_not_crash(self):
+        ring_params = (0.0, 1e-9, 1e-9, 1e-9, 0.0, 1e-9)
+        shape = rct.generate_procedural_shape(size=21, sigma=5.0, ring_params=ring_params)
+
+        assert shape.shape[0] >= 5 and shape.shape[1] >= 5
+        assert np.isfinite(shape).all()
 
 
 # ---------------------------------------------------------------------------

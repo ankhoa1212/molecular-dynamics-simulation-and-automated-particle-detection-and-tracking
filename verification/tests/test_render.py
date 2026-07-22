@@ -791,7 +791,7 @@ class TestCropSourceProcedural:
 
         cfg = _deeptrack_cfg(H, W)
         cfg["crop_source"] = "procedural"
-        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0, "asymmetry_range": [0.8, 1.2]}
+        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0}
 
         positions = np.array([[3.0, 3.0], [7.0, 7.0]])
         box = (0.0, 10.0, 0.0, 10.0)
@@ -799,6 +799,59 @@ class TestCropSourceProcedural:
 
         assert frame.dtype == np.uint16
         assert frame.shape == (H, W)
+
+    def test_ring_params_produce_frame_with_no_cache_dependency(self):
+        H, W = 48, 48
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "procedural"
+        cfg["procedural_shape"] = {
+            "size": 15,
+            "sigma": 3.0,
+            "ring_B": 0.0,
+            "ring_A0": 1.0,
+            "ring_s0": 2.0,
+            "ring_A1": 0.8,
+            "ring_r1": 8.0,
+            "ring_s1": 2.0,
+        }
+
+        positions = np.array([[3.0, 3.0], [7.0, 7.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        frame = rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(9))
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+
+    def test_multiple_particles_share_identical_template(self, monkeypatch):
+        H, W = 48, 48
+        fake_kernel = _make_fake_kernel(H, W)
+        rdt = _import_deeptrack_with_mock(fake_kernel)
+
+        import render_crop_templates as rct
+
+        captured = []
+        real_generate = rct.generate_procedural_shape
+
+        def _spy(*args, **kwargs):
+            shape = real_generate(*args, **kwargs)
+            captured.append(shape)
+            return shape
+
+        monkeypatch.setattr(rct, "generate_procedural_shape", _spy)
+
+        cfg = _deeptrack_cfg(H, W)
+        cfg["crop_source"] = "procedural"
+        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0}
+        positions = np.array([[2.0, 2.0], [5.0, 5.0], [8.0, 8.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        rdt.render_frame_deeptrack(positions, box, cfg, np.random.default_rng(9))
+
+        # Deterministic now (no per-particle ellipticity/rotation), so the
+        # shape is built once per render, not once per particle.
+        assert len(captured) == 1
 
 
 class TestCropSourceBackgroundNoiseInvariance:
@@ -918,7 +971,7 @@ class TestPeakBrightnessMatchesSampledIntensity:
 
         cfg = self._isolated_particle_cfg(H, W, peak_mean)
         cfg["crop_source"] = "procedural"
-        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0, "asymmetry_range": [1.0, 1.0]}
+        cfg["procedural_shape"] = {"size": 15, "sigma": 3.0}
         positions = np.array([[5.0, 5.0]])
         box = (0.0, 10.0, 0.0, 10.0)
         row, col = rdt._lj_to_pixels(positions, box, H, W)[0][::-1].astype(int)

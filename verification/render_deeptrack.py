@@ -139,13 +139,22 @@ def _composite_crop_templates(pixel_positions, intensities, cfg, rng, H, W):
         proc_cfg = cfg.get("procedural_shape", {})
         proc_size = int(proc_cfg.get("size", 41))
         proc_sigma = float(proc_cfg.get("sigma", 5.0))
-        asymmetry_range = tuple(proc_cfg.get("asymmetry_range", (0.8, 1.2)))
+        ring_keys = ("ring_B", "ring_A0", "ring_s0", "ring_A1", "ring_r1", "ring_s1")
+        ring_params = (
+            tuple(proc_cfg[key] for key in ring_keys)
+            if all(key in proc_cfg for key in ring_keys)
+            else None
+        )
+        # The shape is now deterministic (no per-particle ellipticity/rotation
+        # sampling), so it's built once here rather than fresh per particle --
+        # mirroring the 'real' branch's one-time template-library load above.
+        procedural_template = generate_procedural_shape(proc_size, proc_sigma, ring_params)
 
     for (px, py), intensity in zip(pixel_positions, intensities):
         if crop_source == "real":
             template = templates[int(rng.integers(0, len(templates)))]
         else:
-            template = generate_procedural_shape(proc_size, proc_sigma, rng, asymmetry_range)
+            template = procedural_template
 
         th, tw = template.shape
         half_h, half_w = th // 2, tw // 2
