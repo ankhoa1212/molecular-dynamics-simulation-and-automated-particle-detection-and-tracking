@@ -374,6 +374,7 @@ class TestCropSourceStrategyVariants:
                 "--strategies",
                 "deeptrack-real",
                 "deeptrack-procedural",
+                "deeptrack-physics",
                 "--output-dir",
                 str(out_dir),
             ],
@@ -446,6 +447,76 @@ class TestCropSourceStrategyVariants:
         called_cfg, called_strategy = call.args[2], call.args[4]
         assert called_strategy == "deeptrack"
         assert called_cfg["crop_source"] == "procedural"
+
+    def test_deeptrack_physics_dispatches_as_deeptrack_with_crop_source_physics(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(cr_module, "_load_config", lambda p: _base_synth_cfg())
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-physics",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        call = _RENDER_STUB._dispatch_render.call_args
+        called_cfg, called_strategy = call.args[2], call.args[4]
+        assert called_strategy == "deeptrack"
+        assert called_cfg["crop_source"] == "physics"
+
+    def test_multiple_crop_source_strategies_do_not_leak_into_each_other(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        """docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U4
+        edge case: each strategy's crop_source override must land in its own
+        config copy, not bleed into a sibling strategy's dispatch call."""
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(cr_module, "_load_config", lambda p: _base_synth_cfg())
+        _RENDER_STUB._dispatch_render.reset_mock()
+
+        out_dir = tmp_path / "out"
+        with mock.patch(
+            "sys.argv",
+            [
+                "compare_renders.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                "config.yaml",
+                "--strategies",
+                "deeptrack-real",
+                "deeptrack-procedural",
+                "deeptrack-physics",
+                "--output-dir",
+                str(out_dir),
+            ],
+        ):
+            cr_module.main()
+
+        crop_sources_by_call = [
+            call.args[2]["crop_source"] for call in _RENDER_STUB._dispatch_render.call_args_list
+        ]
+        assert crop_sources_by_call == ["real", "procedural", "physics"]
 
     def test_plain_deeptrack_strategy_leaves_crop_source_unset(
         self, cr_module, tmp_path, monkeypatch

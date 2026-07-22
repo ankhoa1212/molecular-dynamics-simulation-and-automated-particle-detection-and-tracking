@@ -105,6 +105,7 @@ def main():
             "randomized",
             "deeptrack-real",
             "deeptrack-procedural",
+            "deeptrack-physics",
         ],
     )
     parser.add_argument("--output-dir", default="verification_output/")
@@ -137,14 +138,18 @@ def main():
                 stacklevel=2,
             )
 
-    # "deeptrack-real"/"deeptrack-procedural" both dispatch through the plain
-    # "deeptrack" strategy string with crop_source overridden on a copy of
-    # synth_cfg — _dispatch_render only recognizes literal "deeptrack" (see
-    # render.py:_dispatch_render), so these suffixed names can't be passed
-    # through directly.
+    # "deeptrack-real"/"deeptrack-procedural"/"deeptrack-physics" all dispatch
+    # through the plain "deeptrack" strategy string with crop_source
+    # overridden on a copy of synth_cfg — _dispatch_render only recognizes
+    # literal "deeptrack" (see render.py:_dispatch_render), so these
+    # suffixed names can't be passed through directly. "deeptrack-physics"
+    # names crop_source: physics explicitly rather than relying on bare
+    # "deeptrack" to mean physics, which only holds while config.yaml's own
+    # crop_source default happens to still be "physics".
     _CROP_SOURCE_BY_STRATEGY = {
         "deeptrack-real": "real",
         "deeptrack-procedural": "procedural",
+        "deeptrack-physics": "physics",
     }
 
     rendered = {}
