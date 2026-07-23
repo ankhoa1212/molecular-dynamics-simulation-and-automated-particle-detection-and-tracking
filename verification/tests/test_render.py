@@ -554,6 +554,36 @@ class TestRenderStrategyDispatch:
         frame = render_module._dispatch_render(positions, box, cfg, rng, "unknown_strategy")
         assert frame.dtype == np.uint16
 
+    def test_procedural_strategy_ring_active_through_dispatch(self, render_module):
+        """U2 integration coverage: the procedural path dispatched through
+        _dispatch_render (not just a direct render_frame call) produces a
+        core-plus-ring profile — a dark annulus around radius_factor*sigma
+        that is much darker than the bright core — using the documented
+        ring defaults (no explicit `ring` key in cfg, matching config.yaml's
+        fallback). The old pure-Gaussian stamp had no such dip."""
+        H, W = 64, 64
+        cx, cy = 32.0, 32.0
+        sigma = 5.0
+        positions = np.array([[cx, cy]])
+        box = (0.0, float(W), 0.0, float(H))
+        cfg = {
+            "image_height": H,
+            "image_width": W,
+            "psf_sigma": sigma,
+            "peak_intensity": 40000,
+            "shot_noise": False,
+            "readout_noise": 0.0,
+        }
+        rng = np.random.default_rng(42)
+        frame = render_module._dispatch_render(positions, box, cfg, rng, "procedural")
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+
+        core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
+        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * sigma - 1.0, 2.2 * sigma + 1.0)
+        assert core_mean > 0.5 * 40000
+        assert ring_mean < 0.3 * core_mean
+
 
 # ---------------------------------------------------------------------------
 # U2: render_deeptrack.py — DeepTrack2 PSF + enhanced noise model
@@ -1310,3 +1340,219 @@ class TestCropSourceDispatchIntegration:
         for frame in (frame_real, frame_proc):
             assert frame.dtype == np.uint16
             assert frame.shape == (H, W)
+
+
+# ---------------------------------------------------------------------------
+# U2: dark ring for the procedural PSF stamp (render_frame)
+# (docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-plan.md)
+# ---------------------------------------------------------------------------
+
+
+def _angular_radial_profile(img, cx, cy, n_bins=40, r_max=None):
+    """Bin pixel intensities by Euclidean distance from (cx, cy) across the
+    full 2D array — not a single-axis slice, which would miss a
+    non-isotropic/diamond-shaped ring artifact from a separable/outer-
+    product ring implementation.
+
+    Returns (bin_centers, mean_intensity_per_bin) as 1D float arrays. Bins
+    with no pixels (common at small radii where the pixel grid is sparse
+    relative to a fine bin width) are NaN, not a fabricated zero — a zero
+    fill would look like a spurious dip/peak to a naive argmin/argmax over
+    the array, masking the real ring dip. Callers should use nan-aware
+    reductions (np.nanargmin/np.nanargmax/np.nanmean).
+    """
+    H, W = img.shape
+    ys, xs = np.mgrid[0:H, 0:W]
+    r = np.hypot(xs - cx, ys - cy)
+    if r_max is None:
+        r_max = r.max()
+    bin_edges = np.linspace(0, r_max, n_bins + 1)
+    bin_idx = np.clip(np.digitize(r.ravel(), bin_edges) - 1, 0, n_bins - 1)
+    values = img.ravel().astype(np.float64)
+    sums = np.bincount(bin_idx, weights=values, minlength=n_bins)
+    counts = np.bincount(bin_idx, minlength=n_bins)
+    means = np.divide(sums, counts, out=np.full(n_bins, np.nan), where=counts > 0)
+    centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    return centers, means
+
+
+def _mean_intensity_in_annulus(img, cx, cy, r_inner, r_outer):
+    """Mean pixel intensity within [r_inner, r_outer) of (cx, cy), over the
+    full 2D array (angularly averaged, not a single-axis slice)."""
+    H, W = img.shape
+    ys, xs = np.mgrid[0:H, 0:W]
+    r = np.hypot(xs - cx, ys - cy)
+    mask = (r >= r_inner) & (r < r_outer)
+    if not mask.any():
+        return 0.0
+    return float(img[mask].astype(np.float64).mean())
+
+
+_DEFAULT_RING = {"radius_factor": 2.2, "width_factor": 0.5, "depth": 0.4}
+
+
+def _procedural_cfg(H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0, ring=None):
+    cfg = {
+        "image_height": H,
+        "image_width": W,
+        "psf_sigma": sigma,
+        "peak_intensity": peak,
+        "shot_noise": shot_noise,
+        "readout_noise": readout_noise,
+    }
+    if ring is not None:
+        cfg["ring"] = ring
+    return cfg
+
+
+class TestProceduralRingProfile:
+    """R3/R4: render_frame's per-particle stamp is a core-plus-ring
+    difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
+    2D radius grid (not the core's separable outer-product form)."""
+
+    def test_angularly_averaged_profile_has_peak_dip_and_fades_to_zero(self, render_module):
+        H, W = 128, 128
+        sigma = 5.0
+        cx, cy = W / 2.0, H / 2.0
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[cx, cy]])
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, ring=_DEFAULT_RING)
+
+        frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(0))
+
+        centers, means = _angular_radial_profile(
+            frame.astype(np.float64), cx, cy, n_bins=60, r_max=6 * sigma
+        )
+
+        # Bright peak at center. (nan-aware: sparse bins near r=0 with zero
+        # pixel count are NaN, not a fabricated zero — see
+        # _angular_radial_profile's docstring.)
+        peak_idx = np.nanargmax(means)
+        peak_val = means[peak_idx]
+        assert peak_val > 0.5 * 40000
+        assert centers[peak_idx] < sigma  # peak sits at/near r=0, not out at the ring
+
+        # Local minimum at approximately radius_factor * sigma.
+        min_idx = np.nanargmin(means)
+        expected_ring_r = _DEFAULT_RING["radius_factor"] * sigma
+        assert means[min_idx] < 0.3 * peak_val
+        assert abs(centers[min_idx] - expected_ring_r) < 1.5 * sigma
+
+        # Fades to near-zero beyond the ring.
+        far_mean = np.nanmean(means[-5:])
+        assert far_mean < 0.05 * peak_val
+
+    def test_ring_pixel_radius_scales_with_psf_sigma(self, render_module):
+        """Doubling psf_sigma roughly doubles the ring's pixel radius, since
+        radius_factor*sigma scales linearly with sigma."""
+        H, W = 256, 256
+        cx, cy = W / 2.0, H / 2.0
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[cx, cy]])
+
+        def ring_radius_px(sigma):
+            cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, ring=_DEFAULT_RING)
+            frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(1))
+            centers, means = _angular_radial_profile(
+                frame.astype(np.float64), cx, cy, n_bins=100, r_max=8 * sigma
+            )
+            return centers[np.nanargmin(means)]
+
+        r_small = ring_radius_px(sigma=5.0)
+        r_large = ring_radius_px(sigma=10.0)
+        assert r_small > 0
+        assert 1.5 * r_small < r_large < 2.5 * r_small
+
+
+class TestRingClipBeforePoisson:
+    """R5: the ring's negative dip must be clipped to non-negative values
+    before rng.poisson is invoked, or numpy.random.Generator.poisson raises
+    ValueError on negative input. Confirmed directly (red) against this
+    plan's implementation before the `img = np.clip(img, 0, None)` fix was
+    added: representative ring parameters against peak_intensity=40000
+    produce a stamped value around -6,500 ADU at the ring's trough, and
+    rng.poisson(negative) raises `ValueError: lam < 0 or lam contains NaNs`."""
+
+    def test_shot_noise_with_ring_completes_without_valueerror(self, render_module):
+        H, W = 128, 128
+        cfg = _procedural_cfg(
+            H,
+            W,
+            sigma=5.0,
+            peak=40000,
+            shot_noise=True,
+            readout_noise=15.0,
+            ring=_DEFAULT_RING,
+        )
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[64.0, 64.0]])
+        rng = np.random.default_rng(0)
+
+        # Must not raise ValueError from rng.poisson on the ring's negative dip.
+        frame = render_module.render_frame(positions, box, cfg, rng)
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+
+
+class TestProceduralRingEdgeCases:
+    def test_boundary_particle_renders_without_error(self, render_module):
+        """A particle near the image edge (ROI clipped by render.py's
+        existing max(0,...)/min(W,...) bounds) still renders cleanly with
+        the ring active, same as today's boundary handling."""
+        H, W = 64, 64
+        cfg = _procedural_cfg(
+            H, W, sigma=5.0, peak=40000, shot_noise=True, readout_noise=15.0, ring=_DEFAULT_RING
+        )
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[0.2, 0.2], [W - 0.2, H - 0.2], [0.2, H - 0.2]])
+        rng = np.random.default_rng(2)
+
+        frame = render_module.render_frame(positions, box, cfg, rng)
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+
+    def test_missing_ring_config_falls_back_to_defaults(self, render_module):
+        """No `ring` key in cfg at all must not raise KeyError, and must
+        still produce a visible dip using the documented defaults."""
+        H, W = 64, 64
+        cx, cy = 32.0, 32.0
+        cfg = _procedural_cfg(H, W, sigma=5.0, peak=40000)  # no ring=... passed
+        assert "ring" not in cfg
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[cx, cy]])
+        rng = np.random.default_rng(3)
+
+        frame = render_module.render_frame(positions, box, cfg, rng)  # must not raise KeyError
+
+        assert frame.dtype == np.uint16
+        core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
+        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * 5.0 - 1.0, 2.2 * 5.0 + 1.0)
+        assert ring_mean < 0.3 * core_mean
+
+    def test_crowded_overlapping_rings_render_without_error(self, render_module):
+        """Two particles closer than 2 * radius_factor * sigma apart: their
+        rings overlap/add (additively darkening shared background, then
+        floored at 0 by the pre-Poisson clip) — expected per the plan's
+        Risks & Dependencies, must render without error."""
+        H, W = 64, 64
+        sigma = 5.0
+        radius_factor = _DEFAULT_RING["radius_factor"]
+        separation = 1.5 * radius_factor * sigma  # < 2 * radius_factor * sigma (=22)
+        assert separation < 2 * radius_factor * sigma
+        cfg = _procedural_cfg(
+            H, W, sigma=sigma, peak=40000, shot_noise=True, readout_noise=15.0, ring=_DEFAULT_RING
+        )
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[32.0 - separation / 2, 32.0], [32.0 + separation / 2, 32.0]])
+        rng = np.random.default_rng(4)
+
+        frame = render_module.render_frame(positions, box, cfg, rng)
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+        # Interstitial darkening shouldn't fully black out every pixel
+        # between the particles (additive rings still leave the two bright
+        # cores standing).
+        assert frame.max() > 0.3 * 40000

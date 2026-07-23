@@ -12,6 +12,22 @@ synthetic:
   readout_noise: 15.0           # Gaussian readout noise std dev (ADU)
   output_dir: verification_output/synthetic_frames/
 
+  # --- Dark ring for the procedural PSF stamp (render_strategy: procedural) ---
+  # Self-contained difference-of-Gaussians ring, parameterized as factors of
+  # psf_sigma (radius/width) and peak_intensity (depth) -- deliberately NOT
+  # fit against reference data, unlike crop_source: procedural's fitted
+  # ring_* params below, since keeping the procedural strategy self-
+  # contained (no curve-fit step, no dependency on real reference data) is
+  # the point of this code path. These are starting-point defaults, not
+  # precision-fit values -- confirm visually against a rendered frame and
+  # adjust if the ring looks obviously wrong (e.g. fully black or
+  # invisible). See docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+  # and-noise-plan.md U2.
+  ring:
+    radius_factor: 2.2   # ring center's distance from particle center, in units of psf_sigma
+    width_factor: 0.5    # ring Gaussian width, in units of psf_sigma
+    depth: 0.4            # ring depth, as a fraction of peak_intensity
+
   # --- PSF parameters ---
   # sigma_px is written here by: uv run python calibrate_psf.py --merge-config config.yaml
   # deeptrack ignores sigma_px and uses na/wavelength/resolution instead.

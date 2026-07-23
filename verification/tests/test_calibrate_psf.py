@@ -74,6 +74,15 @@ def _make_synthetic_frame(
         "peak_intensity": peak,
         "shot_noise": False,
         "readout_noise": 0.0,
+        # This helper's contract is a *pure* Gaussian PSF at a known sigma,
+        # used to test calibrate_psf.py's sigma-recovery accuracy -- a
+        # concern unrelated to render_frame's dark-ring feature (see
+        # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-
+        # plan.md U2). As of U2 the ring is on by default even when no
+        # "ring" key is given, so it must be explicitly disabled here, or a
+        # plain-Gaussian curve_fit against a core-plus-ring profile would
+        # systematically underestimate sigma.
+        "ring": {"depth": 0.0},
     }
     frame = render.render_frame(positions, box, cfg, rng)
     return frame.astype(np.float32)
