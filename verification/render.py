@@ -25,6 +25,7 @@ Render strategies (set via synthetic.render_strategy in config.yaml):
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -140,6 +141,82 @@ def _lj_to_pixels(positions_lj, box, H, W):
     return np.stack([px, py], axis=1)
 
 
+_FWHM_TO_SIGMA = 2.355  # FWHM = 2*sqrt(2*ln2)*sigma ~= 2.355*sigma
+
+
+def _parse_particle_diameter_lj(lammps_in_path):
+    """Extract a particle diameter in LJ units from a LAMMPS .in script.
+
+    Prefers a `set type <N> shape <sx> <sy> <sz>` line (diameter = 2*sx,
+    assuming a spherical particle where sx == sy == sz — the common case
+    for this repo's ellipsoid-as-sphere sims, e.g.
+    lammps-scripts/central_pair_interaction.in:27).
+
+    Falls back to the `variable sigma equal <value>` LJ parameter (e.g.
+    central_pair_interaction.in:18) if no `shape` line is present — this
+    repo's sims set the LJ pair-interaction sigma equal to the particle
+    diameter, so the bare sigma value is used directly as the diameter.
+
+    Raises:
+        FileNotFoundError: if lammps_in_path does not exist.
+        ValueError: if the file exists but neither a `shape` line nor a
+            `variable sigma equal <value>` line with a parseable literal
+            number can be found.
+    """
+    path = Path(lammps_in_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"LAMMPS input script not found: {lammps_in_path}")
+
+    text = path.read_text()
+    lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+
+    shape_re = re.compile(r"^set\s+type\s+\d+\s+shape\s+(\S+)\s+(\S+)\s+(\S+)")
+    for line in lines:
+        m = shape_re.match(line)
+        if m:
+            try:
+                sx = float(m.group(1))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Could not parse numeric shape value from '{line}' in " f"{lammps_in_path}"
+                ) from exc
+            return 2.0 * sx
+
+    sigma_re = re.compile(r"^variable\s+sigma\s+equal\s+(\S+)")
+    for line in lines:
+        m = sigma_re.match(line)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Could not parse numeric sigma value from '{line}' in "
+                    f"{lammps_in_path} (likely an unresolved LAMMPS variable "
+                    "reference, e.g. '${sigma}' — a literal number is required)"
+                ) from exc
+
+    raise ValueError(
+        f"Could not find a 'set type <N> shape ...' line or a "
+        f"'variable sigma equal <value>' line in {lammps_in_path}; "
+        "cannot derive particle diameter."
+    )
+
+
+def _derive_psf_sigma_from_lammps_in(lammps_in_path, box, image_width):
+    """Derive a psf_sigma (px) from a LAMMPS .in script's particle diameter.
+
+    Converts the LJ-unit diameter to pixels using the same per-axis
+    LJ-to-pixel scale `_lj_to_pixels` derives from the box bounds
+    (image_width / (x_hi - x_lo)), then converts pixel diameter to a
+    Gaussian sigma via the FWHM relationship: sigma = FWHM / 2.355.
+    """
+    diameter_lj = _parse_particle_diameter_lj(lammps_in_path)
+    x_lo, x_hi, _y_lo, _y_hi = box
+    scale = image_width / (x_hi - x_lo)
+    diameter_px = diameter_lj * scale
+    return diameter_px / _FWHM_TO_SIGMA
+
+
 def _dispatch_render(positions_lj, box, cfg, rng, strategy):
     """Dispatch to the appropriate render function based on strategy.
 
@@ -182,6 +259,16 @@ def main():
     parser.add_argument(
         "--config", default="config.yaml", help="Config file (default: config.yaml)"
     )
+    parser.add_argument(
+        "--lammps-in",
+        default=None,
+        help=(
+            "Path to the LAMMPS .in script that produced --lammps's trajectory. "
+            "When given, psf_sigma is derived from the script's particle diameter "
+            "(overriding config.yaml's psf_sigma for this run) instead of using "
+            "an arbitrary constant."
+        ),
+    )
     parser.add_argument("--frames", type=int, default=None, help="Limit to first N timesteps")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
     parser.add_argument("--video", action="store_true", help="Also encode frames into preview.mp4")
@@ -205,7 +292,8 @@ def main():
 
     print(f"Rendering from: {args.lammps}")
     print(f"Image size:     {cfg['image_width']}×{cfg['image_height']} px")
-    print(f"PSF sigma:      {cfg.get('psf_sigma', cfg.get('psf', {}).get('sigma_px', 5.0))} px")
+    if not args.lammps_in:
+        print(f"PSF sigma:      {cfg.get('psf_sigma', cfg.get('psf', {}).get('sigma_px', 5.0))} px")
     print(f"Render strategy: {strategy}")
     print(f"Output:         {output_dir}")
 
@@ -214,6 +302,16 @@ def main():
             break
 
         box = _parse_box(block["box_bounds"])
+
+        if args.lammps_in and i == 0:
+            cfg["psf_sigma"] = _derive_psf_sigma_from_lammps_in(
+                args.lammps_in, box, cfg["image_width"]
+            )
+            print(
+                f"PSF sigma:      {cfg['psf_sigma']:.3f} px "
+                f"(derived from --lammps-in {args.lammps_in})"
+            )
+
         positions_lj, atom_ids = _parse_atoms(block["atom_header"], block["atoms"])
 
         img = _dispatch_render(positions_lj, box, cfg, rng, strategy)

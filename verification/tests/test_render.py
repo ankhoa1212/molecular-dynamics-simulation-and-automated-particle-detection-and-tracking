@@ -10,6 +10,7 @@ import textwrap
 from pathlib import Path
 from unittest import mock
 
+import matplotlib.image as mplimg
 import numpy as np
 import pytest
 
@@ -18,13 +19,13 @@ import pytest
 _LAMMPS_STUB = mock.MagicMock()
 
 
-def _make_block(timestep, atom_ids, xs, ys):
+def _make_block(timestep, atom_ids, xs, ys, box_bounds=None):
     """Build a minimal LAMMPS dump block dict for testing."""
     lines = [f"{aid} 1 {x} {y} 0.0" for aid, x, y in zip(atom_ids, xs, ys)]
     return {
         "timestep": timestep,
         "num_atoms": len(atom_ids),
-        "box_bounds": ["0.0 10.0\n", "0.0 10.0\n", "0.0 1.0\n"],
+        "box_bounds": box_bounds or ["0.0 10.0\n", "0.0 10.0\n", "0.0 1.0\n"],
         "atom_header": "ITEM: ATOMS id type x y z",
         "atoms": lines,
     }
@@ -120,6 +121,259 @@ class TestLjToPixels:
 
 
 # ---------------------------------------------------------------------------
+# U1: --lammps-in particle-width derivation
+# (docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-plan.md)
+# ---------------------------------------------------------------------------
+
+
+_SHAPE_IN_SCRIPT = """\
+units lj
+atom_style ellipsoid
+
+variable	sigma equal 1.0     # distance where particles bond (potential energy is 0)
+
+# Set ellipsoid as a sphere
+set type 1 shape 0.5 0.5 0.5
+set atom 1 mass 1.0
+"""
+
+_SIGMA_ONLY_IN_SCRIPT = """\
+units lj
+atom_style ellipsoid
+
+variable	sigma equal 1.0     # distance where particles bond (potential energy is 0)
+pair_coeff 1 1 ${epsilon} ${sigma} ${delta} ${cutoff}
+"""
+
+_EMPTY_IN_SCRIPT = """\
+units lj
+atom_style ellipsoid
+# no shape line, no sigma variable here
+"""
+
+
+class TestParseParticleDiameterLj:
+    def test_shape_line_yields_diameter(self, render_module, tmp_path):
+        in_path = tmp_path / "sim.in"
+        in_path.write_text(_SHAPE_IN_SCRIPT)
+        diameter = render_module._parse_particle_diameter_lj(str(in_path))
+        assert diameter == pytest.approx(1.0)
+
+    def test_falls_back_to_variable_sigma_when_no_shape_line(self, render_module, tmp_path):
+        in_path = tmp_path / "sim.in"
+        in_path.write_text(_SIGMA_ONLY_IN_SCRIPT)
+        diameter = render_module._parse_particle_diameter_lj(str(in_path))
+        assert diameter == pytest.approx(1.0)
+
+    def test_missing_file_raises_file_not_found_error(self, render_module, tmp_path):
+        missing_path = tmp_path / "does_not_exist.in"
+        with pytest.raises(FileNotFoundError, match="does_not_exist.in"):
+            render_module._parse_particle_diameter_lj(str(missing_path))
+
+    def test_malformed_script_raises_value_error(self, render_module, tmp_path):
+        in_path = tmp_path / "empty.in"
+        in_path.write_text(_EMPTY_IN_SCRIPT)
+        with pytest.raises(ValueError, match="empty.in"):
+            render_module._parse_particle_diameter_lj(str(in_path))
+
+
+class TestDerivePsfSigmaFromLammpsIn:
+    def test_known_box_and_image_size_yields_expected_sigma(self, render_module, tmp_path):
+        in_path = tmp_path / "sim.in"
+        in_path.write_text(_SHAPE_IN_SCRIPT)
+        box = (0.0, 200.0, 0.0, 200.0)
+        sigma = render_module._derive_psf_sigma_from_lammps_in(str(in_path), box, image_width=512)
+        # diameter_lj=1.0, scale=512/200=2.56 px/LJ-unit, diameter_px=2.56,
+        # sigma = diameter_px / 2.355
+        expected = (1.0 * (512 / 200)) / 2.355
+        assert sigma == pytest.approx(expected)
+
+    def test_sigma_fallback_path_also_produces_expected_sigma(self, render_module, tmp_path):
+        in_path = tmp_path / "sim.in"
+        in_path.write_text(_SIGMA_ONLY_IN_SCRIPT)
+        box = (0.0, 100.0, 0.0, 100.0)
+        sigma = render_module._derive_psf_sigma_from_lammps_in(str(in_path), box, image_width=256)
+        expected = (1.0 * (256 / 100)) / 2.355
+        assert sigma == pytest.approx(expected)
+
+
+class TestLammpsInCliFlag:
+    """R2: cfg["psf_sigma"] must be untouched when --lammps-in is omitted;
+    when supplied, it must be overridden before any render strategy runs."""
+
+    def test_omitted_flag_leaves_psf_sigma_untouched(self, render_module, tmp_path, monkeypatch):
+        cfg_path = _minimal_cfg(tmp_path)
+        blocks = [_make_block(0, [1, 2], [1.0, 2.0], [3.0, 4.0])]
+        _LAMMPS_STUB.parse_lammps_dump.side_effect = lambda path: iter(blocks)
+
+        captured = {}
+        original_dispatch = render_module._dispatch_render
+
+        def spy(positions_lj, box, cfg, rng, strategy):
+            captured["psf_sigma"] = cfg["psf_sigma"]
+            return original_dispatch(positions_lj, box, cfg, rng, strategy)
+
+        monkeypatch.setattr(render_module, "_dispatch_render", spy)
+
+        with mock.patch.object(
+            sys, "argv", ["render.py", "--lammps", "fake.lammpstrj", "--config", cfg_path]
+        ):
+            render_module.main()
+
+        # _minimal_cfg sets psf_sigma: 2.0 — must be exactly what config.yaml set.
+        assert captured["psf_sigma"] == 2.0
+
+    def test_flag_supplied_overrides_psf_sigma_before_dispatch(
+        self, render_module, tmp_path, monkeypatch
+    ):
+        cfg_path = _minimal_cfg(tmp_path)
+        in_path = tmp_path / "sim.in"
+        in_path.write_text(_SHAPE_IN_SCRIPT)
+
+        # _minimal_cfg uses a 64x64 image; box below matches the LAMMPS box.
+        blocks = [
+            _make_block(
+                0,
+                [1, 2],
+                [1.0, 2.0],
+                [3.0, 4.0],
+                box_bounds=["0.0 10.0\n", "0.0 10.0\n", "0.0 1.0\n"],
+            )
+        ]
+        _LAMMPS_STUB.parse_lammps_dump.side_effect = lambda path: iter(blocks)
+
+        captured = {}
+        original_dispatch = render_module._dispatch_render
+
+        def spy(positions_lj, box, cfg, rng, strategy):
+            captured["psf_sigma"] = cfg["psf_sigma"]
+            return original_dispatch(positions_lj, box, cfg, rng, strategy)
+
+        monkeypatch.setattr(render_module, "_dispatch_render", spy)
+
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "render.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                cfg_path,
+                "--lammps-in",
+                str(in_path),
+            ],
+        ):
+            render_module.main()
+
+        # diameter_lj=1.0, box width 10.0, image_width 64 -> scale=6.4,
+        # diameter_px=6.4, sigma = 6.4/2.355
+        expected = (1.0 * (64 / 10.0)) / 2.355
+        assert captured["psf_sigma"] == pytest.approx(expected)
+        # And must differ from the untouched config default (2.0), proving
+        # the override actually took effect rather than silently no-op'ing.
+        assert captured["psf_sigma"] != 2.0
+
+    def test_missing_lammps_in_path_raises_clear_error(self, render_module, tmp_path):
+        cfg_path = _minimal_cfg(tmp_path)
+        blocks = [_make_block(0, [1], [1.0], [3.0])]
+        _LAMMPS_STUB.parse_lammps_dump.side_effect = lambda path: iter(blocks)
+
+        missing_path = tmp_path / "nonexistent.in"
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "render.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                cfg_path,
+                "--lammps-in",
+                str(missing_path),
+            ],
+        ):
+            with pytest.raises(FileNotFoundError, match="nonexistent.in"):
+                render_module.main()
+
+    def test_end_to_end_render_particle_size_matches_derived_diameter(
+        self, render_module, tmp_path, monkeypatch
+    ):
+        """Integration: running render.py --lammps <path> --lammps-in <path>
+        end-to-end produces a rendered particle whose pixel footprint is
+        consistent with the fixture's known diameter (via the same sigma
+        _derive_psf_sigma_from_lammps_in computes), not the deliberately-
+        wrong config default -- proving the override actually reaches the
+        pixels main() writes, not just the cfg dict."""
+        cfg = {
+            "synthetic": {
+                "render_strategy": "procedural",
+                "image_width": 200,
+                "image_height": 200,
+                "psf_sigma": 999.0,  # deliberately wrong, must be overridden
+                "peak_intensity": 1000,
+                "shot_noise": False,
+                "readout_noise": 0.0,
+                "output_dir": str(tmp_path / "frames"),
+            }
+        }
+        import yaml
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump(cfg))
+
+        in_path = tmp_path / "sim.in"
+        in_path.write_text(_SHAPE_IN_SCRIPT)
+
+        # 100x100 box mapped onto a 200x200 image -> scale = 2 px/LJ-unit.
+        box_bounds = ["0.0 100.0\n", "0.0 100.0\n", "0.0 1.0\n"]
+        blocks = [_make_block(0, [1], [50.0], [50.0], box_bounds=box_bounds)]
+        _LAMMPS_STUB.parse_lammps_dump.side_effect = lambda path: iter(blocks)
+
+        # Spy on the raw uint8 array passed to mplimg.imsave, avoiding any
+        # PNG-encode/decode round-trip ambiguity.
+        captured = {}
+        original_imsave = render_module.mplimg.imsave
+
+        def spy_imsave(path, arr, **kwargs):
+            captured["img8"] = np.asarray(arr)
+            return original_imsave(path, arr, **kwargs)
+
+        monkeypatch.setattr(render_module.mplimg, "imsave", spy_imsave)
+
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "render.py",
+                "--lammps",
+                "fake.lammpstrj",
+                "--config",
+                str(cfg_path),
+                "--lammps-in",
+                str(in_path),
+            ],
+        ):
+            render_module.main()
+
+        img8 = captured["img8"]
+        box = (0.0, 100.0, 0.0, 100.0)
+        expected_sigma = render_module._derive_psf_sigma_from_lammps_in(
+            str(in_path), box, image_width=200
+        )
+
+        # A Gaussian's ~3-sigma radius contains nearly all of its energy;
+        # generous multiplicative bounds on the bright-pixel footprint catch
+        # gross errors (forgetting the override, an inverted scale factor)
+        # without being brittle to exact rendering/quantization details.
+        nonzero_count = int((img8 > 0).sum())
+        approx_area = np.pi * (3 * expected_sigma) ** 2
+        assert 0 < nonzero_count < 20 * approx_area
+        # Nowhere near the ~40,000 px frame a psf_sigma=999.0 blob would cover.
+        assert nonzero_count < 0.1 * (200 * 200)
+
+
+# ---------------------------------------------------------------------------
 # ground_truth_tracks.csv written by main()
 # ---------------------------------------------------------------------------
 
@@ -147,6 +401,9 @@ def _minimal_cfg(tmp_path):
 def _run_main_with_blocks(render_module, tmp_path, blocks):
     """Patch parse_lammps_dump to yield `blocks`, run main()."""
     cfg_path = _minimal_cfg(tmp_path)
+    # Reset any side_effect a prior test may have left set (Mock.side_effect
+    # takes precedence over return_value, so this must be cleared explicitly).
+    _LAMMPS_STUB.parse_lammps_dump.side_effect = None
     _LAMMPS_STUB.parse_lammps_dump.return_value = iter(blocks)
 
     with mock.patch.object(
@@ -230,6 +487,7 @@ class TestGroundTruthTracksCSV:
 class TestVideoFlag:
     def _run_with_video(self, render_module, tmp_path, blocks, extra_args=()):
         cfg_path = _minimal_cfg(tmp_path)
+        _LAMMPS_STUB.parse_lammps_dump.side_effect = None
         _LAMMPS_STUB.parse_lammps_dump.return_value = iter(blocks)
         with mock.patch.object(
             sys,
