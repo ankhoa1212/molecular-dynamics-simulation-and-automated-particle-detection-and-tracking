@@ -21,7 +21,7 @@ synthetic:
     resolution: 6.5e-08  # pixel size (metres/pixel)
     defocus: 0.0  # Zernike defocus coefficient (waves)
     spherical_aberration: 0.0  # Zernike spherical aberration (waves)
-    sigma_px: 6.77  # empirical PSF sigma (px) — filled by calibrate_psf.py
+    sigma_px: 8.21  # empirical PSF sigma (px) — filled by calibrate_psf.py
 
   # --- Spatially varying background (render_strategy: deeptrack) ---
   # Calibrated (2026-07-22) via calibrate_psf.py --merge-config against 512x512
@@ -32,20 +32,20 @@ synthetic:
   # against real data at all -- see docs/plans/2026-07-22-001-fix-procedural-
   # particle-realism-plan.md U3.
   background:
-    heterogeneity_scale: 31.7  # spatial scale of background variation (px)
-    amplitude: 419.2  # max background variation (ADU)
+    heterogeneity_scale: 203.1  # spatial scale of background variation (px)
+    amplitude: 705.0  # max background variation (ADU)
 
   # --- Per-particle intensity distribution (render_strategy: deeptrack) ---
   particle:
     intensity_distribution: lognormal   # fixed | lognormal
-    peak_mean: 716.4  # mean peak intensity (ADU). Represents each particle's own peak
+    peak_mean: 987.4  # mean peak intensity (ADU). Represents each particle's own peak
                                  # brightness (before background/noise), consistently across all
                                  # crop_source values (physics/real/procedural) — each source's
                                  # template/kernel is peak-normalized (max value 1) rather than
                                  # sum-normalized, so peak_mean's meaning doesn't drift with template
                                  # spatial extent or PSF optical spread. See docs/plans/2026-07-21-001-
                                  # fix-peak-normalized-particle-brightness-plan.md.
-    intensity_sigma: 0.673  # log-normal sigma
+    intensity_sigma: 1.015  # log-normal sigma
 
   # --- sCMOS noise model (render_strategy: deeptrack) ---
   # Calibrated (2026-07-22), same source/command as background: above. No
@@ -55,7 +55,7 @@ synthetic:
   # than intended once compared visually via compare_renders.py.
   noise:
     gain_sigma: 0.02  # per-pixel gain variation (fraction of mean gain)
-    read_noise: 48.04  # Gaussian read noise std dev (ADU)
+    read_noise: 62.42  # Gaussian read noise std dev (ADU)
 
   # --- Domain randomization (render_strategy: randomized) ---
   randomization:
