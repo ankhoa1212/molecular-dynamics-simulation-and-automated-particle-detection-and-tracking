@@ -257,11 +257,15 @@ def _derive_psf_sigma_from_lammps_in(lammps_in_path, box, image_width):
     return diameter_px / _FWHM_TO_SIGMA
 
 
-def _dispatch_render(positions_lj, box, cfg, rng, strategy):
+def _dispatch_render(positions_lj, box, cfg, rng, strategy, state=None):
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
         strategy: 'procedural' | 'deeptrack' | 'randomized'
+        state: optional dict carrying cross-frame smoothing state for the
+            'randomized' strategy (see render_randomized.render_frame_randomized).
+            Passed through only for that branch; 'procedural' and 'deeptrack'
+            ignore it entirely — their signatures/calls are unchanged.
 
     Returns:
         uint16 numpy array of shape (H, W)
@@ -280,7 +284,7 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy):
         try:
             from render_randomized import render_frame_randomized
 
-            return render_frame_randomized(positions_lj, box, cfg, rng)
+            return render_frame_randomized(positions_lj, box, cfg, rng, state=state)
         except ImportError:
             raise ImportError(
                 "Randomized rendering requires render_randomized.py. "
@@ -324,6 +328,15 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(args.seed)
+    # Cross-frame smoothing state for render_strategy: randomized (R8) — a
+    # small dict owned by this run, created once alongside rng, and threaded
+    # through _dispatch_render the same way rng already is. Deliberately not
+    # stuffed into cfg: render_frame_randomized already makes a private
+    # dict(cfg) copy per call to avoid mutating the caller's config, and
+    # carrying runtime state through cfg would break that boundary (see
+    # plan's Key Decisions, "cfg dict mutation is rejected"). Other
+    # strategies never see this — it stays None for them.
+    state = {} if strategy == "randomized" else None
 
     ground_truth = []
     # Collect per-frame data for tracks CSV: list of (atom_ids, px_positions)
@@ -354,7 +367,7 @@ def main():
 
         positions_lj, atom_ids = _parse_atoms(block["atom_header"], block["atoms"])
 
-        img = _dispatch_render(positions_lj, box, cfg, rng, strategy)
+        img = _dispatch_render(positions_lj, box, cfg, rng, strategy, state=state)
 
         img_f = img.astype(np.float32)
         lo, hi = img_f.min(), img_f.max()

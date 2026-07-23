@@ -95,6 +95,23 @@ synthetic:
                                           # docs/plans/2026-07-22-004-feat-procedural-renderer-
                                           # ring-and-noise-plan.md U3.
 
+    # --- Frame-to-frame smoothing for the above ranges (R8/R9) ---
+    # Only takes effect when render.py's main() drives render_frame_randomized
+    # with a real cross-frame state dict (render_strategy: randomized); a
+    # bare call without a state argument still samples each parameter fresh
+    # and independently every time, unaffected by this block. See
+    # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-
+    # plan.md U4.
+    smoothing:
+      step_std_fraction: 0.15   # per-frame random-walk step std, as a fraction of each
+                                 # parameter's own (max - min) range. Starting-point value,
+                                 # not precision-fit -- balances "smooth enough to stop
+                                 # looking jumpy" against "still exploring the full range
+                                 # over a normal clip length, without dwelling at the
+                                 # boundaries." Confirm visually against a rendered
+                                 # randomized clip and adjust if it looks too jumpy (raise)
+                                 # or too static (lower).
+
   # --- Particle appearance source (render_strategy: deeptrack) ---
   crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above.
                           # All three peak-normalize their template/kernel (max value 1, not sum 1),

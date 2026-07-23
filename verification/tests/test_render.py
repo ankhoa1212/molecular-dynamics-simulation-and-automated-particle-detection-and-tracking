@@ -209,9 +209,9 @@ class TestLammpsInCliFlag:
         captured = {}
         original_dispatch = render_module._dispatch_render
 
-        def spy(positions_lj, box, cfg, rng, strategy):
+        def spy(positions_lj, box, cfg, rng, strategy, **kwargs):
             captured["psf_sigma"] = cfg["psf_sigma"]
-            return original_dispatch(positions_lj, box, cfg, rng, strategy)
+            return original_dispatch(positions_lj, box, cfg, rng, strategy, **kwargs)
 
         monkeypatch.setattr(render_module, "_dispatch_render", spy)
 
@@ -245,9 +245,9 @@ class TestLammpsInCliFlag:
         captured = {}
         original_dispatch = render_module._dispatch_render
 
-        def spy(positions_lj, box, cfg, rng, strategy):
+        def spy(positions_lj, box, cfg, rng, strategy, **kwargs):
             captured["psf_sigma"] = cfg["psf_sigma"]
-            return original_dispatch(positions_lj, box, cfg, rng, strategy)
+            return original_dispatch(positions_lj, box, cfg, rng, strategy, **kwargs)
 
         monkeypatch.setattr(render_module, "_dispatch_render", spy)
 
@@ -918,6 +918,208 @@ class TestRandomizedStrategy:
         )
         assert frame.dtype == np.uint16
         assert frame.shape == (32, 32)
+
+
+# ---------------------------------------------------------------------------
+# U4 (procedural-renderer-ring-and-noise plan): frame-to-frame smoothing via
+# the optional `state` parameter on render_frame_randomized.
+# ---------------------------------------------------------------------------
+
+
+class TestRandomizedStrategySmoothing:
+    def test_state_none_still_reproducible_byte_identical(self, rr_module):
+        """Restates test_fixed_seed_is_reproducible's guarantee explicitly
+        under the new signature: state=None (the default, and the only mode
+        used when the argument is omitted entirely) must remain byte-for-byte
+        identical to the pre-U4 behavior — R9."""
+        cfg = _base_cfg()
+        positions = np.array([[2.0, 3.0], [7.0, 6.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        frame1 = rr_module.render_frame_randomized(
+            positions, box, cfg, np.random.default_rng(99), state=None
+        )
+        frame2 = rr_module.render_frame_randomized(positions, box, cfg, np.random.default_rng(99))
+        np.testing.assert_array_equal(frame1, frame2)
+
+    def test_empty_state_dict_bootstraps_all_params(self, rr_module):
+        """First call with an empty state dict must not raise (no KeyError /
+        None-arithmetic) and must populate all three tracked parameters
+        within their configured ranges."""
+        cfg = _base_cfg()
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        rng = np.random.default_rng(0)
+        state = {}
+
+        frame = rr_module.render_frame_randomized(positions, box, cfg, rng, state=state)
+
+        assert frame.dtype == np.uint16
+        assert set(state.keys()) == {"psf_sigma", "peak_intensity", "readout_noise"}
+        assert 3.0 <= state["psf_sigma"] <= 7.0
+        assert 20000 <= state["peak_intensity"] <= 60000
+        assert 10.0 <= state["readout_noise"] <= 25.0
+
+    def test_shared_state_bounded_deltas_and_full_range_exploration(self, rr_module):
+        """Consecutive samples from a shared state dict should stay within a
+        bounded step of the previous value (not jump independently every
+        frame), while over many calls the full configured range is still
+        explored rather than collapsing to a fixed point."""
+        cfg = _base_cfg()
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        rng = np.random.default_rng(5)
+        state = {}
+
+        sigmas = []
+        for _ in range(500):
+            rr_module.render_frame_randomized(positions, box, cfg, rng, state=state)
+            sigmas.append(state["psf_sigma"])
+
+        sigma_min, sigma_max = 3.0, 7.0
+        step_std = 0.15 * (sigma_max - sigma_min)  # default step_std_fraction
+        deltas = np.abs(np.diff(sigmas))
+
+        # Bounded: an 8-sigma jump between consecutive frames is essentially
+        # impossible for a Gaussian step — this directly distinguishes the
+        # random walk from independent per-frame uniform resampling (which
+        # would routinely jump the full range).
+        assert deltas.max() < 8 * step_std
+        # Not collapsing to a point: a reflecting walk on a bounded interval
+        # still explores close to the full configured range given enough
+        # steps.
+        assert (max(sigmas) - min(sigmas)) > 0.6 * (sigma_max - sigma_min)
+
+    def test_invalid_range_raises_before_sampling_when_state_passed(self, rr_module):
+        """R8/validation ordering: invalid ranges must raise ValueError
+        before any sampling occurs, whether or not `state` is passed — the
+        state dict must be left untouched."""
+        cfg = _base_cfg()
+        cfg["randomization"]["psf_sigma_range"] = [7.0, 3.0]
+        state = {}
+        with pytest.raises(ValueError, match="psf_sigma_range"):
+            rr_module.render_frame_randomized(
+                np.array([[5.0, 5.0]]),
+                (0.0, 10.0, 0.0, 10.0),
+                cfg,
+                np.random.default_rng(0),
+                state=state,
+            )
+        assert state == {}
+
+    def test_reflecting_boundary_avoids_dwelling_vs_hard_clip(self, rr_module):
+        """Directly exercises the reflecting-boundary fix over the rejected
+        hard-clip approach: replays the identical step sequence through both
+        boundary strategies and shows (1) hard-clip visibly pins exact
+        values at the boundary ("dwelling"), reflection essentially never
+        does, and (2) reflection's boundary-third occupancy is lower than
+        hard-clip's."""
+        lo, hi = 3.0, 7.0
+        step_std = 0.15 * (hi - lo)
+        n = 3000
+        mid = (lo + hi) / 2.0
+
+        rng_reflect = np.random.default_rng(123)
+        rng_clip = np.random.default_rng(123)  # identical seed -> identical step draws
+
+        value_reflect = mid
+        value_clip = mid
+        reflect_samples = []
+        clip_samples = []
+        for _ in range(n):
+            step_r = rng_reflect.normal(0.0, step_std)
+            value_reflect = rr_module._reflect_into_range(value_reflect + step_r, lo, hi)
+            reflect_samples.append(value_reflect)
+
+            step_c = rng_clip.normal(0.0, step_std)
+            value_clip = min(max(value_clip + step_c, lo), hi)
+            clip_samples.append(value_clip)
+
+        reflect_samples = np.array(reflect_samples)
+        clip_samples = np.array(clip_samples)
+
+        # (1) Exact-boundary pinning ("dwelling"): hard clip visibly produces
+        # values exactly equal to lo/hi; reflection essentially never does
+        # (only by a measure-zero coincidence).
+        clip_pinned_frac = np.mean((clip_samples == lo) | (clip_samples == hi))
+        reflect_pinned_frac = np.mean((reflect_samples == lo) | (reflect_samples == hi))
+        assert clip_pinned_frac > 0.02
+        assert reflect_pinned_frac < 0.001
+
+        # (2) Boundary-third concentration: bucket into thirds of the range
+        # and confirm reflection's boundary-third occupancy is lower than
+        # hard-clip's over the same step sequence.
+        third = (hi - lo) / 3.0
+        lower_third_hi = lo + third
+        upper_third_lo = hi - third
+
+        def boundary_frac(samples):
+            in_boundary = (samples <= lower_third_hi) | (samples >= upper_third_lo)
+            return np.mean(in_boundary)
+
+        reflect_boundary_frac = boundary_frac(reflect_samples)
+        clip_boundary_frac = boundary_frac(clip_samples)
+        assert reflect_boundary_frac < clip_boundary_frac
+
+    def test_integration_render_py_main_loop_bounded_frame_to_frame_deltas(
+        self, render_module, tmp_path, monkeypatch
+    ):
+        """Integration: driving render.py's real main() loop for several
+        frames with render_strategy: randomized and inspecting the sequence
+        of sampled psf_sigma values (via a spy on _dispatch_render, the same
+        pattern TestLammpsInCliFlag uses) shows bounded frame-to-frame
+        deltas — confirming the state dict main() creates actually threads
+        through _dispatch_render end-to-end (R8), not just that
+        render_frame_randomized behaves correctly in isolation."""
+        import yaml
+
+        cfg = {
+            "synthetic": {
+                "render_strategy": "randomized",
+                "image_width": 32,
+                "image_height": 32,
+                "psf_sigma": 5.0,
+                "peak_intensity": 40000,
+                "shot_noise": False,
+                "readout_noise": 15.0,
+                "output_dir": str(tmp_path / "frames"),
+                "randomization": {
+                    "psf_sigma_range": [3.0, 7.0],
+                    "peak_range": [20000, 60000],
+                    "readout_noise_range": [10.0, 25.0],
+                },
+            }
+        }
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump(cfg))
+
+        n_frames = 15
+        blocks = [_make_block(t * 100, [1], [5.0], [5.0]) for t in range(n_frames)]
+        _LAMMPS_STUB.parse_lammps_dump.side_effect = None
+        _LAMMPS_STUB.parse_lammps_dump.return_value = iter(blocks)
+
+        captured_sigmas = []
+        original_dispatch = render_module._dispatch_render
+
+        def spy(positions_lj, box, frame_cfg, rng, strategy, **kwargs):
+            result = original_dispatch(positions_lj, box, frame_cfg, rng, strategy, **kwargs)
+            state = kwargs.get("state")
+            if state is not None:
+                captured_sigmas.append(state["psf_sigma"])
+            return result
+
+        monkeypatch.setattr(render_module, "_dispatch_render", spy)
+
+        with mock.patch.object(
+            sys, "argv", ["render.py", "--lammps", "fake.lammpstrj", "--config", str(cfg_path)]
+        ):
+            render_module.main()
+
+        assert len(captured_sigmas) == n_frames
+        step_std = 0.15 * (7.0 - 3.0)
+        deltas = np.abs(np.diff(captured_sigmas))
+        # Bounded frame-to-frame movement, not an independent full-range
+        # resample every frame.
+        assert deltas.max() < 8 * step_std
 
 
 # ---------------------------------------------------------------------------
