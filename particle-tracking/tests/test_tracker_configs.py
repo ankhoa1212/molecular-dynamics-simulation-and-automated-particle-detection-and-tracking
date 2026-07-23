@@ -86,7 +86,25 @@ class TestWriteRfdetrConfig:
             "myname", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
         )
 
-        assert cfg_path == tmp_path / "run_configs" / "rf-detr_myname.yaml"
+        assert cfg_path.parent == tmp_path / "run_configs"
+        assert cfg_path.name.startswith("rf-detr_myname_")
+        assert cfg_path.suffix == ".yaml"
+
+    def test_same_name_produces_distinct_paths_across_calls(self, tmp_path):
+        # Regression: two invocations sharing the same `name` (e.g. two
+        # model_comparison.py runs left at the default --output-dir) must not
+        # collide on the same config file path.
+        output_dir = str(tmp_path / "out")
+        first = write_rfdetr_config(
+            "myname", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        second = write_rfdetr_config(
+            "myname", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+
+        assert first != second
+        assert first.exists()
+        assert second.exists()
 
 
 class TestWriteLodestarConfig:
@@ -157,7 +175,9 @@ class TestWriteLodestarConfig:
             "myname", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
         )
 
-        assert cfg_path == tmp_path / "run_configs" / "lodestar_myname.yaml"
+        assert cfg_path.parent == tmp_path / "run_configs"
+        assert cfg_path.name.startswith("lodestar_myname_")
+        assert cfg_path.suffix == ".yaml"
 
     def test_threshold_falls_back_to_default_when_autolabel_config_missing(self, tmp_path):
         # tmp_path has no ../data-setup/configs/autolabel_2um_lodestar_model_15.json,
