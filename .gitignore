@@ -42,5 +42,5 @@ verification/verification_output/
 # generated lint reports
 lint-reports/
 
-# local Claude Code settings
-.claude/settings.local.json
+# Claude Code settings
+.claude/
