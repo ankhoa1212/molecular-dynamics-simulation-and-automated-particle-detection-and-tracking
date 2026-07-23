@@ -9,7 +9,17 @@ synthetic:
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
   peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
   shot_noise: true              # add Poisson photon noise
-  readout_noise: 15.0           # Gaussian readout noise std dev (ADU)
+  readout_noise: 200.0          # Gaussian readout noise std dev (ADU). Raised from 15.0 --
+                                 # render.py's main() 8-bit PNG stretch is a per-frame true
+                                 # min/max ((img-lo)/(hi-lo)*255), and with peak_intensity:
+                                 # 40000 one 8-bit gray level is ~157 ADU, so 15 ADU of noise
+                                 # was invisible after the stretch (confirmed: >50% of pixels
+                                 # exactly 0.0 at the old default). 200.0 clears one gray
+                                 # level with margin. Starting-point value, not precision-
+                                 # fit -- confirm visually against a rendered frame and adjust
+                                 # if the background reads too grainy or still too flat. See
+                                 # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+                                 # and-noise-plan.md U3.
   output_dir: verification_output/synthetic_frames/
 
   # --- Dark ring for the procedural PSF stamp (render_strategy: procedural) ---
@@ -77,7 +87,13 @@ synthetic:
   randomization:
     psf_sigma_range: [3.0, 7.0]          # Uniform range for per-frame PSF sigma (px)
     peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
-    readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
+    readout_noise_range: [150.0, 300.0]  # Uniform range for per-frame readout noise std (ADU).
+                                          # Raised from [10.0, 25.0] to the same visible-noise
+                                          # scale as synthetic.readout_noise above (R7) --
+                                          # otherwise randomized output would be inconsistently
+                                          # "cleaner" than procedural after that fix. See
+                                          # docs/plans/2026-07-22-004-feat-procedural-renderer-
+                                          # ring-and-noise-plan.md U3.
 
   # --- Particle appearance source (render_strategy: deeptrack) ---
   crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above.

@@ -1556,3 +1556,130 @@ class TestProceduralRingEdgeCases:
         # between the particles (additive rings still leave the two bright
         # cores standing).
         assert frame.max() > 0.3 * 40000
+
+
+# ---------------------------------------------------------------------------
+# U3: background noise visibility (R6/R7)
+# ---------------------------------------------------------------------------
+
+
+def _load_synthetic_config():
+    """Load the real `synthetic` block from verification/config.yaml.
+
+    Regression coverage for R6/R7 is tied to the actual shipped config
+    defaults, not a hardcoded test-local magnitude that could silently
+    drift from config.yaml -- if someone lowers readout_noise back toward
+    the old invisible-noise default, these tests should catch it.
+    """
+    import yaml
+
+    cfg_path = Path(__file__).parent.parent / "config.yaml"
+    with open(cfg_path) as f:
+        full_cfg = yaml.safe_load(f)
+    return full_cfg["synthetic"]
+
+
+def _render_background_region(render_module, readout_noise, shot_noise):
+    """Render a single isolated particle far from the image corner and
+    return (frame, background_corner). The particle sits at the center of a
+    128x128 frame with sigma=5 and the default ring, whose ROI radius
+    (~19px, see render_frame's ring_extent) never reaches the [:20, :20]
+    corner -- so that corner is genuinely unaffected by the particle stamp
+    and isolates readout/shot noise's own contribution."""
+    H, W = 128, 128
+    cfg = _procedural_cfg(
+        H,
+        W,
+        sigma=5.0,
+        peak=40000,
+        shot_noise=shot_noise,
+        readout_noise=readout_noise,
+        ring=_DEFAULT_RING,
+    )
+    box = (0.0, float(W), 0.0, float(H))
+    positions = np.array([[64.0, 64.0]])
+    rng = np.random.default_rng(0)
+
+    frame = render_module.render_frame(positions, box, cfg, rng)
+    background = frame[:20, :20]
+    return frame, background
+
+
+class TestBackgroundNoiseVisibility:
+    """R6/R7: readout_noise's magnitude must survive render.py's existing
+    per-frame min/max 8-bit PNG stretch (main()'s `(img-lo)/(hi-lo)*255`)
+    instead of being crushed to exactly 0. Confirmed (red) against the old
+    readout_noise: 15.0 default: >50% of a real rendered frame's pixels
+    were exactly 0.0 at the 50th percentile after this stretch. See
+    docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-plan.md U3."""
+
+    def test_config_yaml_readout_noise_raised_to_visible_scale(self):
+        """config.yaml's defaults must actually be at the new order-of-
+        magnitude (~150-300 ADU) called for by the plan, not just any
+        nonzero bump -- guards against the calibration regressing quietly."""
+        synth = _load_synthetic_config()
+        assert synth["readout_noise"] >= 100.0
+        lo, hi = synth["randomization"]["readout_noise_range"]
+        assert lo >= 100.0
+        assert hi >= lo
+
+    def test_background_region_has_nonzero_std_at_new_readout_noise(self, render_module):
+        """Happy path: render_frame()'s returned uint16 array has a nonzero
+        standard deviation in a background region, at config.yaml's new
+        readout_noise magnitude -- measurable directly, no PNG needed."""
+        synth = _load_synthetic_config()
+        _, background = _render_background_region(
+            render_module, readout_noise=synth["readout_noise"], shot_noise=True
+        )
+        background = background.astype(np.float64)
+        assert background.std() > 0.0
+        # Comfortably above floating-point/quantization noise -- in the same
+        # ballpark as the configured readout_noise (poisson(0) == 0 in a
+        # truly empty background region, so this std is readout-noise-only).
+        assert background.std() > 50.0
+
+    def test_stretch_formula_on_background_yields_nonzero_distinct_values(self, render_module):
+        """Happy path -- the test that most directly proves the fix:
+        replicating render.py's main() min/max stretch
+        ((img-lo)/(hi-lo)*255, using the whole frame's min/max exactly as
+        main() does) and inspecting only the background region yields a
+        nonzero fraction of distinct pixel values, not a single flat 0.0."""
+        synth = _load_synthetic_config()
+        frame, _ = _render_background_region(
+            render_module, readout_noise=synth["readout_noise"], shot_noise=True
+        )
+
+        img_f = frame.astype(np.float32)
+        lo, hi = img_f.min(), img_f.max()
+        assert hi > lo
+        img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+        background8 = img8[:20, :20]
+
+        distinct_values = np.unique(background8)
+        assert len(distinct_values) > 1, (
+            "background region stretched to a single flat value "
+            f"({distinct_values}) -- readout noise did not survive the "
+            "8-bit stretch"
+        )
+        # Not literally every pixel crushed to exactly 0 (today's, pre-fix,
+        # defect).
+        assert not np.all(background8 == 0)
+
+    def test_shot_noise_disabled_still_shows_background_grain(self, render_module):
+        """Edge case: shot_noise and readout_noise are independent noise
+        contributors -- with shot_noise: false, readout noise alone must
+        still produce visible background grain that survives the stretch."""
+        synth = _load_synthetic_config()
+        frame, background = _render_background_region(
+            render_module, readout_noise=synth["readout_noise"], shot_noise=False
+        )
+
+        background_f = background.astype(np.float64)
+        assert background_f.std() > 50.0
+
+        img_f = frame.astype(np.float32)
+        lo, hi = img_f.min(), img_f.max()
+        assert hi > lo
+        img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+        background8 = img8[:20, :20]
+        assert len(np.unique(background8)) > 1
