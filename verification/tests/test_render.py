@@ -223,6 +223,42 @@ class TestGroundTruthTracksCSV:
 
 
 # ---------------------------------------------------------------------------
+# --video flag (docs/plans/2026-07-22-003-feat-frames-to-video-plan.md U2)
+# ---------------------------------------------------------------------------
+
+
+class TestVideoFlag:
+    def _run_with_video(self, render_module, tmp_path, blocks, extra_args=()):
+        cfg_path = _minimal_cfg(tmp_path)
+        _LAMMPS_STUB.parse_lammps_dump.return_value = iter(blocks)
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["render.py", "--lammps", "fake.lammpstrj", "--config", cfg_path, *extra_args],
+        ):
+            render_module.main()
+
+    def test_video_flag_produces_preview_mp4(self, render_module, tmp_path):
+        blocks = [_make_block(t * 100, [1, 2], [1.0, 2.0], [3.0, 4.0]) for t in range(2)]
+        self._run_with_video(render_module, tmp_path, blocks, extra_args=["--video"])
+
+        video_path = tmp_path / "frames" / "preview.mp4"
+        assert video_path.exists()
+        assert video_path.stat().st_size > 0
+
+    def test_without_video_flag_no_preview_mp4(self, render_module, tmp_path):
+        blocks = [_make_block(0, [1, 2], [1.0, 2.0], [3.0, 4.0])]
+        self._run_with_video(render_module, tmp_path, blocks, extra_args=[])
+
+        assert not (tmp_path / "frames" / "preview.mp4").exists()
+
+    def test_zero_frames_skips_video_without_raising(self, render_module, tmp_path):
+        self._run_with_video(render_module, tmp_path, [], extra_args=["--video"])
+
+        assert not (tmp_path / "frames" / "preview.mp4").exists()
+
+
+# ---------------------------------------------------------------------------
 # render_strategy dispatch
 # ---------------------------------------------------------------------------
 

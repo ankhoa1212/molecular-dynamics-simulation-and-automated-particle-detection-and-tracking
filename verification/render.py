@@ -28,11 +28,11 @@ import json
 import sys
 from pathlib import Path
 
-import subprocess
-
 import matplotlib.image as mplimg
 import numpy as np
 import yaml
+
+from frames_to_video import frames_to_video
 
 # lammps_parser.py lives in lammps-scripts/ (pure Python, no venv needed)
 sys.path.insert(0, str(Path(__file__).parent / ".." / "lammps-scripts"))
@@ -184,8 +184,9 @@ def main():
     )
     parser.add_argument("--frames", type=int, default=None, help="Limit to first N timesteps")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
+    parser.add_argument("--video", action="store_true", help="Also encode frames into preview.mp4")
     parser.add_argument(
-        "--video", action="store_true", help="Also encode frames into preview.mp4 (requires ffmpeg)"
+        "--fps", type=float, default=10.0, help="Frame rate for --video output (default: 10)"
     )
     args = parser.parse_args()
 
@@ -277,27 +278,12 @@ def main():
 
     if args.video and ground_truth:
         video_path = output_dir / "preview.mp4"
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-r",
-                "10",
-                "-i",
-                str(output_dir / "frame_%05d.png"),
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                str(video_path),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"Video         → {video_path}")
+        try:
+            frames_to_video(output_dir, video_path, fps=args.fps)
+        except (ValueError, RuntimeError) as exc:
+            print(f"Video generation failed: {exc}")
         else:
-            print(f"ffmpeg failed (is it installed?): {result.stderr[:300]}")
+            print(f"Video         → {video_path}")
 
 
 if __name__ == "__main__":
