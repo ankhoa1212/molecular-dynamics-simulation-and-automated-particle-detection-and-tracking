@@ -12,6 +12,7 @@ dependencies = [
     "supervision>=0.21",
     "motmetrics>=1.4.0",
     "trackpy>=0.6",
+    "opencv-python>=4.9.0",
     # deeptrack==2.0.1 provides scalar-diffraction PSF for render_strategy: deeptrack
     # May require build tools; tests mock the import so CI passes without it
     "deeptrack==2.0.1",
