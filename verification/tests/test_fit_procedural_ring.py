@@ -71,6 +71,17 @@ class TestFitProceduralRingParams:
         with pytest.raises(ValueError, match="outermost bin"):
             fpr.fit_procedural_ring_params(templates)
 
+    def test_fit_beyond_half_width_raises_value_error(self):
+        # Ring radius (42) sits between the template half-width (35) and the
+        # profile's corner-diagonal reach (~49.5) -- visible enough that the
+        # profile's minimum isn't at the outermost bin, but still past the
+        # well-sampled half-width, extrapolating into the sparse corner-only
+        # region rather than measuring a real feature.
+        templates = _fake_template_library(half=35, ring_params=(0.5, 1.0, 8.0, 0.4, 42.0, 5.0))
+
+        with pytest.raises(ValueError, match="half-width"):
+            fpr.fit_procedural_ring_params(templates)
+
 
 class TestFittedParamsConsumableByGenerateProceduralShape:
     def test_fitted_tuple_feeds_generate_procedural_shape_without_transformation(self):

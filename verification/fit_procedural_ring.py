@@ -32,9 +32,26 @@ import numpy as np
 import yaml
 
 import calibrate_psf
-from render_crop_templates import fit_ring_model, load_template_library, radial_profile_from_crops
+from render_crop_templates import (
+    RING_PARAM_NAMES,
+    fit_ring_model,
+    load_template_library,
+    radial_profile_from_crops,
+)
 
-RING_PARAM_NAMES = ("ring_B", "ring_A0", "ring_s0", "ring_A1", "ring_r1", "ring_s1")
+
+def _load_config(config_path):
+    with open(config_path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def _cfg_get(cfg, *keys, default=None):
+    node = cfg
+    for k in keys:
+        if not isinstance(node, dict) or k not in node:
+            return default
+        node = node[k]
+    return node
 
 
 def fit_procedural_ring_params(templates: np.ndarray, n_bins: int = 60) -> tuple:
@@ -43,10 +60,17 @@ def fit_procedural_ring_params(templates: np.ndarray, n_bins: int = 60) -> tuple
 
     Raises ValueError if the profile's minimum sits at the outermost bin
     (the dark ring is likely truncated by the templates' own stored size,
-    not actually captured). Raises RuntimeError if `curve_fit` fails to
+    not actually captured), or if the fitted ring radius (`r1`) exceeds the
+    templates' own half-width -- curve_fit can still converge out there, but
+    that region is the corner-only, sparsely-sampled part of the radial
+    profile (radial_profile_from_crops bins out to the diagonal corner
+    distance, not just the half-width), so a fit landing beyond the
+    half-width is extrapolating past the templates' well-sampled data, not
+    measuring a real feature. Raises RuntimeError if `curve_fit` fails to
     converge. Callers should surface these as a clear, actionable error
     rather than writing partial or invalid parameters.
     """
+    half_width = (templates.shape[-1] - 1) // 2
     radii, profile = radial_profile_from_crops(list(templates), n_bins=n_bins)
 
     if int(np.argmin(profile)) == len(profile) - 1:
@@ -57,7 +81,17 @@ def fit_procedural_ring_params(templates: np.ndarray, n_bins: int = 60) -> tuple
             "rebuild the template library."
         )
 
-    return fit_ring_model(radii, profile)
+    fitted = fit_ring_model(radii, profile)
+    fitted_r1 = fitted[4]
+    if abs(fitted_r1) > half_width:
+        raise ValueError(
+            f"Fitted ring radius ({fitted_r1:.1f}px) exceeds the templates' half-width "
+            f"({half_width}px) -- the fit is extrapolating past the well-sampled data, not "
+            "measuring a real ring. Increase synthetic.crop_template.target_half (and "
+            "crop_half, which must stay >= target_half) and rebuild the template library."
+        )
+
+    return fitted
 
 
 def main():
@@ -72,13 +106,13 @@ def main():
     args = parser.parse_args()
 
     config_path = Path(args.config)
-    if not config_path.exists():
+    try:
+        full_cfg = _load_config(config_path)
+    except FileNotFoundError:
         print(f"ERROR: --config file does not exist: {config_path}", file=sys.stderr)
         sys.exit(1)
 
-    full_cfg = yaml.safe_load(config_path.read_text()) or {}
-    crop_template_cfg = full_cfg.get("synthetic", {}).get("crop_template", {})
-    cache_path = args.cache_path or crop_template_cfg.get("cache_path")
+    cache_path = args.cache_path or _cfg_get(full_cfg, "synthetic", "crop_template", "cache_path")
     if not cache_path:
         print(
             "ERROR: no --cache-path given and synthetic.crop_template.cache_path is unset "

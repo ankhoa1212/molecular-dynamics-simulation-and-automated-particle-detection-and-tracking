@@ -10,6 +10,8 @@ Requires deeptrack==2.0.1:
     uv add deeptrack==2.0.1    (inside verification/)
 """
 
+import warnings
+
 import numpy as np
 
 try:
@@ -102,18 +104,20 @@ def _build_psf_kernel(cfg, H, W):
 
 
 def _composite_crop_templates(pixel_positions, intensities, cfg, rng, H, W):
-    """Composite each particle's independently-sampled template onto the
-    canvas at its sub-pixel position (crop_source: real / procedural).
+    """Composite each particle's template onto the canvas at its sub-pixel
+    position (crop_source: real / procedural).
 
     Unlike the physics path's single kernel convolved globally, each
-    particle draws its own template — a uniformly-random pick from the
-    cached empirical library for 'real', or a freshly generated shape for
-    'procedural' — so appearance varies particle-to-particle within one
-    frame. A particle near the canvas edge has its template patch clipped to
-    canvas bounds (matching _lj_to_pixels' clip-to-bounds contract) rather
-    than indexed out of range.
+    particle draws from its own template source. 'real' picks uniformly at
+    random from the cached empirical library, so appearance still varies
+    particle-to-particle within a frame. 'procedural' is deterministic given
+    `procedural_shape` config (no per-particle randomization) -- the same
+    template is reused for every particle in the frame. A particle near the
+    canvas edge has its template patch clipped to canvas bounds (matching
+    _lj_to_pixels' clip-to-bounds contract) rather than indexed out of range.
     """
-    from render_crop_templates import generate_procedural_shape, load_template_library
+    from render_crop_templates import RING_PARAM_NAMES, generate_procedural_shape
+    from render_crop_templates import load_template_library
 
     crop_source = cfg["crop_source"]
     canvas = np.zeros((H, W), dtype=np.float32)
@@ -139,15 +143,20 @@ def _composite_crop_templates(pixel_positions, intensities, cfg, rng, H, W):
         proc_cfg = cfg.get("procedural_shape", {})
         proc_size = int(proc_cfg.get("size", 41))
         proc_sigma = float(proc_cfg.get("sigma", 5.0))
-        ring_keys = ("ring_B", "ring_A0", "ring_s0", "ring_A1", "ring_r1", "ring_s1")
+        present = [key for key in RING_PARAM_NAMES if key in proc_cfg]
+        if present and len(present) < len(RING_PARAM_NAMES):
+            missing = [key for key in RING_PARAM_NAMES if key not in proc_cfg]
+            warnings.warn(
+                f"synthetic.procedural_shape has {len(present)}/{len(RING_PARAM_NAMES)} "
+                f"ring_* keys set (missing {missing}) -- falling back to the plain circular "
+                "Gaussian. Set all six (via fit_procedural_ring.py --merge-config) or none.",
+                stacklevel=2,
+            )
         ring_params = (
-            tuple(proc_cfg[key] for key in ring_keys)
-            if all(key in proc_cfg for key in ring_keys)
+            tuple(proc_cfg[key] for key in RING_PARAM_NAMES)
+            if len(present) == len(RING_PARAM_NAMES)
             else None
         )
-        # The shape is now deterministic (no per-particle ellipticity/rotation
-        # sampling), so it's built once here rather than fresh per particle --
-        # mirroring the 'real' branch's one-time template-library load above.
         procedural_template = generate_procedural_shape(proc_size, proc_sigma, ring_params)
 
     for (px, py), intensity in zip(pixel_positions, intensities):

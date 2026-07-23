@@ -17,6 +17,7 @@ integrated intensity may differ from another's at the same peak brightness.
 import hashlib
 import sys
 import warnings
+from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -676,6 +677,11 @@ def radial_profile_from_crops(crops: list, n_bins: int):
 # U3: procedural shape generator
 # ---------------------------------------------------------------------------
 
+# _ring_model's parameter names, in its positional order (B, A0, s0, A1, r1,
+# s1). Shared by fit_procedural_ring.py and render_deeptrack.py so the two
+# don't carry independent copies of this tuple to keep in sync by hand.
+RING_PARAM_NAMES = ("ring_B", "ring_A0", "ring_s0", "ring_A1", "ring_r1", "ring_s1")
+
 
 def _ring_window_size(ring_params: tuple, min_size: int = 5) -> int:
     """Compute an odd window side length large enough to contain a
@@ -683,16 +689,34 @@ def _ring_window_size(ring_params: tuple, min_size: int = 5) -> int:
     2026-07-20 harvest-quality plan's window-size-coupling incident this
     helper exists to avoid repeating. Clamped to `min_size` so degenerate
     (near-zero) fitted parameters can't produce a non-positive or
-    unreasonably small window."""
+    unreasonably small window.
+
+    Margin is 3 sigma past the ring, not more: `_ring_model`'s ring term is
+    already ~1% of its peak amplitude by `r1 + 3*s1`, and `_finalize_template`
+    unconditionally tapers the outer edge of whatever window it's given to
+    zero regardless of margin, so a wider margin only adds compositing cost
+    (every particle stamp runs a cubic-spline `scipy.ndimage.shift` over the
+    full window) without changing the rendered result.
+    """
     _, _, s0, _, r1, s1 = ring_params
-    radius = max(abs(r1), abs(s0)) + 4.0 * max(abs(s1), 1.0)
+    radius = max(abs(r1), abs(s0)) + 3.0 * max(abs(s1), 1.0)
     size = 2 * int(np.ceil(radius)) + 1
     return max(size, min_size)
 
 
+@lru_cache(maxsize=8)
 def generate_procedural_shape(size: int, sigma: float, ring_params=None) -> np.ndarray:
     """Generate a parametric particle shape as a no-real-data alternative to
     the empirical template library.
+
+    Cached: `procedural_shape` config is static for a whole render run, and
+    a render loop calls this once per frame (`_composite_crop_templates`
+    builds the shape once per call, not once per particle, but a multi-frame
+    render still calls it once per frame with identical arguments) --
+    `ring_params` must be a hashable tuple (or None), not a list. Callers
+    must treat the returned array as read-only -- lru_cache returns the same
+    array object on every cache hit, so mutating it in place would corrupt
+    the cache for all subsequent calls.
 
     With no ring parameters, builds a plain circular Gaussian -- real
     diffraction-limited particles are circularly symmetric, so this no
