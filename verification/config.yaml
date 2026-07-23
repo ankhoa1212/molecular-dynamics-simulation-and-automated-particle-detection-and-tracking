@@ -120,18 +120,31 @@ synthetic:
     # _ring_model parameters (see verification/render_crop_templates.py's
     # _ring_model/fit_ring_model). When all six are set, generate_procedural_
     # shape renders a circular core + dark ring sized to fit ring_r1 without
-    # clipping, instead of the fallback Gaussian above. Fitted (2026-07-22)
-    # from crop_source: real's harvested template library via:
+    # clipping, instead of the fallback Gaussian above. Fill in via:
     #   uv run python fit_procedural_ring.py --merge-config config.yaml
     # (physics's own PSF kernel has no meaningful ring to fit at this
     # config's optics -- see docs/plans/2026-07-22-001-fix-procedural-
     # particle-realism-plan.md.)
-    ring_B: 0.1337
-    ring_A0: 0.8555
-    ring_s0: 8.04
-    ring_A1: 0.1442
-    ring_r1: 77.67
-    ring_s1: 20.97
+    #
+    # NOT YET SET: an initial fit against particle-tracking/data/raw/60%
+    # Intensity PS 5um Video Trial 1.tif was reverted (2026-07-22) --
+    # crop_template's min_area/max_area/percentile (tuned for a different,
+    # smaller-particle "2 um dataset", per crop_template's own docstring
+    # reference) reject this 5um dataset's genuine particles as oversized
+    # blobs (measured: real particle blob areas are 400-3100px^2 here vs
+    # max_area: 400 above), leaving only noise-level candidates. The fitted
+    # ring (r1=77.67px) failed fit_procedural_ring.py's own half-width
+    # validity check against a target_half=65 library, confirming the fit
+    # was extrapolating past contaminated, poorly-centered data rather than
+    # measuring a real ring. Retuning min_area/max_area/percentile for this
+    # dataset's actual particle scale is required before re-fitting -- see
+    # the plan's Outstanding Questions.
+    # ring_B: 0.0
+    # ring_A0: 0.0
+    # ring_s0: 0.0
+    # ring_A1: 0.0
+    # ring_r1: 0.0
+    # ring_s1: 0.0
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
