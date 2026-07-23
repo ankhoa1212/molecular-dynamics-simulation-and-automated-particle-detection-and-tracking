@@ -165,6 +165,63 @@ class TestPeakMeanBackgroundSubtraction:
 
 
 # ---------------------------------------------------------------------------
+# U2 regression (docs/plans/2026-07-22-002-fix-calibrate-psf-detector-
+# consolidation-plan.md): saturated-plateau detection no longer produces one
+# spurious fit per plateau pixel.
+# ---------------------------------------------------------------------------
+
+
+class TestSaturatedPlateauDetection:
+    @staticmethod
+    def _make_plateau_frame(size: int = 128, sigma: float = 6.0) -> np.ndarray:
+        """A single particle whose peak is hard-clipped into a genuine
+        multi-pixel flat-topped plateau -- narrow enough (sigma well under
+        _CROP_HALF) that _fit_gaussian can still recover a sigma from the
+        32x32 crop, unlike a plateau spanning the whole crop window."""
+        yy, xx = np.mgrid[0:size, 0:size]
+        raw = 100.0 + 8000.0 * np.exp(
+            -(((xx - size // 2) ** 2 + (yy - size // 2) ** 2) / (2 * sigma**2))
+        )
+        return np.clip(raw, 0, 4095).astype(np.float32)
+
+    def test_one_fit_per_saturated_blob_not_per_pixel(self):
+        """A single particle rendered as a flat saturated plateau must produce
+        exactly one detected candidate and one fitted crop, not one per
+        plateau pixel -- the connected-component detector treats the whole
+        plateau as one contiguous region, unlike the old per-pixel
+        local-maxima approach which tied on every plateau pixel."""
+        frame = self._make_plateau_frame()
+        assert (frame == 4095).sum() > 20  # sanity: plateau really is multi-pixel
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # few-fits warning expected; not under test here
+            params = calibrate_psf.calibrate_from_frames(
+                [frame], min_area=5, max_area=frame.size, percentile=90.0
+            )
+
+        assert params["_meta"]["n_fits"] == 1
+
+    def test_uniform_frame_returns_zero_fits_without_raising(self):
+        frame = np.full((64, 64), 500.0, dtype=np.float32)
+
+        params = calibrate_psf.calibrate_from_frames([frame])
+
+        assert params["_meta"]["n_fits"] == 0
+
+    def test_max_area_excludes_oversized_candidates(self):
+        """A max_area set below the plateau's pixel area excludes it entirely,
+        proving min_area/max_area/percentile are threaded through to the
+        detector rather than accepted and ignored."""
+        frame = self._make_plateau_frame()
+
+        params = calibrate_psf.calibrate_from_frames(
+            [frame], min_area=5, max_area=5, percentile=90.0
+        )
+
+        assert params["_meta"]["n_fits"] == 0
+
+
+# ---------------------------------------------------------------------------
 # test_fewer_than_20_particles_prints_warning_and_continues
 # ---------------------------------------------------------------------------
 

@@ -9,9 +9,10 @@ U1 test scenarios from the plan:
 - photobleaching: normalized peak amplitudes are comparable across frames
   of different overall intensity
 - saturated plateau: _detect_particle_centers returns one candidate per
-  blob, not one per pixel (regression test for the real-data finding that
-  calibrate_psf._detect_spots' per-pixel local-maxima approach ties on every
-  pixel of a sensor-saturated plateau)
+  blob, not one per pixel (regression test for the real-data finding that a
+  per-pixel local-maxima approach ties on every pixel of a sensor-saturated
+  plateau -- see calibrate_psf._detect_particle_centers, which this module
+  now imports rather than defining its own copy)
 
 U2 test scenarios from the plan:
 - registration accuracy: known sub-pixel offset -> fitted center within

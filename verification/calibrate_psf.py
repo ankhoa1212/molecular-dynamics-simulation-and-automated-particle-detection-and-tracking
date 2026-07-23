@@ -30,13 +30,33 @@ def _load_tifs(directory: Path) -> list[np.ndarray]:
     return [tifffile.imread(str(p)).astype(np.float32) for p in paths]
 
 
-def _detect_spots(frame: np.ndarray, min_sep: float) -> np.ndarray:
-    """Return (N, 2) array of local-maxima (row, col) with min_sep separation."""
-    fs = max(3, int(min_sep) | 1)  # odd footprint size
-    local_max = scipy.ndimage.maximum_filter(frame, footprint=np.ones((fs, fs), dtype=bool))
-    threshold = np.percentile(frame, 90)
-    rows, cols = np.where((frame == local_max) & (frame > threshold))
-    return np.column_stack([rows, cols]) if len(rows) > 0 else np.zeros((0, 2), dtype=int)
+def _detect_particle_centers(frame, min_area, max_area, percentile):
+    """Detect candidate particle centers via connected-component labeling on
+    a percentile-thresholded mask, filtered by component pixel-area.
+
+    A per-pixel local-maxima approach (frame == maximum_filter(frame))
+    assumes isolated point-like peaks. Real bright-field particle frames can
+    instead contain sensor-saturated intensity plateaus (measured on the 2 um
+    dataset: up to ~4.5% of pixels at the sensor max) — every pixel in such a
+    plateau ties for "local max" under that approach, producing tens of
+    thousands of spurious candidates per frame instead of one per particle.
+    Connected-component centroiding treats each contiguous bright region as
+    one candidate regardless of internal saturation.
+
+    Returns:
+        (N, 2) float array of (row, col) intensity-weighted centroids.
+    """
+    threshold = np.percentile(frame, percentile)
+    mask = frame > threshold
+    labels, n_labels = scipy.ndimage.label(mask)
+    if n_labels == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    sizes = scipy.ndimage.sum(mask, labels, index=np.arange(1, n_labels + 1))
+    keep = np.where((sizes >= min_area) & (sizes <= max_area))[0] + 1
+    if len(keep) == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    centroids = scipy.ndimage.center_of_mass(frame, labels, index=keep)
+    return np.array(centroids).reshape(-1, 2)
 
 
 def _gaussian_2d(xy, A, x0, y0, sx, sy, B):
@@ -106,20 +126,31 @@ def _heterogeneity_scale(residual: np.ndarray) -> float:
 
 
 def calibrate_from_frames(
-    frames: list[np.ndarray], dark_frames: list[np.ndarray] | None = None
+    frames: list[np.ndarray],
+    dark_frames: list[np.ndarray] | None = None,
+    min_area: float = 4.0,
+    max_area: float | None = None,
+    percentile: float = 90.0,
 ) -> dict:
     """Fit PSF and imaging parameters from a list of microscopy frames.
+
+    min_area, max_area, percentile: tune _detect_particle_centers' connected-
+    component candidate detection. Defaults suit small, isolated point-like
+    data; real saturated bright-field data needs a higher percentile and an
+    explicit max_area (see verification/config.yaml's crop_template section
+    for values tuned to a real dataset).
 
     Returns dict with keys: psf, particle, background, noise, _meta.
     """
     if not frames:
         raise ValueError("frames list is empty")
 
+    area_cap = max_area if max_area is not None else np.inf
     psf_sigma = _DEFAULT_SIGMA
     sigma_ests, peak_vals, all_bg, bg_residuals = [], [], [], []
 
     for frame in frames:
-        spots = _detect_spots(frame, 3 * psf_sigma)
+        spots = _detect_particle_centers(frame, min_area, area_cap, percentile)
         if not len(spots):
             continue
 
@@ -129,7 +160,7 @@ def calibrate_from_frames(
         H, W = frame.shape
         mask = np.zeros((H, W), dtype=bool)
 
-        for row, col in spots.astype(int):
+        for row, col in np.round(spots).astype(int):
             # Fit crop
             r0, r1 = row - _CROP_HALF, row + _CROP_HALF
             c0, c1 = col - _CROP_HALF, col + _CROP_HALF

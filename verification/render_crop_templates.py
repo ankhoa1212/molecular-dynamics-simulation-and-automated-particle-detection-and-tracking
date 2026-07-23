@@ -29,40 +29,10 @@ import scipy.optimize
 import scipy.stats
 import tifffile
 
-from calibrate_psf import _gaussian_2d
+from calibrate_psf import _detect_particle_centers, _gaussian_2d
 
 _DEFAULT_SIGMA = 5.0
 _CONTAMINATION_FRAC = 0.5  # secondary local max above this fraction of the primary peak -> reject
-
-
-def _detect_particle_centers(frame, min_area, max_area, percentile):
-    """Detect candidate particle centers via connected-component labeling on
-    a percentile-thresholded mask, filtered by component pixel-area.
-
-    calibrate_psf._detect_spots' per-pixel local-maxima approach (frame ==
-    maximum_filter(frame)) assumes isolated point-like peaks. Real bright-field
-    particle frames from the 2 um dataset instead contain sensor-saturated
-    intensity plateaus (measured: up to ~4.5% of pixels at the sensor max) —
-    every pixel in such a plateau ties for "local max", producing tens of
-    thousands of spurious candidates per frame instead of one per particle.
-    Connected-component centroiding treats each contiguous bright region as
-    one candidate regardless of internal saturation, and doesn't reuse
-    _detect_spots for this reason.
-
-    Returns:
-        (N, 2) float array of (row, col) intensity-weighted centroids.
-    """
-    threshold = np.percentile(frame, percentile)
-    mask = frame > threshold
-    labels, n_labels = scipy.ndimage.label(mask)
-    if n_labels == 0:
-        return np.zeros((0, 2), dtype=np.float64)
-    sizes = scipy.ndimage.sum(mask, labels, index=np.arange(1, n_labels + 1))
-    keep = np.where((sizes >= min_area) & (sizes <= max_area))[0] + 1
-    if len(keep) == 0:
-        return np.zeros((0, 2), dtype=np.float64)
-    centroids = scipy.ndimage.center_of_mass(frame, labels, index=keep)
-    return np.array(centroids).reshape(-1, 2)
 
 
 # ---------------------------------------------------------------------------
