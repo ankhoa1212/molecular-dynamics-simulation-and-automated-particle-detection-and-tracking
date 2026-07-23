@@ -48,9 +48,13 @@ def _detect_particle_centers(frame, min_area, max_area, percentile):
     Connected-component centroiding treats each contiguous bright region as
     one candidate regardless of internal saturation.
 
+    `max_area=None` is treated as unbounded, so callers don't each need to
+    repeat their own None-to-unbounded sentinel conversion.
+
     Returns:
         (N, 2) float array of (row, col) intensity-weighted centroids.
     """
+    max_area = np.inf if max_area is None else max_area
     threshold = np.percentile(frame, percentile)
     mask = frame > threshold
     labels, n_labels = scipy.ndimage.label(mask)
@@ -150,12 +154,11 @@ def calibrate_from_frames(
     if not frames:
         raise ValueError("frames list is empty")
 
-    area_cap = max_area if max_area is not None else np.inf
     psf_sigma = _DEFAULT_SIGMA
     sigma_ests, peak_vals, all_bg, bg_residuals = [], [], [], []
 
     for frame in frames:
-        spots = _detect_particle_centers(frame, min_area, area_cap, percentile)
+        spots = _detect_particle_centers(frame, min_area, max_area, percentile)
         if not len(spots):
             continue
 

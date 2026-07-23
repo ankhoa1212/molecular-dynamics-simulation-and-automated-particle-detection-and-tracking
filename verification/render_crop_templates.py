@@ -167,7 +167,6 @@ def harvest_crops(
     if fit_half is None:
         fit_half = min(20, crop_half)
     offset = crop_half - fit_half
-    area_cap = max_area if max_area is not None else np.inf
     crops = []
     for video_path in video_paths:
         with tifffile.TiffFile(str(video_path)) as tif:
@@ -176,7 +175,7 @@ def harvest_crops(
                     return crops
                 frame = page.asarray().astype(np.float32)
                 H, W = frame.shape
-                spots = _detect_particle_centers(frame, min_area, area_cap, percentile)
+                spots = _detect_particle_centers(frame, min_area, max_area, percentile)
                 for row, col in np.round(spots).astype(int):
                     if max_crops is not None and len(crops) >= max_crops:
                         return crops
