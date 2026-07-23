@@ -18,32 +18,44 @@ synthetic:
   psf:
     na: 1.4                     # numerical aperture
     wavelength: 520e-9          # emission wavelength (metres)
-    resolution: 65e-9           # pixel size (metres/pixel)
-    defocus: 0.0                # Zernike defocus coefficient (waves)
-    spherical_aberration: 0.0   # Zernike spherical aberration (waves)
-    # sigma_px: 4.2             # empirical PSF sigma (px) — filled by calibrate_psf.py
+    resolution: 6.5e-08  # pixel size (metres/pixel)
+    defocus: 0.0  # Zernike defocus coefficient (waves)
+    spherical_aberration: 0.0  # Zernike spherical aberration (waves)
+    sigma_px: 6.77  # empirical PSF sigma (px) — filled by calibrate_psf.py
 
   # --- Spatially varying background (render_strategy: deeptrack) ---
+  # Calibrated (2026-07-22) via calibrate_psf.py --merge-config against 512x512
+  # crops of particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
+  # -- the same source dataset procedural_shape's ring_* params below are
+  # fitted from, so background/noise and ring shape describe the same real
+  # imaging conditions. Previously hand-set defaults, never calibrated
+  # against real data at all -- see docs/plans/2026-07-22-001-fix-procedural-
+  # particle-realism-plan.md U3.
   background:
-    heterogeneity_scale: 50     # spatial scale of background variation (px)
-    amplitude: 500              # max background variation (ADU)
+    heterogeneity_scale: 31.7  # spatial scale of background variation (px)
+    amplitude: 419.2  # max background variation (ADU)
 
   # --- Per-particle intensity distribution (render_strategy: deeptrack) ---
   particle:
     intensity_distribution: lognormal   # fixed | lognormal
-    peak_mean: 40000            # mean peak intensity (ADU). Represents each particle's own peak
+    peak_mean: 716.4  # mean peak intensity (ADU). Represents each particle's own peak
                                  # brightness (before background/noise), consistently across all
                                  # crop_source values (physics/real/procedural) — each source's
                                  # template/kernel is peak-normalized (max value 1) rather than
                                  # sum-normalized, so peak_mean's meaning doesn't drift with template
                                  # spatial extent or PSF optical spread. See docs/plans/2026-07-21-001-
                                  # fix-peak-normalized-particle-brightness-plan.md.
-    intensity_sigma: 0.3        # log-normal sigma
+    intensity_sigma: 0.673  # log-normal sigma
 
   # --- sCMOS noise model (render_strategy: deeptrack) ---
+  # Calibrated (2026-07-22), same source/command as background: above. No
+  # --dark-frames were available, so read_noise is estimated from image
+  # stats rather than a clean dark-frame measurement (calibrate_psf.py
+  # warns on this) -- revisit with real dark frames if this proves noisier
+  # than intended once compared visually via compare_renders.py.
   noise:
-    gain_sigma: 0.02            # per-pixel gain variation (fraction of mean gain)
-    read_noise: 15.0            # Gaussian read noise std dev (ADU)
+    gain_sigma: 0.02  # per-pixel gain variation (fraction of mean gain)
+    read_noise: 48.04  # Gaussian read noise std dev (ADU)
 
   # --- Domain randomization (render_strategy: randomized) ---
   randomization:
@@ -106,18 +118,20 @@ synthetic:
     sigma: 5.0                     # base sigma (px) for the fallback circular Gaussian
     # ring_B / ring_A0 / ring_s0 / ring_A1 / ring_r1 / ring_s1 -- fitted
     # _ring_model parameters (see verification/render_crop_templates.py's
-    # _ring_model/fit_ring_model), filled in by:
+    # _ring_model/fit_ring_model). When all six are set, generate_procedural_
+    # shape renders a circular core + dark ring sized to fit ring_r1 without
+    # clipping, instead of the fallback Gaussian above. Fitted (2026-07-22)
+    # from crop_source: real's harvested template library via:
     #   uv run python fit_procedural_ring.py --merge-config config.yaml
-    # When all six are set, generate_procedural_shape renders a circular
-    # core + dark ring sized to fit ring_r1 without clipping, instead of the
-    # fallback Gaussian above. See docs/plans/2026-07-22-001-fix-procedural-
-    # particle-realism-plan.md.
-    # ring_B: 0.0
-    # ring_A0: 0.0
-    # ring_s0: 0.0
-    # ring_A1: 0.0
-    # ring_r1: 0.0
-    # ring_s1: 0.0
+    # (physics's own PSF kernel has no meaningful ring to fit at this
+    # config's optics -- see docs/plans/2026-07-22-001-fix-procedural-
+    # particle-realism-plan.md.)
+    ring_B: 0.1337
+    ring_A0: 0.8555
+    ring_s0: 8.04
+    ring_A1: 0.1442
+    ring_r1: 77.67
+    ring_s1: 20.97
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
