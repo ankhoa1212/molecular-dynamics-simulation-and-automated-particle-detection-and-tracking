@@ -44,3 +44,7 @@ lint-reports/
 
 # Claude Code settings
 .claude/
+CLAUDE.md
+
+# planning/brainstorm docs (local working notes, not shared repo content)
+docs/
