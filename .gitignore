@@ -39,6 +39,10 @@ yolov5/
 # generated verification output
 verification/verification_output/
 
+# cached crop-template library (regeneratable via
+# render_crop_templates.build_template_library() / fit_procedural_ring.py)
+verification/crop_templates.npz
+
 # generated lint reports
 lint-reports/
 

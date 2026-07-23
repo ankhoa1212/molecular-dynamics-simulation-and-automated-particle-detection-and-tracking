@@ -73,7 +73,16 @@ synthetic:
   # Built once via render_crop_templates.build_template_library(), then cached; see
   # docs/plans/2026-07-19-001-feat-crop-based-particle-rendering-plan.md.
   crop_template:
-    video_paths: []              # real .tif video(s) to harvest particle crops from
+    # video_paths / min_area / max_area / max_sigma below are tuned for
+    # particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif.
+    # min_area/max_area were previously 20/400, sized for a different,
+    # smaller-particle "2 um dataset" -- measured (2026-07-22) that this 5um
+    # dataset's genuine particle blob areas run 400-3100px^2 at
+    # percentile: 95.0, so the old max_area rejected every real particle as
+    # "oversized" and left only noise-level candidates. See
+    # docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md.
+    video_paths:
+      - ../particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
     crop_half: 90                # half-width (px) of the harvested crop window — covers the measured
                                   # diffraction-ring extent (bright core, first dark ring, secondary
                                   # bright ring); see docs/plans/2026-07-20-001-fix-crop-template-
@@ -83,8 +92,10 @@ synthetic:
                                   # multiply per-crop curve_fit cost
     min_sep: 40                  # min candidate separation (px); also the contamination exclusion radius
     percentile: 95.0             # candidate-detection brightness percentile
-    min_area: 20                 # min connected-component pixel area to count as a candidate
-    max_area: 400                # max connected-component pixel area (excludes merged/oversized blobs)
+    min_area: 100                 # min connected-component pixel area to count as a candidate
+    max_area: 4000                # max connected-component pixel area (excludes merged/oversized blobs)
+    max_crops: 500                # bounds harvest_crops' per-frame scan cost — early-exits once reached,
+                                   # so a rebuild against the full multi-hundred-frame video stays fast
     target_half: 65              # half-width (px) of the final registered template — raised to cover
                                   # through the measured secondary bright ring (~r=50-58); must stay
                                   # <= crop_half or the ring data captured by crop_half is thrown away
@@ -92,10 +103,13 @@ synthetic:
     min_sigma: 3.0                # reject fits at/near curve_fit's 0.5px floor (hot pixels/shot-noise
                                    # spikes, not real particles) — see docs/plans/2026-07-20-001-fix-
                                    # crop-template-harvest-quality-plan.md
-    max_sigma: 15.0                # reject fits above this — genuine but out-of-focus particles
+    max_sigma: 20.0                 # reject fits above this — genuine but out-of-focus particles
                                     # (defocus blur broadens + lowers contrast), not hot pixels/noise but
                                     # not in-focus PSF either; mixing them in washes out the dark-ring
                                     # contrast (found via /ce-debug). null disables the upper bound.
+                                    # Raised from 15.0 -- this 5um dataset's genuine in-focus particles
+                                    # measure sigma up to ~19.7px, above the old ceiling tuned for a
+                                    # smaller-particle dataset.
     ring_method: empirical         # empirical | model | hybrid — how each cluster's template is built.
                                     # empirical: today's sigma-clipped raw-pixel average (default,
                                     # unchanged behavior). model: fit a parametric ring function to the
@@ -120,31 +134,21 @@ synthetic:
     # _ring_model parameters (see verification/render_crop_templates.py's
     # _ring_model/fit_ring_model). When all six are set, generate_procedural_
     # shape renders a circular core + dark ring sized to fit ring_r1 without
-    # clipping, instead of the fallback Gaussian above. Fill in via:
+    # clipping, instead of the fallback Gaussian above. Fitted (2026-07-22)
+    # from crop_template's harvested library (see above -- min_area/max_area/
+    # max_sigma retuned for this dataset's particle scale first; an initial
+    # fit against the old 20/400/15.0 values was contaminated by noise-level
+    # candidates and got reverted, see git history) via:
     #   uv run python fit_procedural_ring.py --merge-config config.yaml
     # (physics's own PSF kernel has no meaningful ring to fit at this
     # config's optics -- see docs/plans/2026-07-22-001-fix-procedural-
     # particle-realism-plan.md.)
-    #
-    # NOT YET SET: an initial fit against particle-tracking/data/raw/60%
-    # Intensity PS 5um Video Trial 1.tif was reverted (2026-07-22) --
-    # crop_template's min_area/max_area/percentile (tuned for a different,
-    # smaller-particle "2 um dataset", per crop_template's own docstring
-    # reference) reject this 5um dataset's genuine particles as oversized
-    # blobs (measured: real particle blob areas are 400-3100px^2 here vs
-    # max_area: 400 above), leaving only noise-level candidates. The fitted
-    # ring (r1=77.67px) failed fit_procedural_ring.py's own half-width
-    # validity check against a target_half=65 library, confirming the fit
-    # was extrapolating past contaminated, poorly-centered data rather than
-    # measuring a real ring. Retuning min_area/max_area/percentile for this
-    # dataset's actual particle scale is required before re-fitting -- see
-    # the plan's Outstanding Questions.
-    # ring_B: 0.0
-    # ring_A0: 0.0
-    # ring_s0: 0.0
-    # ring_A1: 0.0
-    # ring_r1: 0.0
-    # ring_s1: 0.0
+    ring_B: 0.0288
+    ring_A0: 0.9407
+    ring_s0: 9.5
+    ring_A1: 0.8997
+    ring_r1: 47.56
+    ring_s1: 11.05
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
