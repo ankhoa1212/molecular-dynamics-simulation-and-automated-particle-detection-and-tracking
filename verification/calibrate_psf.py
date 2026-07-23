@@ -5,6 +5,11 @@ Usage:
     uv run python calibrate_psf.py --real-frames <dir> [--output-config <path>] [--dark-frames <dir>]
 
 Prints a YAML fragment ready to paste into config.yaml under synthetic:.
+
+Real saturated bright-field data should tune --min-area/--max-area/--percentile
+away from the small-particle-friendly defaults -- start from this repo's
+config.yaml crop_template values (--min-area 100 --max-area 4000 --percentile 95.0)
+and retune per dataset.
 """
 
 import argparse
@@ -415,6 +420,29 @@ def main():
     parser.add_argument("--output-config", default=None)
     parser.add_argument("--merge-config", default=None, metavar="PATH")
     parser.add_argument("--dark-frames", default=None)
+    parser.add_argument(
+        "--min-area",
+        type=float,
+        default=4.0,
+        help="min connected-component pixel area to count as a detection candidate "
+        "(default: 4.0, suited to small isolated point-like data)",
+    )
+    parser.add_argument(
+        "--max-area",
+        type=float,
+        default=None,
+        help="max connected-component pixel area, excludes merged/oversized blobs "
+        "(default: unbounded)",
+    )
+    parser.add_argument(
+        "--percentile",
+        type=float,
+        default=90.0,
+        help="candidate-detection brightness percentile (default: 90.0). Real "
+        "saturated bright-field data should start from this repo's config.yaml "
+        "crop_template values (--min-area 100 --max-area 4000 --percentile 95.0), "
+        "retuned per dataset",
+    )
     args = parser.parse_args()
 
     real_dir = Path(args.real_frames)
@@ -434,7 +462,13 @@ def main():
         if not dark_frames:
             print(f"WARNING: No dark frames found in {args.dark_frames}", file=sys.stderr)
 
-    params = calibrate_from_frames(frames, dark_frames=dark_frames)
+    params = calibrate_from_frames(
+        frames,
+        dark_frames=dark_frames,
+        min_area=args.min_area,
+        max_area=args.max_area,
+        percentile=args.percentile,
+    )
     fragment = _format_yaml_fragment(params)
     yaml.safe_load(fragment)  # verify valid YAML before output
 

@@ -587,3 +587,67 @@ class TestMergeConfig:
         assert result["synthetic"]["randomization"] is True
         # Noise private key stripped
         assert "_gain_sigma_note" not in result["synthetic"].get("noise", {})
+
+
+# ---------------------------------------------------------------------------
+# U3 (docs/plans/2026-07-22-002-fix-calibrate-psf-detector-consolidation-
+# plan.md): --min-area/--max-area/--percentile CLI flags reach
+# calibrate_from_frames unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestDetectorTuningCliFlags:
+    def test_flags_passed_through_to_calibrate_from_frames(self, tmp_path):
+        """--min-area/--max-area/--percentile on the CLI reach
+        calibrate_from_frames unchanged, proving they're threaded through
+        rather than accepted and ignored."""
+        frame = _make_synthetic_frame(height=128, width=128, n_particles=5, psf_sigma=5.0)
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        _write_tif(frames_dir / "frame_000.tif", frame)
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "calibrate_psf.py",
+                    "--real-frames",
+                    str(frames_dir),
+                    "--min-area",
+                    "100",
+                    "--max-area",
+                    "4000",
+                    "--percentile",
+                    "95.0",
+                ],
+            ),
+            mock.patch.object(
+                calibrate_psf, "calibrate_from_frames", wraps=calibrate_psf.calibrate_from_frames
+            ) as spy,
+        ):
+            calibrate_psf.main()
+
+        _, kwargs = spy.call_args
+        assert kwargs["min_area"] == 100.0
+        assert kwargs["max_area"] == 4000.0
+        assert kwargs["percentile"] == 95.0
+
+    def test_omitting_flags_preserves_synthetic_data_friendly_defaults(self, tmp_path):
+        frame = _make_synthetic_frame(height=128, width=128, n_particles=5, psf_sigma=5.0)
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        _write_tif(frames_dir / "frame_000.tif", frame)
+
+        with (
+            mock.patch.object(sys, "argv", ["calibrate_psf.py", "--real-frames", str(frames_dir)]),
+            mock.patch.object(
+                calibrate_psf, "calibrate_from_frames", wraps=calibrate_psf.calibrate_from_frames
+            ) as spy,
+        ):
+            calibrate_psf.main()
+
+        _, kwargs = spy.call_args
+        assert kwargs["min_area"] == 4.0
+        assert kwargs["max_area"] is None
+        assert kwargs["percentile"] == 90.0
