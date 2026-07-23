@@ -24,7 +24,6 @@ Usage:
 """
 
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -86,23 +85,30 @@ def _resolve_model_type(argv):
 
 
 def _reexec_for_model_venv(model_type):
-    """Re-exec with the resolved model's venv Python if the current interpreter
-    is a different minor version. Only called when running as __main__ —
-    importing this module (e.g. from tests) must never re-exec the process,
-    since re-exec blindly reuses sys.argv, which is only a valid `benchmark.py`
-    invocation when this script is actually the one being run."""
+    """Re-exec into the resolved model's venv Python whenever one exists — not only
+    when the current interpreter's version differs. detectors_common (which every
+    rf-detr/lodestar model-loading call below depends on) is installed only inside
+    the model venvs (rf-detr/.venv, particle-tracking/.venv), never in
+    verification/.venv itself. verification/pyproject.toml has no .python-version
+    pin (unlike rf-detr/particle-tracking, both pinned to 3.11), so its own venv's
+    resolved version matching theirs is not guaranteed to differ — skipping re-exec
+    on a version match left detectors_common unimportable in that case. Landing in
+    the target venv unconditionally handles both the original ABI-compatibility
+    motivation and this package-availability requirement with one mechanism.
+
+    Only called when running as __main__ — importing this module (e.g. from tests)
+    must never re-exec the process, since re-exec blindly reuses sys.argv, which is
+    only a valid `benchmark.py` invocation when this script is actually the one
+    being run."""
     venv_dir = _MODEL_VENV_DIRS.get(model_type, _MODEL_VENV_DIRS["rf-detr"])
     if venv_dir is None:
         return
     venv_python = (venv_dir / "bin" / "python").absolute()
     if not venv_python.exists():
         return
-    site_pkgs = list(venv_dir.glob("lib/python*/site-packages"))
-    if not site_pkgs:
-        return
-    m = re.search(r"python(\d+\.\d+)", str(site_pkgs[0]))
-    if m and m.group(1) != f"{sys.version_info.major}.{sys.version_info.minor}":
-        os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+    if Path(sys.executable).resolve() == venv_python.resolve():
+        return  # already running under this exact interpreter — re-exec already happened
+    os.execv(str(venv_python), [str(venv_python)] + sys.argv)
 
 
 if __name__ == "__main__":
