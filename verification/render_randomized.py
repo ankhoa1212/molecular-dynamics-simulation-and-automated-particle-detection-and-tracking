@@ -121,7 +121,8 @@ def render_frame_randomized(positions_lj, box, cfg, rng, state=None):
 
     sigma_min, sigma_max = r.get("psf_sigma_range", [3.0, 7.0])
     peak_min, peak_max = r.get("peak_range", [20000, 60000])
-    noise_min, noise_max = r.get("readout_noise_range", [10.0, 25.0])
+    noise_min, noise_max = r.get("readout_noise_range", [150.0, 300.0])
+    step_std_fraction = r.get("smoothing", {}).get("step_std_fraction", 0.15)
 
     # Validate ranges before any rendering
     if sigma_min > sigma_max:
@@ -139,6 +140,11 @@ def render_frame_randomized(positions_lj, box, cfg, rng, state=None):
             f"readout_noise_range min ({noise_min}) > max ({noise_max}): "
             "lower bound must be <= upper bound."
         )
+    if step_std_fraction < 0:
+        raise ValueError(
+            f"smoothing.step_std_fraction ({step_std_fraction}) must be >= 0 -- "
+            "a negative value would pass a negative scale to rng.normal, which raises."
+        )
 
     if state is None:
         # Unchanged stateless behavior (R9): fresh independent sample every
@@ -148,7 +154,6 @@ def render_frame_randomized(positions_lj, box, cfg, rng, state=None):
         peak = rng.uniform(peak_min, peak_max)
         noise = rng.uniform(noise_min, noise_max)
     else:
-        step_std_fraction = r.get("smoothing", {}).get("step_std_fraction", 0.15)
         sigma = _sample_smoothed(rng, state, "psf_sigma", sigma_min, sigma_max, step_std_fraction)
         peak = _sample_smoothed(rng, state, "peak_intensity", peak_min, peak_max, step_std_fraction)
         noise = _sample_smoothed(

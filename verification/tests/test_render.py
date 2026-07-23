@@ -1644,6 +1644,53 @@ class TestProceduralRingProfile:
         far_mean = np.nanmean(means[-5:])
         assert far_mean < 0.05 * peak_val
 
+    def test_ring_is_invariant_under_90_degree_rotation(self, render_module):
+        """R3: the ring must be evaluated over a true 2D radius grid, not the
+        core's separable outer-product form -- a separable/outer-product
+        implementation of the ring term is not rotationally symmetric about
+        the particle center in general (confirmed directly: a naive
+        generalization of the core's np.outer(gy, gx) pattern to the ring
+        term -- np.outer(gy_ring, gx_ring) -- concentrates its artifact in
+        one quadrant rather than distributing it around a circle, breaking
+        90-degree rotational symmetry, while radius-binned/angle-averaged
+        profile checks and even direct same-radius multi-angle sampling can
+        both fail to catch this depending on exactly where the artifact
+        lands relative to the sampled points).
+
+        A stamp that only depends on Euclidean radius from center is exactly
+        invariant under rotation about that center. This test places the
+        particle exactly on the center pixel of an odd-sized square frame --
+        so np.rot90 is an *exact* pixel permutation about that same point,
+        with no interpolation error to tolerate -- and requires the rendered
+        frame to be numerically identical to its own 90/180/270-degree
+        rotations."""
+        H = W = 101  # odd size: exact center pixel at index 50
+        sigma = 5.0
+        cx = cy = 50.0
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[cx, cy]])
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, ring=_DEFAULT_RING)
+
+        frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(0)).astype(
+            np.float64
+        )
+
+        assert frame.max() > 0, "sanity check: particle should render some nonzero signal"
+        for k in (1, 2, 3):
+            rotated = np.rot90(frame, k=k)
+            np.testing.assert_allclose(
+                frame,
+                rotated,
+                atol=1e-9,
+                err_msg=(
+                    f"render_frame's core+ring stamp is not invariant under a {90*k}-degree "
+                    "rotation about the particle center -- this is the signature of a "
+                    "separable/outer-product ring implementation (its artifact concentrates "
+                    "in one quadrant rather than distributing around a circle) rather than one "
+                    "evaluated over a true 2D radius grid, which is exactly rotation-invariant."
+                ),
+            )
+
     def test_ring_pixel_radius_scales_with_psf_sigma(self, render_module):
         """Doubling psf_sigma roughly doubles the ring's pixel radius, since
         radius_factor*sigma scales linearly with sigma."""

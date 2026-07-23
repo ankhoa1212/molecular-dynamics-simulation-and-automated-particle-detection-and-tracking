@@ -169,7 +169,7 @@ def render_frame(positions_lj, box, cfg, rng):
 
     if cfg.get("shot_noise", True):
         img = rng.poisson(img).astype(np.float64)
-    img += rng.normal(0.0, cfg.get("readout_noise", 15.0), img.shape)
+    img += rng.normal(0.0, cfg.get("readout_noise", 200.0), img.shape)
     return np.clip(img, 0, 65535).astype(np.uint16)
 
 
@@ -201,7 +201,10 @@ def _parse_particle_diameter_lj(lammps_in_path):
         FileNotFoundError: if lammps_in_path does not exist.
         ValueError: if the file exists but neither a `shape` line nor a
             `variable sigma equal <value>` line with a parseable literal
-            number can be found.
+            number can be found, or if the parsed diameter is not a
+            positive, finite number -- a zero/negative/NaN diameter would
+            otherwise propagate into a zero/negative psf_sigma and crash
+            rng.poisson downstream with a much less legible error.
     """
     path = Path(lammps_in_path)
     if not path.is_file():
@@ -209,6 +212,14 @@ def _parse_particle_diameter_lj(lammps_in_path):
 
     text = path.read_text()
     lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+
+    def _require_positive(value, source_desc):
+        if not (value > 0) or not np.isfinite(value):
+            raise ValueError(
+                f"{source_desc} in {lammps_in_path} yields a non-positive or "
+                f"non-finite diameter ({value!r}) -- cannot derive a particle size from it."
+            )
+        return value
 
     shape_re = re.compile(r"^set\s+type\s+\d+\s+shape\s+(\S+)\s+(\S+)\s+(\S+)")
     for line in lines:
@@ -220,20 +231,21 @@ def _parse_particle_diameter_lj(lammps_in_path):
                 raise ValueError(
                     f"Could not parse numeric shape value from '{line}' in " f"{lammps_in_path}"
                 ) from exc
-            return 2.0 * sx
+            return _require_positive(2.0 * sx, f"'set type ... shape' line ('{line}')")
 
     sigma_re = re.compile(r"^variable\s+sigma\s+equal\s+(\S+)")
     for line in lines:
         m = sigma_re.match(line)
         if m:
             try:
-                return float(m.group(1))
+                sigma_value = float(m.group(1))
             except ValueError as exc:
                 raise ValueError(
                     f"Could not parse numeric sigma value from '{line}' in "
                     f"{lammps_in_path} (likely an unresolved LAMMPS variable "
                     "reference, e.g. '${sigma}' — a literal number is required)"
                 ) from exc
+            return _require_positive(sigma_value, f"'variable sigma' line ('{line}')")
 
     raise ValueError(
         f"Could not find a 'set type <N> shape ...' line or a "
@@ -310,7 +322,9 @@ def main():
             "Path to the LAMMPS .in script that produced --lammps's trajectory. "
             "When given, psf_sigma is derived from the script's particle diameter "
             "(overriding config.yaml's psf_sigma for this run) instead of using "
-            "an arbitrary constant."
+            "an arbitrary constant. Only affects render_strategy: procedural -- "
+            "randomized and deeptrack sample/derive their own particle size and "
+            "never read this override; a warning is printed if combined with them."
         ),
     )
     parser.add_argument("--frames", type=int, default=None, help="Limit to first N timesteps")
@@ -347,6 +361,18 @@ def main():
     print(f"Image size:     {cfg['image_width']}×{cfg['image_height']} px")
     if not args.lammps_in:
         print(f"PSF sigma:      {cfg.get('psf_sigma', cfg.get('psf', {}).get('sigma_px', 5.0))} px")
+    elif strategy != "procedural":
+        # randomized samples its own psf_sigma from randomization.psf_sigma_range
+        # every frame (render_randomized.py) and deeptrack derives particle
+        # appearance from psf.na/wavelength/resolution or crop_source templates --
+        # neither ever reads cfg["psf_sigma"], so overriding it here would be a
+        # silent no-op. Warn instead of letting --lammps-in's derived value (and
+        # the "derived from --lammps-in" print below) misleadingly imply it's in
+        # effect for this run's actual rendered output.
+        print(
+            f"WARNING:        --lammps-in has no effect on render_strategy: {strategy} -- "
+            "only procedural reads the derived psf_sigma."
+        )
     print(f"Render strategy: {strategy}")
     print(f"Output:         {output_dir}")
 
@@ -356,7 +382,7 @@ def main():
 
         box = _parse_box(block["box_bounds"])
 
-        if args.lammps_in and i == 0:
+        if args.lammps_in and i == 0 and strategy == "procedural":
             cfg["psf_sigma"] = _derive_psf_sigma_from_lammps_in(
                 args.lammps_in, box, cfg["image_width"]
             )
