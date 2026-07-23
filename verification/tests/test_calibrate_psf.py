@@ -165,6 +165,69 @@ class TestPeakMeanBackgroundSubtraction:
 
 
 # ---------------------------------------------------------------------------
+# Regression: a near-flat crop (no real particle) must not return a
+# degenerate near-zero-amplitude "fit" -- found 2026-07-22 running
+# calibrate_from_frames on real bright-field data: curve_fit can converge to
+# an amplitude of ~1e-10 on a flat/noise-only crop while still satisfying
+# the sigma bounds, and a handful of those alongside genuine hundreds-to-
+# thousands-ADU peaks spans ~13 orders of magnitude in log-space, which
+# blows up calibrate_from_frames' population-level lognormal fit (observed:
+# peak_mean computed as ~1e26).
+# ---------------------------------------------------------------------------
+
+
+class TestFitGaussianRejectsDegenerateAmplitude:
+    def test_negligible_amplitude_relative_to_crop_range_returns_none(self):
+        # A fitted amplitude far below the crop's own dynamic range describes
+        # noise, not a peak -- matches the ~1e-10-vs-hundreds-of-ADU shape of
+        # the real-data bug this guards against, without depending on
+        # curve_fit's exact noise-convergence behavior (which the dropped
+        # flat-noise-crop version of this test showed isn't reliably None).
+        frame = _make_frame_with_background(
+            64, 64, [(32, 32)], sigma=4.0, amplitude=1e-6, background=200.0
+        )
+        fit = calibrate_psf._fit_gaussian(frame)
+
+        assert fit is None
+
+    def test_genuine_small_amplitude_peak_still_accepted(self):
+        # A real, if modest, peak relative to the crop's own dynamic range
+        # must not be rejected by the same guard.
+        frame = _make_frame_with_background(
+            64, 64, [(32, 32)], sigma=4.0, amplitude=50.0, background=200.0
+        )
+        fit = calibrate_psf._fit_gaussian(frame)
+
+        assert fit is not None
+        _, _, amplitude = fit
+        assert abs(amplitude - 50.0) / 50.0 < 0.1
+
+    def test_degenerate_fits_excluded_from_population_lognormal_fit(self):
+        """End-to-end: calibrate_from_frames must not blow up when some
+        candidates land on flat/noise-only regions alongside genuine
+        particles."""
+        rng = np.random.default_rng(1)
+        size = 256
+        frame = 200.0 + rng.normal(0, 2.0, (size, size)).astype(np.float32)
+        # A handful of genuine particles, well-separated.
+        for r, c in [(40, 40), (40, 216), (216, 40), (216, 216), (128, 128)]:
+            yy, xx = np.mgrid[0:size, 0:size]
+            frame += 1000.0 * np.exp(-(((xx - c) ** 2 + (yy - r) ** 2) / (2 * 4.0**2)))
+        # A large flat-ish bright patch that clears the percentile threshold
+        # by area but has no well-defined Gaussian peak inside it.
+        frame[180:220, 60:100] += 50.0
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            params = calibrate_psf.calibrate_from_frames(
+                [frame.astype(np.float32)], min_area=50, max_area=5000, percentile=90.0
+            )
+
+        assert params["particle"]["peak_mean"] < 10000.0
+        assert params["particle"]["intensity_sigma"] < 5.0
+
+
+# ---------------------------------------------------------------------------
 # U2 regression (docs/plans/2026-07-22-002-fix-calibrate-psf-detector-
 # consolidation-plan.md): saturated-plateau detection no longer produces one
 # spurious fit per plateau pixel.

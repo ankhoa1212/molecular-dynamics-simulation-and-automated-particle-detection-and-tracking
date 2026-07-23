@@ -103,6 +103,23 @@ def _fit_gaussian(crop: np.ndarray):
             maxfev=2000,
         )
         A, sx, sy = popt[0], abs(popt[3]), abs(popt[4])
+        # curve_fit's lower bound on A is 0, not a meaningful noise floor -- on
+        # some crops (candidate detection false positives, or a genuine
+        # particle too large for this fixed-size window) it converges to a
+        # numerically-near-zero amplitude that still satisfies the sigma
+        # bounds below. That's a degenerate "flat" fit, not a real peak, and
+        # left unfiltered it corrupts the population-level lognormal fit in
+        # calibrate_from_frames (a handful of ~1e-10 amplitudes alongside
+        # genuine hundreds-to-thousands-ADU peaks spans ~13 orders of
+        # magnitude in log-space, blowing up the fitted shape parameter).
+        # Scaled to the crop's own dynamic range rather than an absolute ADU
+        # constant, since that range varies by dataset/exposure. The 1e-9
+        # absolute floor backstops the relative check on an (near-)perfectly
+        # flat crop, where crop_range itself is ~0 and "A < 0.01 * crop_range"
+        # degenerates to "A < ~0", which a tiny positive A would pass.
+        crop_range = float(crop.max() - crop.min())
+        if A < 1e-9 or A < 0.01 * crop_range:
+            return None
         if 0.5 < sx < _CROP_HALF and 0.5 < sy < _CROP_HALF:
             return float(sx), float(sy), float(A)
     except (RuntimeError, ValueError):
