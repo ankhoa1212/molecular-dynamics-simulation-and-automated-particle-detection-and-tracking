@@ -158,6 +158,12 @@ def _disk_rim_extent(
     return int(disk_radius_px + 4 * blur_sigma_px) + 1
 
 
+_PARTICLE_PROFILES = {
+    "disk_rim": (_disk_rim_profile, _disk_rim_extent),
+    "gaussian_ring": (_gaussian_ring_profile, _gaussian_ring_extent),
+}
+
+
 def render_frame(positions_lj, box, cfg, rng):
     """Render one synthetic microscopy frame.
 

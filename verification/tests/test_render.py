@@ -1717,6 +1717,26 @@ class TestDiskRimExtent:
         assert extent_no_rim == extent_with_rim
 
 
+class TestParticleProfileRegistry:
+    def test_registry_contains_both_profile_types(self, render_module):
+        assert set(render_module._PARTICLE_PROFILES) == {"disk_rim", "gaussian_ring"}
+
+    def test_each_entry_is_an_intensity_and_extent_function_pair(self, render_module):
+        for name, (intensity_fn, extent_fn) in render_module._PARTICLE_PROFILES.items():
+            assert callable(intensity_fn), name
+            assert callable(extent_fn), name
+
+    def test_disk_rim_entry_matches_the_standalone_functions(self, render_module):
+        intensity_fn, extent_fn = render_module._PARTICLE_PROFILES["disk_rim"]
+        assert intensity_fn is render_module._disk_rim_profile
+        assert extent_fn is render_module._disk_rim_extent
+
+    def test_gaussian_ring_entry_matches_the_standalone_functions(self, render_module):
+        intensity_fn, extent_fn = render_module._PARTICLE_PROFILES["gaussian_ring"]
+        assert intensity_fn is render_module._gaussian_ring_profile
+        assert extent_fn is render_module._gaussian_ring_extent
+
+
 class TestProceduralRingProfile:
     """R3/R4: render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
