@@ -1737,6 +1737,69 @@ class TestParticleProfileRegistry:
         assert extent_fn is render_module._gaussian_ring_extent
 
 
+class TestAssignParticleProfiles:
+    """Task 4: seeded, weighted-random, atom_id-keyed (never atom-type-keyed)
+    profile assignment. Must work identically on a trajectory with only one
+    LAMMPS atom type -- this function's inputs don't include type at all."""
+
+    def test_returns_a_name_for_every_atom_id(self, render_module):
+        atom_ids = np.array([1, 2, 3, 4, 5])
+        profiles_cfg = {
+            "profiles": [
+                {"name": "small", "proportion": 0.5},
+                {"name": "large", "proportion": 0.5},
+            ]
+        }
+        mapping = render_module._assign_particle_profiles(atom_ids, profiles_cfg)
+        assert set(mapping.keys()) == {1, 2, 3, 4, 5}
+        assert set(mapping.values()) <= {"small", "large"}
+
+    def test_same_seed_gives_identical_assignment(self, render_module):
+        atom_ids = np.arange(1, 51)
+        profiles_cfg = {
+            "seed": 7,
+            "profiles": [{"name": "a", "proportion": 0.7}, {"name": "b", "proportion": 0.3}],
+        }
+        mapping_1 = render_module._assign_particle_profiles(atom_ids, profiles_cfg)
+        mapping_2 = render_module._assign_particle_profiles(atom_ids, profiles_cfg)
+        assert mapping_1 == mapping_2
+
+    def test_default_seed_is_42(self, render_module):
+        atom_ids = np.arange(1, 21)
+        profiles_cfg_no_seed = {
+            "profiles": [{"name": "a", "proportion": 1.0}, {"name": "b", "proportion": 0.0}]
+        }
+        profiles_cfg_seed_42 = {
+            "seed": 42,
+            "profiles": [{"name": "a", "proportion": 1.0}, {"name": "b", "proportion": 0.0}],
+        }
+        mapping_default = render_module._assign_particle_profiles(atom_ids, profiles_cfg_no_seed)
+        mapping_explicit = render_module._assign_particle_profiles(atom_ids, profiles_cfg_seed_42)
+        assert mapping_default == mapping_explicit
+
+    def test_proportions_need_not_sum_to_one(self, render_module):
+        atom_ids = np.arange(1, 1001)
+        profiles_cfg = {
+            "seed": 1,
+            "profiles": [{"name": "a", "proportion": 7}, {"name": "b", "proportion": 3}],
+        }
+        mapping = render_module._assign_particle_profiles(atom_ids, profiles_cfg)
+        fraction_a = sum(1 for v in mapping.values() if v == "a") / len(mapping)
+        assert 0.6 < fraction_a < 0.8  # ~0.7 expected; generous tolerance for randomness
+
+    def test_works_when_every_particle_shares_one_lammps_atom_type(self, render_module):
+        # This function never receives a type array at all -- passing 1000
+        # atom_ids that (in the caller's real trajectory) all share LAMMPS
+        # type 1 produces exactly the same split as any other set of IDs.
+        atom_ids = np.arange(1, 101)
+        profiles_cfg = {
+            "seed": 3,
+            "profiles": [{"name": "a", "proportion": 0.5}, {"name": "b", "proportion": 0.5}],
+        }
+        mapping = render_module._assign_particle_profiles(atom_ids, profiles_cfg)
+        assert set(mapping.values()) == {"a", "b"}
+
+
 class TestProceduralRingProfile:
     """R3/R4: render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit

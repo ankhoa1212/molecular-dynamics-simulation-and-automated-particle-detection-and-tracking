@@ -164,6 +164,38 @@ _PARTICLE_PROFILES = {
 }
 
 
+def _assign_particle_profiles(atom_ids, profiles_cfg, default_seed=42):
+    """Weighted-random, seeded, persistent-for-the-run assignment of a named
+    profile to each particle, keyed by atom_id.
+
+    Never reads a LAMMPS atom-type column -- this function's inputs are
+    atom_ids and profiles_cfg only, so it produces the same kind of
+    proportion-respecting split whether the trajectory has one LAMMPS atom
+    type or many.
+
+    Args:
+        atom_ids: (N,) array of atom IDs, typically from the first parsed
+            frame. Safe to use only frame 0's IDs because render.py's
+            main() already asserts atom IDs are stable across the whole
+            trajectory before writing tracking output.
+        profiles_cfg: synthetic.particle_render_profiles config dict, with a
+            "profiles" list of {"name": str, "proportion": float, ...}
+            dicts. "proportion" values are normalized by their sum -- they
+            are not required to total 1.
+        default_seed: used when profiles_cfg has no "seed" key.
+
+    Returns:
+        dict mapping int(atom_id) -> profile name (str).
+    """
+    rng = np.random.default_rng(profiles_cfg.get("seed", default_seed))
+    profiles = profiles_cfg["profiles"]
+    names = [p["name"] for p in profiles]
+    proportions = np.array([p["proportion"] for p in profiles], dtype=np.float64)
+    proportions = proportions / proportions.sum()
+    choices = rng.choice(names, size=len(atom_ids), p=proportions)
+    return {int(aid): name for aid, name in zip(atom_ids, choices)}
+
+
 def render_frame(positions_lj, box, cfg, rng):
     """Render one synthetic microscopy frame.
 
