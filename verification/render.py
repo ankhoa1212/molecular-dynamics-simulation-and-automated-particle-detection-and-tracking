@@ -93,9 +93,10 @@ def _parse_positions(atom_header, atoms):
 def _gaussian_ring_profile(
     r_grid, sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4
 ):
-    """Core-minus-ring difference-of-Gaussians profile, [0,1]-normalized
-    before peak scaling (caller multiplies by peak_intensity and clips to
-    non-negative -- this function does neither).
+    """Core-minus-ring difference-of-Gaussians profile, peak-normalized
+    (may dip below 0 near the ring edge; caller clips before Poisson noise).
+    The caller multiplies by peak_intensity and clips to non-negative --
+    this function does neither.
 
     Same math render_frame has always used inline: a bright Gaussian core
     with a dark ring subtracted at ring_radius_factor*sigma. r_grid must be
@@ -125,8 +126,9 @@ def _disk_rim_profile(
     r_grid, disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
 ):
     """Flat-top disk (smoothed step) with an optional dark rim near its edge,
-    [0,1]-normalized before peak scaling (caller multiplies by peak_intensity
-    and clips to non-negative -- this function does neither).
+    peak-normalized (may dip below 0 near the rim edge; caller clips before
+    Poisson noise). The caller multiplies by peak_intensity and clips to
+    non-negative -- this function does neither.
 
     Two disks that are merely touching have ~zero geometric overlap, unlike
     two Gaussian cores of comparable width -- summing two of these under
@@ -273,6 +275,9 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
                 lambda r_grid, fn=intensity_fn, p=params: peak * fn(r_grid, **p),
             )
 
+    # The ring/rim's negative dip can push some pixels below zero; rng.poisson
+    # raises ValueError on negative input, so this clip must run before the
+    # shot-noise branch below (not just at the function's final clip).
     img = np.clip(img, 0, None)
 
     if cfg.get("shot_noise", True):
