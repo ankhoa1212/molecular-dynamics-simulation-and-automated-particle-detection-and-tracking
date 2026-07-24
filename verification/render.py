@@ -89,6 +89,37 @@ def _parse_positions(atom_header, atoms):
     return positions
 
 
+def _gaussian_ring_profile(
+    r_grid, sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4
+):
+    """Core-minus-ring difference-of-Gaussians profile, [0,1]-normalized
+    before peak scaling (caller multiplies by peak_intensity and clips to
+    non-negative -- this function does neither).
+
+    Same math render_frame has always used inline: a bright Gaussian core
+    with a dark ring subtracted at ring_radius_factor*sigma. r_grid must be
+    a 2D array of Euclidean distances from the particle center (never x/y
+    offsets independently) -- the ring term is not separable into an outer
+    product, or it produces a non-isotropic diamond-shaped artifact instead
+    of a circular ring.
+    """
+    ring_width = ring_width_factor * sigma
+    core = np.exp(-0.5 * (r_grid / sigma) ** 2)
+    if ring_depth > 0 and ring_width > 0:
+        ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_radius_factor * sigma) / ring_width) ** 2)
+    else:
+        ring = 0.0
+    return core - ring
+
+
+def _gaussian_ring_extent(sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4):
+    """Pixel ROI radius needed to contain the core and the ring's outer tail."""
+    ring_width = ring_width_factor * sigma
+    core_extent = 3 * sigma
+    ring_extent = ring_radius_factor * sigma + 3 * ring_width
+    return int(max(core_extent, ring_extent)) + 1
+
+
 def render_frame(positions_lj, box, cfg, rng):
     """Render one synthetic microscopy frame.
 
@@ -107,31 +138,19 @@ def render_frame(positions_lj, box, cfg, rng):
     peak = cfg["peak_intensity"]
     x_lo, x_hi, y_lo, y_hi = box
 
-    # Dark-ring parameters (R3): a difference-of-Gaussians term, expressed as
-    # factors of psf_sigma, subtracted from the bright core. Missing/absent
-    # `ring` config falls back to these documented defaults rather than
-    # raising KeyError — see config.yaml's synthetic.ring block and
-    # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-plan.md U2.
     ring_cfg = cfg.get("ring", {})
     ring_radius_factor = ring_cfg.get("radius_factor", 2.2)
     ring_width_factor = ring_cfg.get("width_factor", 0.5)
     ring_depth = ring_cfg.get("depth", 0.4)
-    ring_width = ring_width_factor * sigma
 
     img = np.zeros((H, W), dtype=np.float64)
-    # ROI radius (R4) must cover both the bright core and the ring's outer
-    # Gaussian tail (radius_factor*sigma) plus a margin of a few
-    # width_factor*sigma, or the ring would be clipped by the ROI bounds.
-    core_extent = 3 * sigma
-    ring_extent = ring_radius_factor * sigma + 3 * ring_width
-    r = int(max(core_extent, ring_extent)) + 1
+    r = _gaussian_ring_extent(sigma, ring_radius_factor, ring_width_factor, ring_depth)
 
     for x, y in positions_lj:
         # Map LJ → pixel coordinates (auto-scales to any box size)
         cx = (x - x_lo) / (x_hi - x_lo) * W
         cy = (y - y_lo) / (y_hi - y_lo) * H
 
-        # Stamp a core-plus-ring PSF onto a small ROI (avoids full-frame ops)
         x0, x1 = max(0, int(cx) - r), min(W, int(cx) + r + 1)
         y0, y1 = max(0, int(cy) - r), min(H, int(cy) + r + 1)
         if x0 >= x1 or y0 >= y1:
@@ -139,32 +158,12 @@ def render_frame(positions_lj, box, cfg, rng):
 
         xs = np.arange(x0, x1, dtype=np.float64)
         ys = np.arange(y0, y1, dtype=np.float64)
-        # The ring term depends on Euclidean radius from the particle center,
-        # not independent x/y offsets, so — unlike the core — it does NOT
-        # factor into a separable outer product. A separable/outer-product
-        # implementation of the ring would produce a diamond/star-shaped
-        # non-isotropic artifact instead of a circular ring, so it must be
-        # evaluated over an explicit 2D radius grid.
         X, Y = np.meshgrid(xs, ys)
         r_grid = np.hypot(X - cx, Y - cy)
-        core = np.exp(-0.5 * (r_grid / sigma) ** 2)
-        if ring_depth > 0 and ring_width > 0:
-            ring = ring_depth * np.exp(
-                -0.5 * ((r_grid - ring_radius_factor * sigma) / ring_width) ** 2
-            )
-        else:
-            ring = 0.0
-        img[y0:y1, x0:x1] += peak * (core - ring)
+        img[y0:y1, x0:x1] += peak * _gaussian_ring_profile(
+            r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
+        )
 
-    # R5: the ring's negative dip pushes some pixels well below zero (e.g.
-    # roughly -6,500 ADU at peak_intensity=40000 for the default ring
-    # parameters at an isolated particle's trough) — numpy.random.Generator
-    # .poisson raises ValueError on any negative input, so this clip must
-    # run before the shot-noise branch below, not just at this function's
-    # existing final clip. Mirrors render_deeptrack.py's clip-before-Poisson
-    # precedent (there: `np.clip(frame * gain, 0.0, None)` before
-    # `rng.poisson`). The dip landing at exactly 0 (rather than deeply
-    # negative) after this clip is the intended dark-ring appearance.
     img = np.clip(img, 0, None)
 
     if cfg.get("shot_noise", True):

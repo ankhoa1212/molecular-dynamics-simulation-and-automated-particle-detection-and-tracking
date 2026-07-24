@@ -1607,6 +1607,37 @@ def _procedural_cfg(H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0
     return cfg
 
 
+class TestGaussianRingProfileExtraction:
+    """Task 1: _gaussian_ring_profile/_gaussian_ring_extent, extracted from
+    render_frame's inline math with no behavior change."""
+
+    def test_gaussian_ring_profile_matches_manual_core_minus_ring_math(self, render_module):
+        sigma = 4.0
+        r_grid = np.array([0.0, 2.0, 8.8, 20.0])
+        profile = render_module._gaussian_ring_profile(r_grid, sigma, 2.2, 0.5, 0.4)
+
+        core = np.exp(-0.5 * (r_grid / sigma) ** 2)
+        ring_width = 0.5 * sigma
+        ring = 0.4 * np.exp(-0.5 * ((r_grid - 2.2 * sigma) / ring_width) ** 2)
+        expected = core - ring
+
+        np.testing.assert_allclose(profile, expected)
+
+    def test_gaussian_ring_profile_zero_depth_is_pure_core(self, render_module):
+        sigma = 3.0
+        r_grid = np.array([0.0, 3.0, 9.0])
+        profile = render_module._gaussian_ring_profile(r_grid, sigma, ring_depth=0.0)
+        expected = np.exp(-0.5 * (r_grid / sigma) ** 2)
+        np.testing.assert_allclose(profile, expected)
+
+    def test_gaussian_ring_extent_matches_manual_formula(self, render_module):
+        sigma = 6.0
+        extent = render_module._gaussian_ring_extent(sigma, 2.2, 0.5, 0.4)
+        ring_width = 0.5 * sigma
+        expected = int(max(3 * sigma, 2.2 * sigma + 3 * ring_width)) + 1
+        assert extent == expected
+
+
 class TestProceduralRingProfile:
     """R3/R4: render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
