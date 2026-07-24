@@ -196,7 +196,7 @@ def _assign_particle_profiles(atom_ids, profiles_cfg, default_seed=42):
     return {int(aid): name for aid, name in zip(atom_ids, choices)}
 
 
-def render_frame(positions_lj, box, cfg, rng):
+def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
     """Render one synthetic microscopy frame.
 
     Args:
@@ -204,41 +204,74 @@ def render_frame(positions_lj, box, cfg, rng):
         box: (x_lo, x_hi, y_lo, y_hi) simulation box bounds
         cfg: synthetic config dict
         rng: numpy random Generator
+        atom_ids: optional (N,) array of atom IDs, parallel to
+            positions_lj. Required together with profile_map -- omitting
+            atom_ids while passing profile_map raises TypeError from the
+            zip() below, not a bespoke validation error.
+        profile_map: optional dict of atom_id -> profile name, from
+            _assign_particle_profiles. When None (the default), every
+            particle renders with the single gaussian_ring shape from
+            cfg["psf_sigma"]/cfg["ring"] -- unchanged from before this
+            feature existed. When given, each particle's shape and ROI
+            extent come from cfg["particle_render_profiles"]["profiles"]
+            (looked up by name via profile_map[atom_id]) through
+            _PARTICLE_PROFILES[profile["type"]], using that profile's own
+            "params".
 
     Returns:
         uint16 numpy array of shape (H, W)
     """
     H = cfg["image_height"]
     W = cfg["image_width"]
-    sigma = cfg["psf_sigma"]
     peak = cfg["peak_intensity"]
     x_lo, x_hi, y_lo, y_hi = box
-
-    ring_cfg = cfg.get("ring", {})
-    ring_radius_factor = ring_cfg.get("radius_factor", 2.2)
-    ring_width_factor = ring_cfg.get("width_factor", 0.5)
-    ring_depth = ring_cfg.get("depth", 0.4)
-
     img = np.zeros((H, W), dtype=np.float64)
-    r = _gaussian_ring_extent(sigma, ring_radius_factor, ring_width_factor, ring_depth)
 
-    for x, y in positions_lj:
-        # Map LJ → pixel coordinates (auto-scales to any box size)
-        cx = (x - x_lo) / (x_hi - x_lo) * W
-        cy = (y - y_lo) / (y_hi - y_lo) * H
-
-        x0, x1 = max(0, int(cx) - r), min(W, int(cx) + r + 1)
-        y0, y1 = max(0, int(cy) - r), min(H, int(cy) + r + 1)
+    def _stamp(cx, cy, extent, intensity):
+        x0, x1 = max(0, int(cx) - extent), min(W, int(cx) + extent + 1)
+        y0, y1 = max(0, int(cy) - extent), min(H, int(cy) + extent + 1)
         if x0 >= x1 or y0 >= y1:
-            continue
-
+            return
         xs = np.arange(x0, x1, dtype=np.float64)
         ys = np.arange(y0, y1, dtype=np.float64)
         X, Y = np.meshgrid(xs, ys)
         r_grid = np.hypot(X - cx, Y - cy)
-        img[y0:y1, x0:x1] += peak * _gaussian_ring_profile(
-            r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
-        )
+        img[y0:y1, x0:x1] += intensity(r_grid)
+
+    if profile_map is None:
+        sigma = cfg["psf_sigma"]
+        ring_cfg = cfg.get("ring", {})
+        ring_radius_factor = ring_cfg.get("radius_factor", 2.2)
+        ring_width_factor = ring_cfg.get("width_factor", 0.5)
+        ring_depth = ring_cfg.get("depth", 0.4)
+        extent = _gaussian_ring_extent(sigma, ring_radius_factor, ring_width_factor, ring_depth)
+
+        for x, y in positions_lj:
+            cx = (x - x_lo) / (x_hi - x_lo) * W
+            cy = (y - y_lo) / (y_hi - y_lo) * H
+            _stamp(
+                cx,
+                cy,
+                extent,
+                lambda r_grid: peak
+                * _gaussian_ring_profile(
+                    r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
+                ),
+            )
+    else:
+        profiles_by_name = {p["name"]: p for p in cfg["particle_render_profiles"]["profiles"]}
+        for (x, y), atom_id in zip(positions_lj, atom_ids):
+            profile = profiles_by_name[profile_map[int(atom_id)]]
+            intensity_fn, extent_fn = _PARTICLE_PROFILES[profile["type"]]
+            params = profile.get("params", {})
+            cx = (x - x_lo) / (x_hi - x_lo) * W
+            cy = (y - y_lo) / (y_hi - y_lo) * H
+            _stamp(
+                cx,
+                cy,
+                extent_fn(**params),
+                lambda r_grid, fn=intensity_fn, p=params: peak * fn(r_grid, **p),
+            )
 
     img = np.clip(img, 0, None)
 

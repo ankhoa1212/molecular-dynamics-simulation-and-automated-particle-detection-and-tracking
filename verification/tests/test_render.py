@@ -1808,6 +1808,96 @@ class TestAssignParticleProfiles:
         assert set(mapping.values()) == {"a", "b"}
 
 
+class TestRenderFrameProfileMap:
+    """Task 5: render_frame's new atom_ids/profile_map params, with
+    profile_map=None as the exact pre-this-feature fallback."""
+
+    def test_profile_map_none_matches_gaussian_ring_shape(self, render_module):
+        H, W = 64, 64
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        cfg = _procedural_cfg(
+            H, W, sigma=3.0, peak=20000, shot_noise=False, readout_noise=0.0, ring=_DEFAULT_RING
+        )
+
+        frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(3))
+
+        cx, cy = 32.0, 32.0  # (5,5) LJ in a (0,10)x(0,10) box, 64x64 image -> pixel (32,32)
+        core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
+        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * 3.0 - 1.0, 2.2 * 3.0 + 1.0)
+        assert core_mean > 0.5 * 20000
+        assert ring_mean < 0.3 * core_mean
+
+    def test_profile_map_routes_each_particle_to_its_assigned_profile_size(self, render_module):
+        H, W = 200, 200
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[40.0, 100.0], [160.0, 100.0]])
+        atom_ids = np.array([1, 2])
+        profile_map = {1: "small", 2: "large"}
+        cfg = {
+            "image_height": H,
+            "image_width": W,
+            "peak_intensity": 40000,
+            "shot_noise": False,
+            "readout_noise": 0.0,
+            "particle_render_profiles": {
+                "profiles": [
+                    {
+                        "name": "small",
+                        "type": "disk_rim",
+                        "proportion": 0.5,
+                        "params": {"disk_radius_px": 10.0, "blur_sigma_px": 2.0},
+                    },
+                    {
+                        "name": "large",
+                        "type": "disk_rim",
+                        "proportion": 0.5,
+                        "params": {"disk_radius_px": 25.0, "blur_sigma_px": 2.0},
+                    },
+                ]
+            },
+        }
+
+        frame = render_module.render_frame(
+            positions,
+            box,
+            cfg,
+            np.random.default_rng(0),
+            atom_ids=atom_ids,
+            profile_map=profile_map,
+        ).astype(np.float64)
+
+        small_bright = (frame[100, 40:70] > 20000).sum()
+        large_bright = (frame[100, 160:200] > 20000).sum()
+        assert large_bright > small_bright
+
+    def test_profile_map_requires_atom_ids(self, render_module):
+        H, W = 64, 64
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        cfg = {
+            "image_height": H,
+            "image_width": W,
+            "peak_intensity": 1000,
+            "shot_noise": False,
+            "readout_noise": 0.0,
+            "particle_render_profiles": {
+                "profiles": [
+                    {
+                        "name": "a",
+                        "type": "disk_rim",
+                        "proportion": 1.0,
+                        "params": {"disk_radius_px": 5.0, "blur_sigma_px": 1.0},
+                    }
+                ]
+            },
+        }
+        with pytest.raises(TypeError):
+            render_module.render_frame(
+                positions, box, cfg, np.random.default_rng(0), profile_map={1: "a"}
+            )
+
+
 class TestProceduralRingProfile:
     """R3/R4: render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
