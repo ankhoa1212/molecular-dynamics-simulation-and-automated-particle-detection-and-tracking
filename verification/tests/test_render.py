@@ -2343,12 +2343,17 @@ class TestParticleRenderProfilesWiring:
             captured_maps.append(dict(kwargs["profile_map"]))
             return original_dispatch(*args, **kwargs)
 
-        with mock.patch.object(render_module, "_dispatch_render", side_effect=spy):
+        assign_spy = mock.Mock(side_effect=render_module._assign_particle_profiles)
+
+        with mock.patch.object(
+            render_module, "_dispatch_render", side_effect=spy
+        ), mock.patch.object(render_module, "_assign_particle_profiles", assign_spy):
             _run_main_with_blocks(render_module, tmp_path, blocks, extra_synthetic=extra_synthetic)
 
         assert len(captured_maps) == 3
         assert captured_maps[0] == captured_maps[1] == captured_maps[2]
         assert set(captured_maps[0]) == {1, 2}
+        assign_spy.assert_called_once()
 
     def test_absent_particle_render_profiles_never_calls_assign(
         self, render_module, tmp_path, monkeypatch
@@ -2399,3 +2404,4 @@ class TestParticleRenderProfilesWiring:
 
         captured = capsys.readouterr()
         assert "particle_render_profiles is configured" in captured.out
+        assert "derived from --lammps-in" not in captured.out
