@@ -468,6 +468,7 @@ def main():
     # plan's Key Decisions, "cfg dict mutation is rejected"). Other
     # strategies never see this — it stays None for them.
     state = {} if strategy == "randomized" else None
+    profile_map = None
 
     ground_truth = []
     # Collect per-frame data for tracks CSV: list of (atom_ids, px_positions)
@@ -490,6 +491,15 @@ def main():
             f"WARNING:        --lammps-in has no effect on render_strategy: {strategy} -- "
             "only procedural reads the derived psf_sigma."
         )
+    elif cfg.get("particle_render_profiles"):
+        # Same reasoning as the strategy!=procedural branch above, but for
+        # particle_render_profiles: each profile's own params (e.g.
+        # disk_radius_px) already sets its size explicitly, so there's no
+        # longer one unambiguous cfg["psf_sigma"] target to override.
+        print(
+            "WARNING:        --lammps-in has no effect when synthetic.particle_render_profiles "
+            "is configured -- each profile's own params already set its size explicitly."
+        )
     print(f"Render strategy: {strategy}")
     print(f"Output:         {output_dir}")
 
@@ -499,7 +509,12 @@ def main():
 
         box = _parse_box(block["box_bounds"])
 
-        if args.lammps_in and i == 0 and strategy == "procedural":
+        if (
+            args.lammps_in
+            and i == 0
+            and strategy == "procedural"
+            and not cfg.get("particle_render_profiles")
+        ):
             cfg["psf_sigma"] = _derive_psf_sigma_from_lammps_in(
                 args.lammps_in, box, cfg["image_width"]
             )
@@ -510,7 +525,24 @@ def main():
 
         positions_lj, atom_ids = _parse_atoms(block["atom_header"], block["atoms"])
 
-        img = _dispatch_render(positions_lj, box, cfg, rng, strategy, state=state)
+        if i == 0 and strategy == "procedural" and cfg.get("particle_render_profiles"):
+            profile_map = _assign_particle_profiles(atom_ids, cfg["particle_render_profiles"])
+            n_profiles = len(cfg["particle_render_profiles"]["profiles"])
+            print(
+                f"Particle profiles: {n_profiles} configured, {len(profile_map)} particles assigned "
+                f"(seed={cfg['particle_render_profiles'].get('seed', 42)})"
+            )
+
+        img = _dispatch_render(
+            positions_lj,
+            box,
+            cfg,
+            rng,
+            strategy,
+            state=state,
+            atom_ids=atom_ids,
+            profile_map=profile_map,
+        )
 
         img_f = img.astype(np.float32)
         lo, hi = img_f.min(), img_f.max()

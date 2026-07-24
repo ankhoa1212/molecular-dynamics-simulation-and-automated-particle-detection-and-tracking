@@ -378,7 +378,7 @@ class TestLammpsInCliFlag:
 # ---------------------------------------------------------------------------
 
 
-def _minimal_cfg(tmp_path):
+def _minimal_cfg(tmp_path, extra_synthetic=None):
     import yaml
 
     cfg = {
@@ -393,22 +393,23 @@ def _minimal_cfg(tmp_path):
             "output_dir": str(tmp_path / "frames"),
         }
     }
+    if extra_synthetic:
+        cfg["synthetic"].update(extra_synthetic)
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.dump(cfg))
     return str(cfg_path)
 
 
-def _run_main_with_blocks(render_module, tmp_path, blocks):
+def _run_main_with_blocks(render_module, tmp_path, blocks, extra_synthetic=None, extra_argv=()):
     """Patch parse_lammps_dump to yield `blocks`, run main()."""
-    cfg_path = _minimal_cfg(tmp_path)
+    cfg_path = _minimal_cfg(tmp_path, extra_synthetic=extra_synthetic)
     # Reset any side_effect a prior test may have left set (Mock.side_effect
     # takes precedence over return_value, so this must be cleared explicitly).
     _LAMMPS_STUB.parse_lammps_dump.side_effect = None
     _LAMMPS_STUB.parse_lammps_dump.return_value = iter(blocks)
 
-    with mock.patch.object(
-        sys, "argv", ["render.py", "--lammps", "fake.lammpstrj", "--config", cfg_path]
-    ):
+    argv = ["render.py", "--lammps", "fake.lammpstrj", "--config", cfg_path, *extra_argv]
+    with mock.patch.object(sys, "argv", argv):
         render_module.main()
 
 
@@ -2302,3 +2303,99 @@ class TestBackgroundNoiseVisibility:
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
         assert len(np.unique(background8)) > 1
+
+
+class TestParticleRenderProfilesWiring:
+    """Task 7: main() builds profile_map once from frame 0 and reuses it for
+    every later frame; particle_render_profiles absent -> feature is a
+    complete no-op; combined with --lammps-in -> warns and skips the
+    psf_sigma override."""
+
+    def test_profile_persists_for_same_particle_across_frames(self, render_module, tmp_path):
+        blocks = [
+            _make_block(0, [1, 2], [2.0, 8.0], [5.0, 5.0]),
+            _make_block(1, [1, 2], [2.1, 7.9], [5.0, 5.0]),
+            _make_block(2, [1, 2], [2.2, 7.8], [5.0, 5.0]),
+        ]
+        extra_synthetic = {
+            "particle_render_profiles": {
+                "seed": 1,
+                "profiles": [
+                    {
+                        "name": "small",
+                        "type": "disk_rim",
+                        "proportion": 0.5,
+                        "params": {"disk_radius_px": 2.0, "blur_sigma_px": 0.5},
+                    },
+                    {
+                        "name": "large",
+                        "type": "disk_rim",
+                        "proportion": 0.5,
+                        "params": {"disk_radius_px": 8.0, "blur_sigma_px": 0.5},
+                    },
+                ],
+            }
+        }
+        captured_maps = []
+        original_dispatch = render_module._dispatch_render
+
+        def spy(*args, **kwargs):
+            captured_maps.append(dict(kwargs["profile_map"]))
+            return original_dispatch(*args, **kwargs)
+
+        with mock.patch.object(render_module, "_dispatch_render", side_effect=spy):
+            _run_main_with_blocks(render_module, tmp_path, blocks, extra_synthetic=extra_synthetic)
+
+        assert len(captured_maps) == 3
+        assert captured_maps[0] == captured_maps[1] == captured_maps[2]
+        assert set(captured_maps[0]) == {1, 2}
+
+    def test_absent_particle_render_profiles_never_calls_assign(
+        self, render_module, tmp_path, monkeypatch
+    ):
+        blocks = [_make_block(0, [1], [5.0], [5.0])]
+        spy = mock.Mock(side_effect=render_module._assign_particle_profiles)
+        monkeypatch.setattr(render_module, "_assign_particle_profiles", spy)
+
+        _run_main_with_blocks(render_module, tmp_path, blocks)
+
+        spy.assert_not_called()
+
+    def test_lammps_in_with_particle_render_profiles_warns_and_skips_override(
+        self, render_module, tmp_path, capsys
+    ):
+        in_path = tmp_path / "sim.in"
+        in_path.write_text("variable\tsigma equal 1.0\nset type 1 shape 0.5 0.5 0.5\n")
+        blocks = [
+            _make_block(
+                0,
+                [1, 2],
+                [2.0, 8.0],
+                [5.0, 5.0],
+                box_bounds=["0.0 10.0\n", "0.0 10.0\n", "0.0 1.0\n"],
+            )
+        ]
+        extra_synthetic = {
+            "particle_render_profiles": {
+                "seed": 1,
+                "profiles": [
+                    {
+                        "name": "only",
+                        "type": "disk_rim",
+                        "proportion": 1.0,
+                        "params": {"disk_radius_px": 3.0, "blur_sigma_px": 0.5},
+                    }
+                ],
+            }
+        }
+
+        _run_main_with_blocks(
+            render_module,
+            tmp_path,
+            blocks,
+            extra_synthetic=extra_synthetic,
+            extra_argv=["--lammps-in", str(in_path)],
+        )
+
+        captured = capsys.readouterr()
+        assert "particle_render_profiles is configured" in captured.out
