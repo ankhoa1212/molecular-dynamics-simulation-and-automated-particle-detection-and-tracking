@@ -32,6 +32,7 @@ from pathlib import Path
 import matplotlib.image as mplimg
 import numpy as np
 import yaml
+from scipy.special import erf
 
 from frames_to_video import frames_to_video
 
@@ -118,6 +119,43 @@ def _gaussian_ring_extent(sigma, ring_radius_factor=2.2, ring_width_factor=0.5, 
     core_extent = 3 * sigma
     ring_extent = ring_radius_factor * sigma + 3 * ring_width
     return int(max(core_extent, ring_extent)) + 1
+
+
+def _disk_rim_profile(
+    r_grid, disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
+):
+    """Flat-top disk (smoothed step) with an optional dark rim near its edge,
+    [0,1]-normalized before peak scaling (caller multiplies by peak_intensity
+    and clips to non-negative -- this function does neither).
+
+    Two disks that are merely touching have ~zero geometric overlap, unlike
+    two Gaussian cores of comparable width -- summing two of these under
+    plain additive compositing does not overshoot the way two overlapping
+    Gaussian tails do. The rim gives touching particles a visible seam
+    rather than a flat continuous plateau. See
+    docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md.
+    """
+    flat_top = 0.5 * (1 - erf((r_grid - disk_radius_px) / (np.sqrt(2) * blur_sigma_px)))
+    if rim_depth > 0 and rim_width_px > 0:
+        rim_radius = disk_radius_px - rim_offset_px
+        rim = rim_depth * np.exp(-0.5 * ((r_grid - rim_radius) / rim_width_px) ** 2)
+    else:
+        rim = 0.0
+    return flat_top - rim
+
+
+def _disk_rim_extent(
+    disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
+):
+    """Pixel ROI radius needed to contain the disk and its blurred edge.
+
+    rim_depth/rim_width_px/rim_offset_px are accepted (not just
+    disk_radius_px/blur_sigma_px) so every profile type's extent function
+    has the same call signature as its params dict -- the rim never needs a
+    larger ROI than the disk-plus-blur margin alone, since rim_offset_px is
+    subtracted from disk_radius_px, not added.
+    """
+    return int(disk_radius_px + 4 * blur_sigma_px) + 1
 
 
 def render_frame(positions_lj, box, cfg, rng):

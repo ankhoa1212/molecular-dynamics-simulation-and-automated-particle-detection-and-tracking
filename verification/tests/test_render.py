@@ -1638,6 +1638,85 @@ class TestGaussianRingProfileExtraction:
         assert extent == expected
 
 
+class TestDiskRimProfile:
+    """Task 2: the disk-core-plus-dark-rim shape that fixes touching-particle
+    merging (docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md)."""
+
+    def test_center_is_near_full_brightness(self, render_module):
+        r_grid = np.array([0.0])
+        profile = render_module._disk_rim_profile(r_grid, disk_radius_px=20.0, blur_sigma_px=3.0)
+        assert profile[0] > 0.99
+
+    def test_far_beyond_disk_radius_is_near_zero(self, render_module):
+        r_grid = np.array([40.0])
+        profile = render_module._disk_rim_profile(r_grid, disk_radius_px=20.0, blur_sigma_px=3.0)
+        assert profile[0] < 0.01
+
+    def test_value_at_disk_radius_is_half_max_before_rim(self, render_module):
+        # erf(0) == 0, so flat_top(disk_radius_px) == 0.5 * (1 - 0) == 0.5 exactly.
+        r_grid = np.array([20.0])
+        profile = render_module._disk_rim_profile(r_grid, disk_radius_px=20.0, blur_sigma_px=3.0)
+        np.testing.assert_allclose(profile[0], 0.5, atol=1e-9)
+
+    def test_rim_creates_a_dip_near_the_edge(self, render_module):
+        disk_radius_px, rim_depth, rim_width_px, rim_offset_px = 20.0, 0.55, 2.5, 1.5
+        r_grid = np.linspace(0, 30, 300)
+        profile = render_module._disk_rim_profile(
+            r_grid,
+            disk_radius_px,
+            blur_sigma_px=3.0,
+            rim_depth=rim_depth,
+            rim_width_px=rim_width_px,
+            rim_offset_px=rim_offset_px,
+        )
+        interior_value = profile[(r_grid > 2) & (r_grid < 10)].mean()
+        rim_radius = disk_radius_px - rim_offset_px
+        dip_value = profile[np.argmin(np.abs(r_grid - rim_radius))]
+        assert dip_value < interior_value - 0.3
+
+    def test_zero_rim_depth_is_a_plain_smoothed_disk(self, render_module):
+        r_grid = np.array([0.0, 10.0, 20.0, 30.0])
+        explicit_zero = render_module._disk_rim_profile(
+            r_grid, disk_radius_px=20.0, blur_sigma_px=3.0, rim_depth=0.0
+        )
+        default = render_module._disk_rim_profile(r_grid, disk_radius_px=20.0, blur_sigma_px=3.0)
+        np.testing.assert_array_equal(explicit_zero, default)
+
+    def test_output_can_go_negative_before_caller_clips(self, render_module):
+        # A strong rim can dip the raw profile below 0 -- callers must clip,
+        # exactly as render_frame already does for gaussian_ring's ring dip.
+        r_grid = np.linspace(0, 30, 300)
+        profile = render_module._disk_rim_profile(
+            r_grid,
+            disk_radius_px=20.0,
+            blur_sigma_px=3.0,
+            rim_depth=0.9,
+            rim_width_px=2.0,
+            rim_offset_px=1.0,
+        )
+        assert profile.min() < 0
+
+
+class TestDiskRimExtent:
+    def test_extent_covers_disk_radius_plus_blur_margin(self, render_module):
+        extent = render_module._disk_rim_extent(disk_radius_px=20.0, blur_sigma_px=3.0)
+        assert extent == int(20.0 + 4 * 3.0) + 1
+
+    def test_extent_ignores_rim_params(self, render_module):
+        # rim_offset_px is subtracted from disk_radius_px (the rim sits
+        # inside the disk edge), so it never pushes the ROI larger than the
+        # disk-plus-blur margin alone.
+        extent_no_rim = render_module._disk_rim_extent(disk_radius_px=20.0, blur_sigma_px=3.0)
+        extent_with_rim = render_module._disk_rim_extent(
+            disk_radius_px=20.0,
+            blur_sigma_px=3.0,
+            rim_depth=0.6,
+            rim_width_px=2.5,
+            rim_offset_px=1.5,
+        )
+        assert extent_no_rim == extent_with_rim
+
+
 class TestProceduralRingProfile:
     """R3/R4: render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
