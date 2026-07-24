@@ -1898,6 +1898,85 @@ class TestRenderFrameProfileMap:
             )
 
 
+class TestDispatchRenderProfileMap:
+    """Task 6: atom_ids/profile_map are threaded through _dispatch_render
+    only on the 'procedural' branch -- 'deeptrack'/'randomized' never see
+    them, matching the existing --lammps-in scoping in main()."""
+
+    def test_procedural_branch_threads_profile_map_through(self, render_module):
+        H, W = 100, 100
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[20.0, 50.0], [80.0, 50.0]])
+        atom_ids = np.array([1, 2])
+        profile_map = {1: "small", 2: "large"}
+        cfg = {
+            "image_height": H,
+            "image_width": W,
+            "peak_intensity": 40000,
+            "shot_noise": False,
+            "readout_noise": 0.0,
+            "particle_render_profiles": {
+                "profiles": [
+                    {
+                        "name": "small",
+                        "type": "disk_rim",
+                        "proportion": 0.5,
+                        "params": {"disk_radius_px": 5.0, "blur_sigma_px": 1.0},
+                    },
+                    {
+                        "name": "large",
+                        "type": "disk_rim",
+                        "proportion": 0.5,
+                        "params": {"disk_radius_px": 15.0, "blur_sigma_px": 1.0},
+                    },
+                ]
+            },
+        }
+
+        frame = render_module._dispatch_render(
+            positions,
+            box,
+            cfg,
+            np.random.default_rng(0),
+            "procedural",
+            atom_ids=atom_ids,
+            profile_map=profile_map,
+        ).astype(np.float64)
+
+        small_bright = (frame[50, 20:35] > 20000).sum()
+        large_bright = (frame[50, 80:99] > 20000).sum()
+        assert large_bright > small_bright
+
+    def test_deeptrack_branch_never_receives_profile_map(self, render_module, monkeypatch):
+        """profile_map/atom_ids must never reach render_frame_deeptrack --
+        this fake's signature doesn't accept them, so the test fails loudly
+        (TypeError) if _dispatch_render's deeptrack branch ever passes them."""
+        called = {}
+
+        def fake_render_frame_deeptrack(positions_lj, box, cfg, rng):
+            called["ok"] = True
+            return np.zeros((4, 4), dtype=np.uint16)
+
+        fake_module = mock.MagicMock()
+        fake_module.render_frame_deeptrack = fake_render_frame_deeptrack
+        monkeypatch.setitem(sys.modules, "render_deeptrack", fake_module)
+
+        positions = np.array([[1.0, 1.0]])
+        box = (0.0, 4.0, 0.0, 4.0)
+        cfg = {"image_height": 4, "image_width": 4}
+        frame = render_module._dispatch_render(
+            positions,
+            box,
+            cfg,
+            np.random.default_rng(0),
+            "deeptrack",
+            atom_ids=np.array([1]),
+            profile_map={1: "small"},
+        )
+        assert called == {"ok": True}
+        assert frame.shape == (4, 4)
+
+
 class TestProceduralRingProfile:
     """R3/R4: render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit

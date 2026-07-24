@@ -377,7 +377,9 @@ def _derive_psf_sigma_from_lammps_in(lammps_in_path, box, image_width):
     return diameter_px / _FWHM_TO_SIGMA
 
 
-def _dispatch_render(positions_lj, box, cfg, rng, strategy, state=None):
+def _dispatch_render(
+    positions_lj, box, cfg, rng, strategy, state=None, atom_ids=None, profile_map=None
+):
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
@@ -386,6 +388,13 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy, state=None):
             'randomized' strategy (see render_randomized.render_frame_randomized).
             Passed through only for that branch; 'procedural' and 'deeptrack'
             ignore it entirely — their signatures/calls are unchanged.
+        atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
+            Passed through only to the 'procedural' branch's render_frame,
+            for particle_render_profiles lookup. 'deeptrack'/'randomized'
+            never receive it.
+        profile_map: optional dict of atom_id -> profile name from
+            _assign_particle_profiles. Passed through only to the
+            'procedural' branch; 'deeptrack'/'randomized' never receive it.
 
     Returns:
         uint16 numpy array of shape (H, W)
@@ -411,8 +420,8 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy, state=None):
                 "Ensure the file exists in the verification/ directory."
             )
     else:
-        # Default: procedural Gaussian PSF
-        return render_frame(positions_lj, box, cfg, rng)
+        # Default: procedural
+        return render_frame(positions_lj, box, cfg, rng, atom_ids=atom_ids, profile_map=profile_map)
 
 
 def main():
