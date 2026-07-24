@@ -48,3 +48,4 @@ lint-reports/
 
 # local Claude Code settings
 .claude/settings.local.json
+.superpowers/
