@@ -1765,17 +1765,25 @@ class TestAssignParticleProfiles:
         assert mapping_1 == mapping_2
 
     def test_default_seed_is_42(self, render_module):
-        atom_ids = np.arange(1, 21)
+        atom_ids = np.arange(1, 51)
         profiles_cfg_no_seed = {
-            "profiles": [{"name": "a", "proportion": 1.0}, {"name": "b", "proportion": 0.0}]
+            "profiles": [{"name": "a", "proportion": 0.6}, {"name": "b", "proportion": 0.4}]
         }
         profiles_cfg_seed_42 = {
             "seed": 42,
-            "profiles": [{"name": "a", "proportion": 1.0}, {"name": "b", "proportion": 0.0}],
+            "profiles": [{"name": "a", "proportion": 0.6}, {"name": "b", "proportion": 0.4}],
+        }
+        profiles_cfg_seed_7 = {
+            "seed": 7,
+            "profiles": [{"name": "a", "proportion": 0.6}, {"name": "b", "proportion": 0.4}],
         }
         mapping_default = render_module._assign_particle_profiles(atom_ids, profiles_cfg_no_seed)
-        mapping_explicit = render_module._assign_particle_profiles(atom_ids, profiles_cfg_seed_42)
-        assert mapping_default == mapping_explicit
+        mapping_explicit_42 = render_module._assign_particle_profiles(
+            atom_ids, profiles_cfg_seed_42
+        )
+        mapping_explicit_7 = render_module._assign_particle_profiles(atom_ids, profiles_cfg_seed_7)
+        assert mapping_default == mapping_explicit_42
+        assert mapping_default != mapping_explicit_7
 
     def test_proportions_need_not_sum_to_one(self, render_module):
         atom_ids = np.arange(1, 1001)
