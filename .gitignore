@@ -46,6 +46,9 @@ verification/crop_templates.npz
 # generated lint reports
 lint-reports/
 
-# local Claude Code settings
-.claude/settings.local.json
-.superpowers/
+# Claude Code settings
+.claude/
+CLAUDE.md
+
+# planning/brainstorm docs (local working notes, not shared repo content)
+docs/

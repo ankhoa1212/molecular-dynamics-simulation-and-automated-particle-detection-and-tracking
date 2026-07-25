@@ -9,9 +9,32 @@ source of truth. Each model keeps its own tuned ``search_range``/``memory``/
 rather than this module hardcoding a results location.
 """
 
+import os
+import tempfile
 from pathlib import Path
 
 import yaml
+
+
+def _write_config(cfg: dict, model_prefix: str, name: str, script_dir: Path) -> Path:
+    """Serialize cfg to a uniquely-named YAML file under script_dir/run_configs.
+
+    Uses tempfile.mkstemp for a collision-free filename even when two invocations
+    share the same `name` (e.g. two model_comparison.py runs left at the default
+    --output-dir) — each caller owns exactly the path returned. Callers that clean
+    up after themselves (run_tracking.py) must unlink their own returned paths
+    individually rather than clearing the shared run_configs/ directory, since
+    other concurrent invocations may have live files in it.
+    """
+    run_configs_dir = script_dir / "run_configs"
+    run_configs_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f"{model_prefix}_{name}_", suffix=".yaml", dir=run_configs_dir
+    )
+    cfg_path = Path(tmp_path)
+    with os.fdopen(fd, "w") as f:
+        f.write(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+    return cfg_path
 
 
 def parse_crop_dims(crop_str: str | None, error_fn) -> tuple[int | None, int | None]:
@@ -63,7 +86,6 @@ def write_rfdetr_config(
     script_dir: Path,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    (script_dir / "run_configs").mkdir(parents=True, exist_ok=True)
 
     tracking = {
         "tracker": "trackpy",
@@ -97,9 +119,7 @@ def write_rfdetr_config(
         },
     }
 
-    cfg_path = script_dir / "run_configs" / f"rf-detr_{name}.yaml"
-    cfg_path.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
-    return cfg_path
+    return _write_config(cfg, "rf-detr", name, script_dir)
 
 
 def read_lodestar_cutoff(script_dir: Path) -> float | None:
@@ -132,7 +152,6 @@ def write_lodestar_config(
     script_dir: Path,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    (script_dir / "run_configs").mkdir(parents=True, exist_ok=True)
 
     threshold = read_lodestar_cutoff(script_dir)
     if threshold is None:
@@ -170,6 +189,4 @@ def write_lodestar_config(
         },
     }
 
-    cfg_path = script_dir / "run_configs" / f"lodestar_{name}.yaml"
-    cfg_path.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
-    return cfg_path
+    return _write_config(cfg, "lodestar", name, script_dir)

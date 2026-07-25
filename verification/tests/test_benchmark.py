@@ -303,9 +303,17 @@ class TestReexecForModelVenv:
             benchmark._reexec_for_model_venv("trackpy")  # must not raise
         fake_execv.assert_not_called()
 
-    def test_matching_python_version_does_not_reexec(self, tmp_path, monkeypatch):
-        """When the target venv's Python minor version already matches the
-        running interpreter, no re-exec should fire."""
+    def test_matching_python_version_still_reexecs(self, tmp_path, monkeypatch):
+        """A matching Python minor version is not sufficient to skip re-exec:
+        detectors_common (which every rf-detr/lodestar model-loading call
+        depends on) is only ever installed inside the model venvs, never in
+        verification/.venv itself -- even when the two interpreters' ABI
+        happens to match, running natively still leaves it unimportable.
+        Regression test for the bug this caused: verification/pyproject.toml
+        has no .python-version pin (unlike rf-detr/particle-tracking, both
+        pinned to 3.11), so verification/.venv's resolved version colliding
+        with theirs is a real, non-hypothetical scenario, not just a fake-venv
+        contrivance."""
         venv_dir = tmp_path / "fake.venv"
         pyver = f"python{sys.version_info.major}.{sys.version_info.minor}"
         site_pkgs = venv_dir / "lib" / pyver / "site-packages"
@@ -313,6 +321,20 @@ class TestReexecForModelVenv:
         (venv_dir / "bin").mkdir(parents=True)
         (venv_dir / "bin" / "python").write_text("#!/bin/sh\n")
         (venv_dir / "bin" / "python").chmod(0o755)
+
+        with mock.patch.dict(benchmark._MODEL_VENV_DIRS, {"rf-detr": venv_dir}):
+            with mock.patch.object(benchmark.os, "execv") as fake_execv:
+                benchmark._reexec_for_model_venv("rf-detr")
+            fake_execv.assert_called_once()
+
+    def test_already_running_as_target_venv_python_does_not_reexec(self, tmp_path, monkeypatch):
+        """The only valid reason to skip re-exec is already running under that
+        exact interpreter (i.e. a prior re-exec already landed here) -- not a
+        version-string match. Without this guard, unconditional re-exec would
+        loop forever once inside the target venv."""
+        venv_dir = _make_fake_venv(tmp_path, "fake.venv")
+        venv_python = (venv_dir / "bin" / "python").absolute()
+        monkeypatch.setattr(benchmark.sys, "executable", str(venv_python))
 
         with mock.patch.dict(benchmark._MODEL_VENV_DIRS, {"rf-detr": venv_dir}):
             with mock.patch.object(benchmark.os, "execv") as fake_execv:

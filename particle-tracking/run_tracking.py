@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import re
-import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -262,8 +261,11 @@ def main() -> None:
     else:
         print("=== Skipping RF-DETR ===", flush=True)
 
-    # Cleanup
-    shutil.rmtree(config_dir)
+    # Cleanup: unlink only the config files this invocation itself generated —
+    # run_configs/ is a shared directory that other concurrently running
+    # invocations (e.g. model_comparison.py) may still have live files in.
+    for cfg_path in rfdetr_configs + lodestar_configs:
+        cfg_path.unlink(missing_ok=True)
     print("=== All tracking runs complete ===", flush=True)
     print(f"Results saved to: {RESULTS_BASE}", flush=True)
 
