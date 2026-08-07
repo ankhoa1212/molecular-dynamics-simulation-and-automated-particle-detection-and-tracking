@@ -105,6 +105,7 @@ Key settings in `config.yaml` under `synthetic:`:
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
+| `background_fraction` | Flat background baseline for `procedural`, as a fraction of `peak_intensity` |
 | `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config` |
 | `psf.na` / `psf.wavelength` / `psf.resolution` | DeepTrack2 PSF optics params |
 | `background.amplitude` | Max spatial background variation (ADU) |
