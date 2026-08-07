@@ -8,6 +8,13 @@ synthetic:
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
   peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
+  background_fraction: 0.25     # uniform background baseline, as a fraction of peak_intensity --
+                                 # sized as a fraction (not a fixed ADU value) because peak_intensity
+                                 # is an arbitrary synthetic scale, not calibrated to real sensor
+                                 # counts; 0.25 matches the real reference video's background/peak
+                                 # ratio (median 1148 / max 3832 ADU). Set to 0 for the old flat-
+                                 # black canvas. See docs/superpowers/specs/2026-08-07-gray-
+                                 # background-default-design.md.
   shot_noise: true              # add Poisson photon noise
   readout_noise: 200.0          # Gaussian readout noise std dev (ADU). Raised from 15.0 --
                                  # render.py's main() 8-bit PNG stretch is a per-frame true

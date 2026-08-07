@@ -2274,7 +2274,9 @@ def _load_synthetic_config():
     return full_cfg["synthetic"]
 
 
-def _render_background_region(render_module, readout_noise, shot_noise):
+def _render_background_region(
+    render_module, readout_noise, shot_noise, background_fraction=0.0, peak=40000
+):
     """Render a single isolated particle far from the image corner and
     return (frame, background_corner). The particle sits at the center of a
     128x128 frame with sigma=5 and the default ring, whose ROI radius
@@ -2286,10 +2288,11 @@ def _render_background_region(render_module, readout_noise, shot_noise):
         H,
         W,
         sigma=5.0,
-        peak=40000,
+        peak=peak,
         shot_noise=shot_noise,
         readout_noise=readout_noise,
         ring=_DEFAULT_RING,
+        background_fraction=background_fraction,
     )
     box = (0.0, float(W), 0.0, float(H))
     positions = np.array([[64.0, 64.0]])
@@ -2378,6 +2381,50 @@ class TestBackgroundNoiseVisibility:
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
         assert len(np.unique(background8)) > 1
+
+    def test_config_yaml_background_fraction_is_quarter(self):
+        """config.yaml's shipped default must actually be 0.25 -- guards
+        against the value silently drifting or being removed."""
+        synth = _load_synthetic_config()
+        assert synth["background_fraction"] == 0.25
+
+    def test_background_region_sits_near_quarter_peak_at_config_defaults(self, render_module):
+        """Integration check: rendering with the real shipped config
+        values produces a background region whose mean sits at
+        peak_intensity * background_fraction, not near 0."""
+        synth = _load_synthetic_config()
+        _, background = _render_background_region(
+            render_module,
+            readout_noise=0.0,
+            shot_noise=False,
+            background_fraction=synth["background_fraction"],
+            peak=synth["peak_intensity"],
+        )
+        expected = synth["peak_intensity"] * synth["background_fraction"]
+        assert abs(background.astype(np.float64).mean() - expected) < 1.0
+
+    def test_background_region_reads_visibly_gray_after_png_stretch(self, render_module):
+        """The test that most directly proves the original motivation:
+        replicating render.py's main() min/max stretch
+        ((img-lo)/(hi-lo)*255, exactly as main() does) at the real shipped
+        config defaults (including readout/shot noise) must place the
+        background region well above near-black, not just nonzero -- a
+        tiny offset that survives as e.g. 2/255 would technically pass
+        test_stretch_formula_on_background_yields_nonzero_distinct_values
+        above but still look black to the eye."""
+        synth = _load_synthetic_config()
+        frame, _ = _render_background_region(
+            render_module,
+            readout_noise=synth["readout_noise"],
+            shot_noise=True,
+            background_fraction=synth["background_fraction"],
+            peak=synth["peak_intensity"],
+        )
+        img_f = frame.astype(np.float32)
+        lo, hi = img_f.min(), img_f.max()
+        img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+        background8 = img8[:20, :20]
+        assert background8.astype(np.float64).mean() > 40.0
 
 
 class TestParticleRenderProfilesWiring:
