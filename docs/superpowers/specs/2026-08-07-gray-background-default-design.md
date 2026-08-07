@@ -13,7 +13,7 @@ Naively adding a small constant offset doesn't fix this on its own: `main()`'s P
 
 Checking the real reference video (`particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif`, frame 0) for scale: background median 1148 ADU against a max of 3832 — background sits at ~26% of the display range, which is why real frames read as visibly gray. But `config.yaml`'s `peak_intensity: 40000` is an arbitrary synthetic scale unrelated to real sensor ADU counts (real max is 3832, nowhere near 40000), so matching real ADU values directly would still stretch to near-black. The background level needs to be sized as a **fraction of `peak_intensity`**, not a fixed ADU number, to reliably render gray regardless of what `peak_intensity` is configured to.
 
-Scope: `render_strategy: procedural` only. `render_deeptrack.py` already has its own calibrated, spatially-varying background (`background.heterogeneity_scale` / `background.amplitude`, fitted against real data) and is untouched by this change. `render_randomized.py` is also untouched.
+Scope: `render_strategy: procedural` only. `render_deeptrack.py` already has its own calibrated, spatially-varying background (`background.heterogeneity_scale` / `background.amplitude`, fitted against real data) and is untouched by this change. `render_randomized.py` shares the same `render_frame` the procedural path uses, so it explicitly zeroes `background_fraction` before delegating to it, to stay behaviorally unaffected (see Scope below).
 
 ## Design
 

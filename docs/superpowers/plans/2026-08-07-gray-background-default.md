@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Scope is `render_strategy: procedural` only (`verification/render.py`) — `render_deeptrack.py` and `render_randomized.py` are untouched.
+- Scope is `render_strategy: procedural` only (`verification/render.py`) — `render_deeptrack.py` is untouched (it never calls the shared `render_frame`). `render_randomized.py` shares `render_frame` with the procedural path; Task 1's review found this would otherwise leak `background_fraction` into randomized output, so `render_randomized.py` was updated (in Task 1's fix round) to explicitly zero `background_fraction` before delegating, keeping its behavior unaffected. See `docs/superpowers/specs/2026-08-07-gray-background-default-design.md`'s Scope section.
 - `background_fraction` default (when the cfg key is absent entirely) is `0.25`, matching real reference data's background/peak ratio (source: `docs/superpowers/specs/2026-08-07-gray-background-default-design.md`).
 - `background_fraction: 0` must reproduce today's exact pre-change behavior (pure black canvas) — this is a config knob, not a breaking change.
 - `verification/tests/test_render.py`'s `_procedural_cfg()` test helper must keep defaulting to `background_fraction=0.0` so every pre-existing test using it is unaffected by this change unless a test explicitly opts in to a nonzero value.
