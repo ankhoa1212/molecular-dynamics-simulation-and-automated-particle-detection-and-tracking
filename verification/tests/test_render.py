@@ -922,6 +922,23 @@ class TestRandomizedStrategy:
         assert frame.dtype == np.uint16
         assert frame.shape == (32, 32)
 
+    def test_background_fraction_does_not_affect_randomized_strategy(self, rr_module):
+        """Task 1 regression: render_strategy: randomized must stay black
+        regardless of config.yaml's background_fraction (a procedural-only
+        knob). When config.yaml adds background_fraction: 0.25 in Task 2,
+        the randomized strategy must strip it before calling the shared
+        render_frame, so output stays byte-identical to today."""
+        cfg = _base_cfg()
+        cfg["background_fraction"] = 0.25
+        # Empty frame (no particles) renders pure background with no particles
+        frame = rr_module.render_frame_randomized(
+            np.zeros((0, 2)), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(0)
+        )
+        # Randomized strategy stays black (no gray background), though noise
+        # makes individual pixels nonzero. Min should be 0, indicating no
+        # baseline offset from the gray background.
+        assert frame.min() == 0
+
 
 # ---------------------------------------------------------------------------
 # U4 (procedural-renderer-ring-and-noise plan): frame-to-frame smoothing via

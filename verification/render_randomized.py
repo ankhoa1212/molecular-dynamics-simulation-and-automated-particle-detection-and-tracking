@@ -165,5 +165,9 @@ def render_frame_randomized(positions_lj, box, cfg, rng, state=None):
     frame_cfg["psf_sigma"] = float(sigma)
     frame_cfg["peak_intensity"] = float(peak)
     frame_cfg["readout_noise"] = float(noise)
+    # render_strategy: randomized stays black regardless of config.yaml's
+    # background_fraction (a procedural-only knob) -- see
+    # docs/superpowers/specs/2026-08-07-gray-background-default-design.md's Scope.
+    frame_cfg["background_fraction"] = 0.0
 
     return render_frame(positions_lj, box, frame_cfg, rng)
