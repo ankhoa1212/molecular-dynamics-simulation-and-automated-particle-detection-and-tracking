@@ -314,6 +314,7 @@ class TestLammpsInCliFlag:
                 "peak_intensity": 1000,
                 "shot_noise": False,
                 "readout_noise": 0.0,
+                "background_fraction": 0.0,
                 "output_dir": str(tmp_path / "frames"),
             }
         }
@@ -390,6 +391,7 @@ def _minimal_cfg(tmp_path, extra_synthetic=None):
             "peak_intensity": 1000,
             "shot_noise": False,
             "readout_noise": 0.0,
+            "background_fraction": 0.0,
             "output_dir": str(tmp_path / "frames"),
         }
     }
@@ -1594,7 +1596,9 @@ def _mean_intensity_in_annulus(img, cx, cy, r_inner, r_outer):
 _DEFAULT_RING = {"radius_factor": 2.2, "width_factor": 0.5, "depth": 0.4}
 
 
-def _procedural_cfg(H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0, ring=None):
+def _procedural_cfg(
+    H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0, ring=None, background_fraction=0.0
+):
     cfg = {
         "image_height": H,
         "image_width": W,
@@ -1602,6 +1606,7 @@ def _procedural_cfg(H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0
         "peak_intensity": peak,
         "shot_noise": shot_noise,
         "readout_noise": readout_noise,
+        "background_fraction": background_fraction,
     }
     if ring is not None:
         cfg["ring"] = ring
@@ -1696,6 +1701,59 @@ class TestDiskRimProfile:
             rim_offset_px=1.0,
         )
         assert profile.min() < 0
+
+
+class TestBackgroundFractionCanvas:
+    """Task 1: render_frame's canvas baseline, sized as a fraction of
+    peak_intensity so it reads as gray after render.py main()'s per-frame
+    min/max PNG stretch (see docs/superpowers/specs/2026-08-07-gray-
+    background-default-design.md)."""
+
+    def test_background_fraction_raises_empty_frame_baseline(self, render_module):
+        cfg = _procedural_cfg(32, 32, sigma=3.0, peak=1000, background_fraction=0.25)
+        frame = render_module.render_frame(
+            np.zeros((0, 2)), (0.0, 32.0, 0.0, 32.0), cfg, np.random.default_rng(0)
+        )
+        assert np.all(frame == 250)
+
+    def test_background_fraction_zero_is_legacy_black(self, render_module):
+        cfg = _procedural_cfg(32, 32, sigma=3.0, peak=1000, background_fraction=0.0)
+        frame = render_module.render_frame(
+            np.zeros((0, 2)), (0.0, 32.0, 0.0, 32.0), cfg, np.random.default_rng(0)
+        )
+        assert np.all(frame == 0)
+
+    def test_missing_background_fraction_key_defaults_to_quarter_peak(self, render_module):
+        """A cfg dict that predates this feature (no background_fraction
+        key at all, not even 0.0) must still get render_frame's own 0.25
+        fallback -- this is render_frame's default, independent of
+        config.yaml's documented value (covered separately in Task 2)."""
+        cfg = {
+            "image_height": 32,
+            "image_width": 32,
+            "psf_sigma": 3.0,
+            "peak_intensity": 1000,
+            "shot_noise": False,
+            "readout_noise": 0.0,
+        }
+        frame = render_module.render_frame(
+            np.zeros((0, 2)), (0.0, 32.0, 0.0, 32.0), cfg, np.random.default_rng(0)
+        )
+        assert np.all(frame == 250)
+
+    def test_ring_dip_clips_to_zero_against_nonzero_baseline(self, render_module):
+        """The existing img = np.clip(img, 0, None) guard (render.py:281)
+        must still floor the ring's negative dip at exactly 0, not a
+        negative value, now that the canvas starts at a nonzero baseline
+        instead of 0."""
+        cfg = _procedural_cfg(
+            64, 64, sigma=5.0, peak=1000, background_fraction=0.01, ring=_DEFAULT_RING
+        )
+        positions = np.array([[32.0, 32.0]])
+        frame = render_module.render_frame(
+            positions, (0.0, 64.0, 0.0, 64.0), cfg, np.random.default_rng(0)
+        )
+        assert frame.min() == 0
 
 
 class TestDiskRimExtent:

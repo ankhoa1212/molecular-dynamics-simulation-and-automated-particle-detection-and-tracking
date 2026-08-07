@@ -227,7 +227,8 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
     W = cfg["image_width"]
     peak = cfg["peak_intensity"]
     x_lo, x_hi, y_lo, y_hi = box
-    img = np.zeros((H, W), dtype=np.float64)
+    background_level = peak * cfg.get("background_fraction", 0.25)
+    img = np.full((H, W), background_level, dtype=np.float64)
 
     def _stamp(cx, cy, extent, intensity):
         x0, x1 = max(0, int(cx) - extent), min(W, int(cx) + extent + 1)
