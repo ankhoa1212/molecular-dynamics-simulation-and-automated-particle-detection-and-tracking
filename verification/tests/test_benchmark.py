@@ -1012,6 +1012,74 @@ class TestLinkDetectionsForVideo:
 # ---------------------------------------------------------------------------
 
 
+def _cluster_det_df(n_particles, n_frames, box_size, jitter, seed=1):
+    """A pandas DataFrame of (frame, x, y) detections for a cluster of
+    n_particles confined to a box_size x box_size region, jittered by up to
+    +/-jitter px per frame -- the shape _link_df_with_fallback consumes
+    directly (mirrors _run_tracking_metrics'/_link_detections_for_video's
+    own det_df construction)."""
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    base = rng.uniform(0, box_size, size=(n_particles, 2))
+    rows = []
+    for frame in range(n_frames):
+        j = rng.uniform(-jitter, jitter, size=(n_particles, 2))
+        for x, y in base + j:
+            rows.append({"frame": frame, "x": x, "y": y})
+    return pd.DataFrame(rows)
+
+
+class TestLinkDfWithFallback:
+    """_link_df_with_fallback retries tp.link_df at a shrinking
+    search_range on SubnetOversizeException instead of giving up on the
+    first (configured) attempt -- see its own docstring for why (real RF-
+    DETR/LodeSTAR detector output at this repo's default trajectory density
+    otherwise loses all trajectory data in --save-video, and MOTA/IDF1
+    entirely, on the very first oversized subnet)."""
+
+    def test_succeeds_at_configured_search_range_without_retry(self):
+        det_df = _cluster_det_df(n_particles=5, n_frames=3, box_size=200, jitter=1)
+
+        linked, used_range = benchmark._link_df_with_fallback(
+            det_df, cfg={"tracking": {}}, search_range=15, memory=3
+        )
+
+        assert linked is not None
+        assert used_range == 15
+        assert len(linked) == len(det_df)
+
+    def test_recovers_via_smaller_search_range_after_oversized_subnet(self):
+        # 60 particles in a tight 30x30px cluster: mutually within the
+        # configured search_range=15 of each other, exceeding trackpy's
+        # default max_subnet_size=30 -- see _dense_cluster_detections_and_gt
+        # below for the same construction used against the real pipeline
+        # functions.
+        det_df = _cluster_det_df(n_particles=60, n_frames=3, box_size=30, jitter=1)
+
+        linked, used_range = benchmark._link_df_with_fallback(
+            det_df, cfg={"tracking": {}}, search_range=15, memory=3
+        )
+
+        assert linked is not None
+        assert used_range < 15
+        assert len(linked) == len(det_df)
+
+    def test_returns_none_when_even_floor_search_range_is_oversized(self):
+        # 60 particles confined to a 0.5x0.5px box with 0.1px jitter: even
+        # at the 1.0px floor, every particle remains mutually within range
+        # of every other -- the subnet never shrinks below trackpy's
+        # max_subnet_size regardless of how far search_range is reduced.
+        det_df = _cluster_det_df(n_particles=60, n_frames=3, box_size=0.5, jitter=0.1)
+
+        linked, used_range = benchmark._link_df_with_fallback(
+            det_df, cfg={"tracking": {}}, search_range=15, memory=3
+        )
+
+        assert linked is None
+        assert used_range is None
+
+
 def _dense_cluster_detections_and_gt(tmp_path, n_particles=60, n_frames=3, seed=0):
     """A tight cluster of particles all mutually within a typical
     search_range of each other across consecutive frames -- exactly what
@@ -1075,6 +1143,89 @@ class TestLinkDfKwargs:
         assert benchmark._cfg_get(real_cfg, "tracking", "adaptive_stop") is None
 
 
+def _scattered_detections_and_gt(tmp_path, n_particles_per_frame, n_frames, spacing, seed=2):
+    """detections/gt where each frame's particles are placed on a fresh,
+    independent widely-spaced grid offset -- no particle's position in one
+    frame falls within any plausible search_range of its own position in
+    the next frame, so trackpy links nothing across frames and every
+    per-frame detection becomes its own distinct (1-frame-long) track. Used
+    to exercise the track-id-cardinality guard without needing a dense/slow
+    cluster."""
+    rng = np.random.default_rng(seed)
+    gt_rows = []
+    detections = {}
+    for frame in range(n_frames):
+        # A large per-frame offset (spacing * n_particles_per_frame) keeps
+        # every frame's grid physically disjoint from every other frame's.
+        centers = np.stack(
+            [
+                frame * spacing * n_particles_per_frame
+                + np.arange(n_particles_per_frame) * spacing,
+                rng.uniform(0, spacing, size=n_particles_per_frame),
+            ],
+            axis=1,
+        )
+        detections[frame] = centers
+        gt_rows.extend(
+            {"frame": frame, "particle_id": frame * n_particles_per_frame + pid, "x": x, "y": y}
+            for pid, (x, y) in enumerate(centers)
+        )
+    gt_path = tmp_path / "gt.csv"
+    _write_gt_tracks(gt_path, gt_rows)
+    return detections, gt_path
+
+
+class TestTrackingMetricsDensityGuard:
+    """_run_tracking_metrics must skip building the motmetrics accumulator
+    -- not just guard the later mm.metrics.create().compute() call -- above
+    a safe detection density or distinct-track-id count. Confirmed directly
+    (2026-08-08): the accumulator-building loop's own acc.update() calls can
+    grow this process's own memory into the double-digit-GB range and get
+    OOM-killed on real (not synthetic-test) detector output, independently
+    of _compute_motmetrics_with_timeout's own subprocess+timeout guard --
+    that guard runs strictly after this loop, so it never gets a chance to
+    protect against this specific cost."""
+
+    def test_skips_when_average_density_exceeds_threshold(self, tmp_path):
+        # 450 particles/frame, widely spaced (2px apart, no clustering) --
+        # links trivially fast, but average density (450/frame) exceeds the
+        # 400/frame safety threshold on its own.
+        detections, gt_path = _scattered_detections_and_gt(
+            tmp_path, n_particles_per_frame=450, n_frames=2, spacing=2.0
+        )
+        cfg = _make_cfg(search_range=1.0)
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+
+        assert result is None
+
+    def test_skips_when_track_id_cardinality_exceeds_threshold(self, tmp_path):
+        # 300 particles/frame across 4 frames (1200 total detections, well
+        # under the 400/frame density threshold on its own) but no particle
+        # links across frames (see _scattered_detections_and_gt), so every
+        # detection becomes its own track -- 1200 distinct track ids,
+        # exceeding the 1000 threshold on cardinality alone.
+        detections, gt_path = _scattered_detections_and_gt(
+            tmp_path, n_particles_per_frame=300, n_frames=4, spacing=2.0
+        )
+        cfg = _make_cfg(search_range=1.0)
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+
+        assert result is None
+
+    def test_computes_normally_below_both_thresholds(self, tmp_path):
+        detections, gt_path = _scattered_detections_and_gt(
+            tmp_path, n_particles_per_frame=5, n_frames=3, spacing=2.0
+        )
+        cfg = _make_cfg(search_range=1.0)
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+
+        assert result is not None
+        assert "mota" in result and "idf1" in result
+
+
 class TestSubnetOversizeGuard:
     """_run_tracking_metrics/_link_detections_for_video must catch
     trackpy.linking.utils.SubnetOversizeException directly and degrade
@@ -1084,17 +1235,28 @@ class TestSubnetOversizeGuard:
     incident: RF-DETR's tiling fix raised recall enough to recover a
     genuinely dense physical cluster in verification_output/v2's
     continuous_force_1500_5.0 trajectory, and the resulting oversized
-    subnet must not crash or hang the pipeline."""
+    subnet must not crash or hang the pipeline.
 
-    def test_run_tracking_metrics_returns_none_instead_of_raising(self, tmp_path):
+    Both functions call _link_df_with_fallback, which retries at a smaller
+    search_range instead of giving up on the first SubnetOversizeException
+    (see TestLinkDfWithFallback) -- confirmed directly (2026-08-08) that
+    this recovers real trajectories for RF-DETR's video where the pipeline
+    used to fall back to boxes-only. So a merely-oversized cluster like this
+    one now succeeds at a smaller search_range rather than failing outright;
+    these tests assert exactly that (not a crash, and not silently losing
+    the result). TestLinkDfWithFallback separately covers the true failure
+    path (even the smallest fallback search_range still oversized)."""
+
+    def test_run_tracking_metrics_recovers_via_smaller_search_range(self, tmp_path):
         detections, gt_path = _dense_cluster_detections_and_gt(tmp_path)
         cfg = _make_cfg(search_range=15)  # adaptive_stop absent -- default/unsafe-off state
 
         result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
 
-        assert result is None
+        assert result is not None
+        assert "mota" in result and "idf1" in result
 
-    def test_link_detections_for_video_returns_empty_dict_instead_of_raising(self, tmp_path):
+    def test_link_detections_for_video_recovers_via_smaller_search_range(self, tmp_path):
         detections, _ = _dense_cluster_detections_and_gt(tmp_path)
         boxes_by_frame = {
             frame: np.concatenate([centers - 5, centers + 5], axis=1)
@@ -1106,12 +1268,26 @@ class TestSubnetOversizeGuard:
             boxes_by_frame, cfg, search_range=15, memory=3
         )
 
-        assert result == {}
+        assert set(result.keys()) == set(boxes_by_frame.keys())
+        boxes, track_ids = result[0]
+        assert len(boxes) == len(track_ids) == len(boxes_by_frame[0])
 
 
 # ---------------------------------------------------------------------------
 # _compute_motmetrics_with_timeout — motmetrics IDF1 scaling guard
 # ---------------------------------------------------------------------------
+
+
+def _slow_motmetrics_worker(acc, metrics, conn):
+    """Module-level (not a test-method closure) so it's picklable by
+    _compute_motmetrics_with_timeout's "spawn" context -- spawn re-imports
+    the target function by its module+qualname in the child, which a local
+    closure can't satisfy (fork could, since it inherits the parent's
+    already-loaded function via COW memory; spawn can't)."""
+    import time
+
+    time.sleep(5)
+    conn.send({})
 
 
 class TestComputeMotmetricsWithTimeout:
@@ -1138,13 +1314,7 @@ class TestComputeMotmetricsWithTimeout:
         assert "idf1" in result
 
     def test_returns_none_when_computation_exceeds_timeout(self, monkeypatch):
-        def _slow_worker(acc, metrics, conn):
-            import time
-
-            time.sleep(5)
-            conn.send({})
-
-        monkeypatch.setattr(benchmark, "_motmetrics_compute_worker", _slow_worker)
+        monkeypatch.setattr(benchmark, "_motmetrics_compute_worker", _slow_motmetrics_worker)
         import motmetrics as mm
 
         acc = mm.MOTAccumulator(auto_id=True)

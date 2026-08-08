@@ -147,6 +147,8 @@ Outputs (named per `--model-type` so a run of one model doesn't overwrite the ot
 
 **Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
 
+**Note:** MOTA/IDF1 are skipped (with a printed warning, not a crash) above a safe detection density or distinct-track-id count — building motmetrics' accumulator at this repo's default trajectory density (~1446 particles/frame) can grow memory into the double-digit-GB range even when the linking step itself succeeds. This is independent of `--save-video`'s own trajectory overlay, which uses a separate, always-attempted linking call and is unaffected by this guard (see `_run_tracking_metrics` in `benchmark.py`, and the multiprocessing/CUDA notes in `AGENTS.md`).
+
 ### Model Selection
 
 `--model-type` (or `benchmark.model_type` in `config.yaml`; the CLI flag wins when both are set) picks the detector:

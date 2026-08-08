@@ -305,7 +305,21 @@ benchmark:
     checkpoint: ../data-setup/models/lodestar_model_15/model.pt
     threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
     alpha: 0.9                # weight score exponent
-    nms_distance: 30          # pixels; matches particle-tracking/{lodestar,multi_lodestar,basic_lodestar}_config.yaml —
+    nms_distance: 5           # pixels. Was 30 (matching particle-tracking/{lodestar,multi_lodestar,
+                              # basic_lodestar}_config.yaml, tuned for a much sparser real dataset) --
+                              # at this dataset's ~10.9px median nearest-neighbor spacing (psf_sigma=5,
+                              # image_width=512), 30px suppressed almost every true detection down to
+                              # one per local cluster, which was the dominant cause of this model's
+                              # catastrophic recall (confirmed directly 2026-08-08: raw pre-NMS
+                              # detection count was essentially unaffected by nms_distance, but final
+                              # recall collapsed from ~0.51 at nms_distance=5 to ~0.12 at 30 on the
+                              # same raw detections -- see accuracy_metrics_lodestar.csv sweep).
+                              # 5px (~1x psf_sigma) stays well under the measured spacing so it still
+                              # suppresses genuine duplicate detections of the same particle without
+                              # merging distinct neighbors. F1 improves 0.077 -> 0.16 on the full
+                              # 151-frame default trajectory at this value alone (alpha/threshold left
+                              # unchanged -- see AGENTS.md for why more aggressive alpha/threshold
+                              # values were tried and reverted).
                               # null (disabled) previously let unsuppressed detections balloon to 10x+ ground truth
     # box_size intentionally NOT set here -- leaving it unset lets benchmark.py derive it
     # from synthetic.psf_sigma/synthetic.psf.sigma_px (see docs/plans/2026-08-07-001-fix-
@@ -339,10 +353,17 @@ tracking:
   # recall is high enough to actually recover a dense physical cluster (this
   # dataset's continuous_force trajectory packs ~1400 of ~1446 particles into
   # one mutually-connected subnet at its densest timesteps), not a
-  # synthetic-data edge case. benchmark.py catches this exception directly
-  # and degrades gracefully (skips MOTA/IDF1 for _run_tracking_metrics; draws
-  # boxes without trajectory traces for --save-video) -- that catch is the
-  # real safety net, always active regardless of this setting.
+  # synthetic-data edge case. benchmark.py's _link_df_with_fallback retries
+  # at a shrinking search_range (down to a 1.0px floor) on this exception
+  # instead of giving up outright -- confirmed directly (2026-08-08) this
+  # recovers real --save-video trajectories for RF-DETR/LodeSTAR where the
+  # pipeline used to fall back to boxes-only on the very first oversized
+  # subnet. If even the floor search_range is still oversized (or the whole
+  # retry doesn't finish within its own timeout), it degrades gracefully:
+  # skips MOTA/IDF1 for _run_tracking_metrics, draws boxes without
+  # trajectory traces for --save-video. _run_tracking_metrics also has a
+  # separate density/track-id-count guard that skips MOTA/IDF1 outright
+  # above a safe threshold, independent of this setting -- see AGENTS.md.
   #
   # adaptive_stop (off by default: null) is a SEPARATE, opt-in mechanism that
   # retries an oversized subnet with a shrunken search_range down to this
