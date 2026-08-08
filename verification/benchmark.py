@@ -317,6 +317,257 @@ def _load_frame_rgb(png_path):
 # ---------------------------------------------------------------------------
 
 
+def _link_df_kwargs(cfg, search_range, memory):
+    """tp.link_df kwargs shared by _run_tracking_metrics and
+    _link_detections_for_video. adaptive_stop/adaptive_step let trackpy
+    retry an oversized subnet with a shrunken search_range instead of
+    raising SubnetOversizeException -- a real failure mode once a detector's
+    recall is high enough to recover a genuinely dense physical cluster
+    (see tracking.adaptive_stop's config.yaml comment), not a synthetic-only
+    edge case. Mirrors particle-tracking/track.py's own adaptive_stop/
+    adaptive_step threading."""
+    kwargs = {"search_range": search_range, "memory": memory}
+    adaptive_stop = _cfg_get(cfg, "tracking", "adaptive_stop", default=None)
+    if adaptive_stop is not None:
+        kwargs["adaptive_stop"] = adaptive_stop
+        kwargs["adaptive_step"] = _cfg_get(cfg, "tracking", "adaptive_step", default=0.95)
+    return kwargs
+
+
+def _link_df_with_fallback_impl(det_df, cfg, search_range, memory, conn):
+    """Retry loop body for _link_df_with_fallback -- runs inside the
+    subprocess that function spawns (see its docstring for why a
+    subprocess+timeout wraps this rather than calling it directly).
+
+    Sends (linked DataFrame, search_range actually used) down conn on
+    success, or (None, None) if even the floor search_range still raises
+    SubnetOversizeException. Each step halves search_range from the
+    configured value down to a floor of 1.0px (matched to this dataset's
+    own measured frame-to-frame displacement -- median ~1.0px, p99
+    ~3.0px -- so even the floor still captures most genuine motion; it
+    undercounts links only in the very densest, most ambiguous pockets,
+    which is the intended tradeoff: a fragmented-but-present trajectory
+    beats none at all)."""
+    import resource
+
+    import trackpy as tp
+    import trackpy.linking.linking as tp_linking
+
+    # Hard memory ceiling on this child, independent of the wall-clock
+    # timeout in _link_df_with_fallback. Confirmed directly (2026-08-08):
+    # trackpy's recursive subnet solver can grow memory near-linearly at
+    # multiple GB per ~10s on some real (noisy) detector output -- by the
+    # time the outer 90s timeout fires and terminate()s the child, RSS had
+    # already passed 12GB and was climbing, i.e. the wall-clock timeout
+    # alone reacts too late to prevent serious system memory pressure.
+    # RLIMIT_AS makes the next over-limit allocation raise MemoryError
+    # immediately (caught below), failing this attempt cleanly well before
+    # the child can threaten the rest of the system.
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
+
+    tp.quiet()
+    # Force trackpy's pure-Python 'recursive' subnet solver instead of its
+    # default numba-JIT 'hybrid' one. This subprocess is forked from a
+    # parent that has already loaded torch/CUDA/numba to run the detector
+    # model -- confirmed directly (2026-08-08) that numba's JIT'd solver
+    # becomes pathologically slow (not just slower -- effectively hung,
+    # burning the full 90s timeout) specifically inside that forked child,
+    # while the identical call in a fresh (non-forked) process or with
+    # NUMBA_AVAILABLE forced off completes in ~1-2s. This matches a known
+    # class of fork-safety hazard: LLVM/numba's JIT keeps internal
+    # thread/lock state that a fork() (which duplicates only the calling
+    # thread) can leave inconsistent in the child. Only affects this
+    # subprocess's own trackpy.linking module state, not the parent
+    # process's.
+    tp_linking.NUMBA_AVAILABLE = False
+    # Also lower trackpy's default MAX_SUB_NET_SIZE (30) so a subnet
+    # that's merely oversized (not astronomically so) is rejected FAST
+    # instead of grinding through slow recursive branch-and-bound first --
+    # confirmed directly: a 32-point subnet at the default cap of 30 took
+    # 45.7s to raise SubnetOversizeException (recursive assignment search
+    # is worst-case exponential in subnet size, and "just over the cap" is
+    # still deep enough to be slow); at cap=20 the same case raised in
+    # <0.1s. That per-attempt cost is what let the outer retry loop below
+    # blow through its whole time budget on 1-2 large search_range
+    # attempts without ever reaching a small, fast, successful one.
+    tp_linking.Linker.MAX_SUB_NET_SIZE = 20
+    attempt_range = float(search_range)
+    floor = 1.0
+    first = True
+    while True:
+        try:
+            linked = tp.link_df(det_df, **_link_df_kwargs(cfg, attempt_range, memory))
+            if not first:
+                print(
+                    f"Note: trackpy linking succeeded after reducing search_range to "
+                    f"{attempt_range:g}px (configured: {search_range:g}px) -- some "
+                    "trajectories in densely packed regions may be more fragmented "
+                    "than at the configured search_range."
+                )
+            conn.send((linked, attempt_range))
+            return
+        except (tp.linking.utils.SubnetOversizeException, MemoryError):
+            if attempt_range <= floor:
+                conn.send((None, None))
+                return
+            first = False
+            attempt_range = max(floor, attempt_range / 2.0)
+
+
+def _link_df_with_fallback(det_df, cfg, search_range, memory, timeout_s=90):
+    """Call tp.link_df, retrying with a smaller search_range on
+    SubnetOversizeException instead of giving up outright -- in a
+    subprocess with a hard wall-clock timeout, mirroring
+    _compute_motmetrics_with_timeout's pattern for the same reason: this
+    dataset's near-cap-sized subnets (just under trackpy's default
+    MAX_SUB_NET_SIZE=30) can drive the recursive solver's branch-and-bound
+    into exponential blowup without ever raising SubnetOversizeException to
+    trigger our own outer retry -- confirmed directly (2026-08-08) against
+    real (not ground-truth) LodeSTAR detections at tuned alpha/threshold:
+    RAM climbed to the full 15GB+swap and stayed pegged there rather than
+    completing or raising. A signal-based timeout can't reliably interrupt
+    this for the same reason motmetrics' can't (the cost is inside
+    trackpy's recursive/numba subnet solver, which doesn't check for
+    pending Python signals until a subnet resolves), so this uses the same
+    OS-level process termination.
+
+    This is an OUTER retry across independent tp.link_df calls -- not the
+    internal per-subnet adaptive_stop shrinking trackpy also offers. That
+    distinction matters: adaptive_stop retries shrinking search_range
+    *within* a single oversized subnet, re-attempting neighbor-graph
+    formation over the full frame each step, which was separately confirmed
+    to exhaust this machine's RAM+swap on this dataset's ~1400-point
+    subnets (see tracking.adaptive_stop's config.yaml comment). A full
+    outer re-run at a smaller search_range is comparatively cheap when it
+    doesn't hit the near-cap-subnet pathology above -- confirmed directly
+    against this repo's default trajectory (ground-truth positions, median
+    nearest-neighbor spacing ~10.9px at psf_sigma=5): every fallback step
+    completed in a few seconds at the full 151-frame/~1446-particles-per-
+    frame density. Real detector output isn't always this well-behaved
+    (noisier, denser at times) hence the timeout as a backstop rather than
+    relying on the outer retry's typical-case speed alone.
+
+    Returns:
+        (linked DataFrame, search_range actually used) on success.
+        (None, None) if even the floor search_range still raises, or if
+        the whole retry loop didn't finish within timeout_s.
+    """
+    import multiprocessing as mp
+
+    # "spawn", not "fork": by the time this runs, the parent process has
+    # already loaded and run a CUDA-backed detector model (RF-DETR or
+    # LodeSTAR), so it holds a live CUDA context. Confirmed directly
+    # (2026-08-08): forking a subprocess after that leaves the *child* with
+    # a corrupted-but-not-crashing CUDA/driver state that made trackpy's
+    # linking (which itself never touches CUDA) hang for the full 90s
+    # timeout on data that linked in ~1-2s in a fresh, non-forked process --
+    # a known fork-after-CUDA hazard (NVIDIA's own docs warn a forked
+    # child's CUDA context is undefined), not specific to trackpy or numba.
+    # "spawn" starts a genuinely fresh interpreter with no inherited CUDA
+    # state, at the cost of re-pickling det_df/cfg -- cheap here (at most a
+    # few hundred thousand rows of two floats).
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe()
+    proc = ctx.Process(
+        target=_link_df_with_fallback_impl,
+        args=(det_df, cfg, search_range, memory, child_conn),
+    )
+    proc.start()
+    # poll(timeout_s) here, NOT proc.join(timeout_s) -- a linked DataFrame
+    # can be large enough (tens of thousands of rows) to exceed the OS
+    # pipe's buffer (~64KB on Linux). join() only waits for the child to
+    # exit; it never reads the pipe, so a child blocked mid-write on a full
+    # buffer and a parent blocked in join() deadlock each other for the
+    # entire timeout -- confirmed directly (2026-08-08): the child's debug
+    # trace showed link_df returning almost immediately, but the parent
+    # still hit the full 90s timeout because nothing ever drained the pipe.
+    # poll() unblocks the moment the child starts writing, which lets the
+    # child's send() complete too.
+    if parent_conn.poll(timeout_s):
+        try:
+            result = parent_conn.recv()
+        except EOFError:
+            result = None, None
+        proc.join()
+        return result
+    proc.terminate()
+    proc.join()
+    print(
+        f"Warning: trackpy linking did not finish within {timeout_s}s (even after "
+        "shrinking search_range) -- terminating to avoid exhausting system memory. "
+        "Treating as linking failure."
+    )
+    return None, None
+
+
+def _motmetrics_compute_worker(acc, metrics, conn):
+    """multiprocessing target for _compute_motmetrics_with_timeout. Must be a
+    module-level function (not a closure/lambda) -- multiprocessing pickles
+    the target callable to hand it to the child process."""
+    import resource
+
+    import motmetrics as mm
+
+    # See _link_df_with_fallback_impl's identical guard for the full
+    # rationale (near-cap combinatorial solvers can grow memory far faster
+    # than a wall-clock timeout alone can react to). scipy's
+    # linear_sum_assignment here has the same failure shape.
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
+
+    try:
+        summary = mm.metrics.create().compute(acc, metrics=metrics, name="tracking")
+    except MemoryError:
+        conn.send(None)
+        return
+    conn.send(summary.iloc[0].to_dict())
+
+
+def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=90):
+    """Run motmetrics' mh.compute() in a subprocess with a hard wall-clock
+    timeout, terminating it if exceeded.
+
+    IDF1's global identity-assignment can scale very poorly with the number
+    of distinct GT/predicted track IDs -- confirmed directly (2026-08-08):
+    ~1446 GT particles against ~1700 distinct trackpy track IDs (fragmented
+    by this dataset's density) exhausted this machine's RAM+swap and had to
+    be killed manually. A signal-based timeout can't reliably interrupt this
+    -- the actual cost is inside a blocking C-extension call
+    (scipy.optimize.linear_sum_assignment) that doesn't check for pending
+    Python signals until it returns -- so this uses OS-level process
+    termination instead, which works regardless of what the call is doing.
+
+    Uses "spawn", not "fork", and polls the connection before joining --
+    both for the same reasons as _link_df_with_fallback (fork-after-CUDA
+    hazard; join-before-poll pipe deadlock on a payload big enough to fill
+    the OS pipe buffer). Confirmed directly (2026-08-08) that this
+    function's original fork+join-first form was reached and hung/ballooned
+    memory once _link_df_with_fallback's own fix let trackpy linking
+    succeed on real (dense, GPU-computed) detector output where it used to
+    fail fast -- this dormant bug was previously masked by that earlier
+    failure, not actually fixed by it.
+
+    Returns:
+        dict of the single-row summary (column -> value), or None if the
+        computation didn't finish within timeout_s.
+    """
+    import multiprocessing as mp
+
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe()
+    proc = ctx.Process(target=_motmetrics_compute_worker, args=(acc, metrics, child_conn))
+    proc.start()
+    if parent_conn.poll(timeout_s):
+        try:
+            result = parent_conn.recv()
+        except EOFError:
+            result = None
+        proc.join()
+        return result
+    proc.terminate()
+    proc.join()
+    return None
+
+
 def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
     """Run trackpy linking + motmetrics evaluation.
 
@@ -334,13 +585,15 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 
     try:
         import motmetrics as mm
-        import trackpy as tp
-    except ImportError as e:
-        missing = "motmetrics" if "motmetrics" in str(e) else "trackpy"
+    except ImportError:
         print(
-            f"Warning: {missing} not installed — skipping tracking metrics. "
-            f"Run: uv add {missing}"
+            "Warning: motmetrics not installed — skipping tracking metrics. Run: uv add motmetrics"
         )
+        return None
+    import importlib.util
+
+    if importlib.util.find_spec("trackpy") is None:
+        print("Warning: trackpy not installed — skipping tracking metrics. Run: uv add trackpy")
         return None
 
     gt_path = Path(gt_tracks_path)
@@ -375,9 +628,57 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
         return None
 
     det_df = pd.DataFrame(rows)
-    tp.quiet()
-    linked = tp.link_df(det_df, search_range=search_range, memory=memory)
+    linked, _used_range = _link_df_with_fallback(det_df, cfg, search_range, memory)
+    if linked is None:
+        print(
+            "Warning: trackpy linking failed even after shrinking search_range down to "
+            "the 1.0px floor -- detections are too densely packed to disambiguate "
+            "frame-to-frame at any usable search_range. Skipping tracking metrics "
+            "(MOTA/IDF1 need a complete linked trajectory set)."
+        )
+        return None
     linked = linked.rename(columns={"particle": "track_id"})
+
+    # Skip the accumulator-building loop entirely above a safe detection
+    # density OR a safe distinct-track-id count, rather than only guarding
+    # the later motmetrics compute step. Confirmed directly (2026-08-08):
+    # this loop's own acc.update() calls -- not just
+    # mm.metrics.create().compute() -- can grow this PARENT process's
+    # memory into the double-digit GB range and get OOM-killed. That growth
+    # happens in-process, not inside _compute_motmetrics_with_timeout's
+    # subprocess, so no timeout or rlimit protects it -- these two
+    # pre-checks are the only guard. This dormant risk was previously
+    # masked because trackpy linking used to fail first at high density
+    # (see _link_df_with_fallback); fixing that exposed it.
+    #
+    # Both checks are needed -- they catch different failure shapes:
+    # - avg_det_per_frame catches high raw density (RF-DETR: ~1500-1900/
+    #   frame): 400/frame leaves margin above the safe ~200/frame (tuned
+    #   LodeSTAR) and below the dangerous ~684+/frame (LodeSTAR at more
+    #   aggressive tuning).
+    # - n_distinct_tracks catches trackpy's own classical linker, which
+    #   stayed under 400/frame (~253/frame average -- precision 1.0, recall
+    #   0.18 against 1446 GT particles) yet still triggered an OOM,
+    #   confirmed directly: at this density the linker fragments into
+    #   thousands of short-lived track IDs (matching
+    #   _compute_motmetrics_with_timeout's own docstring: "~1446 GT
+    #   particles against ~1700 distinct trackpy track IDs ... exhausted
+    #   this machine's RAM+swap", previously believed contained by that
+    #   function's own timeout -- it isn't, because this loop runs first).
+    #   1000 leaves margin below that ~1700 reference point --
+    #   deliberately LOWER, since 1700 already OOM'd once.
+    avg_det_per_frame = len(det_df) / max(1, det_df["frame"].nunique())
+    n_distinct_tracks = linked["track_id"].nunique()
+    if avg_det_per_frame > 400 or n_distinct_tracks > 1000:
+        print(
+            f"Warning: detection density ({avg_det_per_frame:.0f}/frame) or fragmented "
+            f"track count ({n_distinct_tracks} distinct track IDs) is too high to safely "
+            "build the MOTA/IDF1 accumulator in-process -- confirmed directly to risk "
+            "double-digit-GB memory growth and an OOM kill at this scale. Skipping "
+            "tracking metrics (the --save-video trajectory overlay is unaffected -- it "
+            "uses a separate, subprocess-isolated linking call)."
+        )
+        return None
 
     # Build motmetrics accumulator frame-by-frame
     acc = mm.MOTAccumulator(auto_id=True)
@@ -408,8 +709,7 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 
         acc.update(gt_ids, pred_ids, dist_matrix)
 
-    mh = mm.metrics.create()
-    summary = mh.compute(
+    summary_dict = _compute_motmetrics_with_timeout(
         acc,
         metrics=[
             "mota",
@@ -419,21 +719,152 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
             "num_misses",
             "num_false_positives",
         ],
-        name="tracking",
     )
+    if summary_dict is None:
+        print(
+            "Warning: MOTA/IDF1 computation did not finish in time -- motmetrics' IDF1 "
+            "global identity-assignment can scale very poorly with the number of distinct "
+            "GT/predicted track IDs (this dataset's density can produce thousands of "
+            "fragmented trackpy tracks). Skipping tracking metrics."
+        )
+        return None
 
     result = {
-        "mota": float(summary["mota"].iloc[0]),
-        "idf1": float(summary["idf1"].iloc[0]),
-        "num_fragmentations": int(summary["num_fragmentations"].iloc[0]),
-        "num_switches": int(summary["num_switches"].iloc[0]),
-        "num_misses": int(summary["num_misses"].iloc[0]),
-        "num_false_positives": int(summary["num_false_positives"].iloc[0]),
+        "mota": float(summary_dict["mota"]),
+        "idf1": float(summary_dict["idf1"]),
+        "num_fragmentations": int(summary_dict["num_fragmentations"]),
+        "num_switches": int(summary_dict["num_switches"]),
+        "num_misses": int(summary_dict["num_misses"]),
+        "num_false_positives": int(summary_dict["num_false_positives"]),
         "matching_threshold_radii": threshold_radii,
         "psf_sigma_px": psf_sigma_px,
         "match_threshold_px": match_threshold,
     }
     return result
+
+
+def _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory):
+    """Link detections across frames via trackpy, for --save-video only.
+
+    Unlike _run_tracking_metrics (which only needs (x, y) centers to compare
+    against ground truth), this needs to hand each linked track_id back its
+    own box for annotation -- so it threads an explicit local_idx column
+    through tp.link_df instead of trusting row order to survive linking.
+
+    Independent of ground_truth_tracks.csv: linking only needs the
+    accumulated detections themselves, not a comparison to ground truth, so
+    --save-video works whether or not --ground-truth-tracks was passed.
+
+    Returns:
+        dict frame_idx -> (boxes ordered array (M, 4), track_ids array (M,)),
+        only for frames with at least one detection. Empty dict if there are
+        no detections at all across every frame, OR if trackpy's linker still
+        raises SubnetOversizeException even at _link_df_with_fallback's
+        smallest fallback search_range (some frame-to-frame window is too
+        densely packed to disambiguate at any usable search_range) --
+        callers fall back to drawing boxes without trajectory traces in that
+        case rather than skipping the whole video, since the per-frame
+        detections are still valid and worth seeing even when cross-frame
+        identity can't be established.
+    """
+    import pandas as pd
+
+    rows = []
+    for frame_idx, boxes in sorted(all_boxes_by_frame.items()):
+        centers = (boxes[:, :2] + boxes[:, 2:]) / 2 if len(boxes) else np.zeros((0, 2))
+        for local_idx, (cx, cy) in enumerate(centers):
+            rows.append({"frame": frame_idx, "x": cx, "y": cy, "local_idx": local_idx})
+
+    if not rows:
+        return {}
+
+    det_df = pd.DataFrame(rows)
+    linked, _used_range = _link_df_with_fallback(det_df, cfg, search_range, memory)
+    if linked is None:
+        print(
+            "Warning: trackpy linking failed even after shrinking search_range down to "
+            "the 1.0px floor -- detections are too densely packed to disambiguate "
+            "frame-to-frame at any usable search_range. --save-video will draw boxes "
+            "without trajectory traces."
+        )
+        return {}
+
+    result = {}
+    for frame_idx, group in linked.groupby("frame"):
+        order = group.sort_values("local_idx")
+        local_indices = order["local_idx"].to_numpy(dtype=int)
+        result[int(frame_idx)] = (
+            all_boxes_by_frame[int(frame_idx)][local_indices],
+            order["particle"].to_numpy(dtype=int),
+        )
+    return result
+
+
+def _write_tracking_video(
+    tiff_files,
+    all_boxes_by_frame,
+    model_type,
+    output_dir,
+    cfg,
+    search_range,
+    memory,
+    trace_length,
+    fps,
+):
+    """Write tracking_visualization_{model_type}.mp4: detection boxes and
+    trajectory traces (via supervision's BoxAnnotator/TraceAnnotator, the
+    same library particle-tracking/track.py's own video output uses) overlaid
+    on every synthetic frame -- a visually-verifiable artifact proving each
+    detector is actually producing sane per-frame detections and tracks, not
+    just summary numbers in a CSV."""
+    import cv2
+    import supervision as sv
+
+    if not any(len(boxes) > 0 for boxes in all_boxes_by_frame.values()):
+        print("Warning: no detections to draw -- skipping --save-video.")
+        return
+
+    # linked is {} whenever linking wasn't attempted (no detections) or failed
+    # (SubnetOversizeException) -- _write_tracking_video still draws
+    # box-only frames (no trace/track_id) from all_boxes_by_frame in that case.
+    linked = _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory)
+
+    box_annotator = sv.BoxAnnotator()
+    trace_annotator = sv.TraceAnnotator(trace_length=trace_length)
+
+    video_path = output_dir / f"tracking_visualization_{model_type}.mp4"
+    writer = None
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    for png_path in tiff_files:
+        frame_idx = int(png_path.stem.replace("frame_", ""))
+        frame_rgb = _load_frame_rgb(png_path)
+        if writer is None:
+            h, w = frame_rgb.shape[:2]
+            writer = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
+
+        boxes_this_frame = all_boxes_by_frame.get(frame_idx, np.zeros((0, 4)))
+        if frame_idx in linked:
+            boxes, track_ids = linked[frame_idx]
+            detections = sv.Detections(
+                xyxy=boxes.astype(np.float32),
+                tracker_id=track_ids,
+                class_id=np.zeros(len(boxes), dtype=int),
+            )
+            annotated = trace_annotator.annotate(scene=frame_rgb.copy(), detections=detections)
+            annotated = box_annotator.annotate(scene=annotated, detections=detections)
+        elif len(boxes_this_frame) > 0:
+            detections = sv.Detections(
+                xyxy=boxes_this_frame.astype(np.float32),
+                class_id=np.zeros(len(boxes_this_frame), dtype=int),
+            )
+            annotated = box_annotator.annotate(scene=frame_rgb.copy(), detections=detections)
+        else:
+            annotated = frame_rgb
+
+        writer.write(cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR))
+
+    writer.release()
+    print(f"Video               → {video_path}")
 
 
 def main():
@@ -460,6 +891,23 @@ def main():
         "benchmark.model_type from --config)",
     )
     parser.add_argument("--device", default=None, help="Inference device (e.g. 0 or cpu)")
+    parser.add_argument(
+        "--save-video",
+        action="store_true",
+        help="Write tracking_visualization_{model_type}.mp4 with detection boxes and "
+        "trajectory traces overlaid, for visual verification of detector+tracker behavior. "
+        "Uses tracking.search_range/memory from --config to link detections across frames "
+        "(independent of --ground-truth-tracks, which is only needed for MOTA/IDF1).",
+    )
+    parser.add_argument(
+        "--video-fps", type=float, default=10.0, help="Frame rate for --save-video output"
+    )
+    parser.add_argument(
+        "--trace-length",
+        type=int,
+        default=30,
+        help="Frames of trajectory history drawn in --save-video output",
+    )
     args = parser.parse_args()
 
     # Loaded once as the full top-level dict (not just the benchmark: subtree) so the
@@ -576,6 +1024,9 @@ def main():
     all_tp = all_fp = all_fn = 0
     all_dists = []
     all_detections_by_frame = {}  # frame_idx → (N, 2) array of (x, y) centroids
+    all_boxes_by_frame = (
+        {}
+    )  # frame_idx → (N, 4) array of xyxy boxes, only populated for --save-video
 
     for png_path in tiff_files:
         frame_idx = int(png_path.stem.replace("frame_", ""))
@@ -621,6 +1072,10 @@ def main():
         all_fn += fn
         all_dists.extend(dists)
         all_detections_by_frame[frame_idx] = pred_centers
+        if args.save_video:
+            all_boxes_by_frame[frame_idx] = (
+                dets.xyxy.astype(np.float64) if len(dets) > 0 else np.zeros((0, 4))
+            )
 
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -683,7 +1138,7 @@ def main():
                 writer.writeheader()
                 writer.writerow(tracking_metrics)
 
-            print(f"\n=== Tracking Metrics ===")
+            print("\n=== Tracking Metrics ===")
             print(f"MOTA:              {tracking_metrics['mota']:.4f}")
             print(f"IDF1:              {tracking_metrics['idf1']:.4f}")
             print(f"Fragmentations:    {tracking_metrics['num_fragmentations']}")
@@ -695,6 +1150,21 @@ def main():
             print(f"Tracking metrics:  {tracking_csv_path}")
     else:
         print("\n(Tracking metrics skipped — pass --ground-truth-tracks to enable)")
+
+    if args.save_video:
+        video_search_range = _cfg_get(full_cfg, "tracking", "search_range", default=15)
+        video_memory = _cfg_get(full_cfg, "tracking", "memory", default=3)
+        _write_tracking_video(
+            tiff_files,
+            all_boxes_by_frame,
+            model_type,
+            output_dir,
+            full_cfg,
+            video_search_range,
+            video_memory,
+            args.trace_length,
+            args.video_fps,
+        )
 
 
 if __name__ == "__main__":

@@ -21,14 +21,17 @@ synthetic:
                                  # background-default-design.md.
   shot_noise: true              # add Poisson photon noise
   readout_noise: 200.0          # Gaussian readout noise std dev (ADU). Raised from 15.0 --
-                                 # render.py's main() 8-bit PNG stretch is a per-frame true
-                                 # min/max ((img-lo)/(hi-lo)*255), and with peak_intensity:
-                                 # 40000 one 8-bit gray level is ~157 ADU, so 15 ADU of noise
-                                 # was invisible after the stretch (confirmed: >50% of pixels
-                                 # exactly 0.0 at the old default). 200.0 clears one gray
-                                 # level with margin. Starting-point value, not precision-
-                                 # fit -- confirm visually against a rendered frame and adjust
-                                 # if the background reads too grainy or still too flat. See
+                                 # at the time, render.py's main() 8-bit PNG stretch used a
+                                 # per-frame true min/max ((img-lo)/(hi-lo)*255), and with
+                                 # peak_intensity: 40000 one 8-bit gray level was ~157 ADU, so
+                                 # 15 ADU of noise was invisible after the stretch (confirmed:
+                                 # >50% of pixels exactly 0.0 at the old default). 200.0 clears
+                                 # one gray level with margin. The stretch is now a fixed
+                                 # per-run reference, not per-frame (see _stretch_to_uint8 in
+                                 # render.py), but the same order-of-magnitude reasoning still
+                                 # applies. Starting-point value, not precision-fit -- confirm
+                                 # visually against a rendered frame and adjust if the
+                                 # background reads too grainy or still too flat. See
                                  # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
                                  # and-noise-plan.md U3.
   output_dir: verification_output/synthetic_frames/
@@ -39,15 +42,32 @@ synthetic:
   # fit against reference data, unlike crop_source: procedural's fitted
   # ring_* params below, since keeping the procedural strategy self-
   # contained (no curve-fit step, no dependency on real reference data) is
-  # the point of this code path. These are starting-point defaults, not
-  # precision-fit values -- confirm visually against a rendered frame and
-  # adjust if the ring looks obviously wrong (e.g. fully black or
-  # invisible). See docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+  # the point of this code path.
+  #
+  # radius_factor/width_factor are sized against this dataset's own measured
+  # geometry, not picked freely: continuous_force_1500_5.0.lammpstrj's
+  # nearest-neighbor particle spacing is ~10.9px (median) at this config's
+  # 512x512 image size -- confirmed via a direct cKDTree query against the
+  # trajectory. The previous defaults (radius_factor: 2.2 -> ring center at
+  # 11px from each particle's own center) put the ring almost exactly on top
+  # of the *next* particle's center at typical spacing, so at production
+  # density neighboring particles' rings interconnected into a continuous
+  # dark mesh spanning the whole frame, rather than each particle showing
+  # its own distinct, locally-contained boundary -- confirmed directly by
+  # rendering both configurations side by side against the real trajectory.
+  # Pulling the ring in tight against the core (radius_factor: 1.0, close to
+  # the core's own falloff) keeps each particle's ring local to itself, so
+  # even closely-packed/touching particles stay visually distinct instead of
+  # forming a connected web. Re-derive the spacing measurement (see this
+  # file's git history for the query) if the default trajectory or
+  # image_width/image_height changes materially. See
+  # docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-design.md
+  # and (historical) docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
   # and-noise-plan.md U2.
   ring:
-    radius_factor: 2.2   # ring center's distance from particle center, in units of psf_sigma
-    width_factor: 0.5    # ring Gaussian width, in units of psf_sigma
-    depth: 0.4            # ring depth, as a fraction of peak_intensity
+    radius_factor: 1.0    # ring center's distance from particle center, in units of psf_sigma
+    width_factor: 0.3     # ring Gaussian width, in units of psf_sigma
+    depth: 0.65           # ring depth, as a fraction of peak_intensity
 
   # --- Multiple particle render profiles (render_strategy: procedural) ---
   # Optional. When present, particles are assigned one of several named
@@ -266,7 +286,20 @@ benchmark:
 
   tiling:
     enabled: true
-    tile_size: 512           # set < image size if the frame has >300 particles
+    # Must be < synthetic.image_width/image_height or detect_with_tiling's
+    # H<=tile_size and W<=tile_size guard short-circuits to a single
+    # full-frame predict() call, silently disabling tiling regardless of
+    # this enabled: true -- exactly the bug this value fixes. Previously
+    # 512, equal to the 512x512 default frame size, so tiling never
+    # actually engaged and every frame's ~1446 particles were capped at
+    # num_queries=300 detections (recall ~0.18). At 160px with 50px
+    # overlap, a 512x512 frame at this dataset's density (~0.0055
+    # particles/px^2) yields ~140 particles/tile -- comfortably under the
+    # 300-query cap with margin for local clustering. Re-tune if
+    # synthetic.image_width/image_height or particle density changes
+    # significantly. See docs/superpowers/specs/2026-08-07-rf-detr-
+    # tiling-fix-design.md.
+    tile_size: 160
     overlap: 50
     nms_threshold: 0.3
 
@@ -275,7 +308,21 @@ benchmark:
     checkpoint: ../data-setup/models/lodestar_model_15/model.pt
     threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
     alpha: 0.9                # weight score exponent
-    nms_distance: 30          # pixels; matches particle-tracking/{lodestar,multi_lodestar,basic_lodestar}_config.yaml —
+    nms_distance: 5           # pixels. Was 30 (matching particle-tracking/{lodestar,multi_lodestar,
+                              # basic_lodestar}_config.yaml, tuned for a much sparser real dataset) --
+                              # at this dataset's ~10.9px median nearest-neighbor spacing (psf_sigma=5,
+                              # image_width=512), 30px suppressed almost every true detection down to
+                              # one per local cluster, which was the dominant cause of this model's
+                              # catastrophic recall (confirmed directly 2026-08-08: raw pre-NMS
+                              # detection count was essentially unaffected by nms_distance, but final
+                              # recall collapsed from ~0.51 at nms_distance=5 to ~0.12 at 30 on the
+                              # same raw detections -- see accuracy_metrics_lodestar.csv sweep).
+                              # 5px (~1x psf_sigma) stays well under the measured spacing so it still
+                              # suppresses genuine duplicate detections of the same particle without
+                              # merging distinct neighbors. F1 improves 0.077 -> 0.16 on the full
+                              # 151-frame default trajectory at this value alone (alpha/threshold left
+                              # unchanged -- see AGENTS.md for why more aggressive alpha/threshold
+                              # values were tried and reverted).
                               # null (disabled) previously let unsuppressed detections balloon to 10x+ ground truth
     # box_size intentionally NOT set here -- leaving it unset lets benchmark.py derive it
     # from synthetic.psf_sigma/synthetic.psf.sigma_px (see docs/plans/2026-08-07-001-fix-
@@ -303,6 +350,38 @@ tracking:
   search_range: 15              # trackpy max displacement between frames (px)
   memory: 3                     # frames a particle can be missing before track ends
   matching_threshold_radii: 0.5 # motmetrics GT↔pred match threshold (× psf_sigma_px)
+  # trackpy.link_df's recursive subnet solver raises SubnetOversizeException
+  # when too many candidate particles are mutually within search_range of
+  # each other in the same frame-to-frame window -- e.g. once a detector's
+  # recall is high enough to actually recover a dense physical cluster (this
+  # dataset's continuous_force trajectory packs ~1400 of ~1446 particles into
+  # one mutually-connected subnet at its densest timesteps), not a
+  # synthetic-data edge case. benchmark.py's _link_df_with_fallback retries
+  # at a shrinking search_range (down to a 1.0px floor) on this exception
+  # instead of giving up outright -- confirmed directly (2026-08-08) this
+  # recovers real --save-video trajectories for RF-DETR/LodeSTAR where the
+  # pipeline used to fall back to boxes-only on the very first oversized
+  # subnet. If even the floor search_range is still oversized (or the whole
+  # retry doesn't finish within its own timeout), it degrades gracefully:
+  # skips MOTA/IDF1 for _run_tracking_metrics, draws boxes without
+  # trajectory traces for --save-video. _run_tracking_metrics also has a
+  # separate density/track-id-count guard that skips MOTA/IDF1 outright
+  # above a safe threshold, independent of this setting -- see AGENTS.md.
+  #
+  # adaptive_stop (off by default: null) is a SEPARATE, opt-in mechanism that
+  # retries an oversized subnet with a shrunken search_range down to this
+  # floor before giving up, mirroring particle-tracking/track.py's own
+  # tracking.adaptive_stop/adaptive_step knobs -- appropriate for moderately
+  # dense scenes. Do NOT enable it against this dataset's default trajectory:
+  # confirmed directly (2026-08-08) that retrying a ~1400-point subnet down
+  # from search_range=15 to adaptive_stop=3.0 in 0.95x steps exhausted this
+  # machine's 15GB RAM + 21GB swap and had to be killed -- each retry
+  # re-attempts neighbor-graph formation over the full frame, and subnet size
+  # does not necessarily shrink fast enough as search_range shrinks when
+  # particles are this tightly packed. See docs/superpowers/specs/2026-08-08-
+  # trackpy-subnet-oversize-guard-design.md.
+  adaptive_stop: null
+  adaptive_step: 0.95
 
 # --- compare.py: physics observable comparison ---
 compare:

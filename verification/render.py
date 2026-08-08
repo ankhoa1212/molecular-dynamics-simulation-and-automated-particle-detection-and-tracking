@@ -91,7 +91,7 @@ def _parse_positions(atom_header, atoms):
 
 
 def _gaussian_ring_profile(
-    r_grid, sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4
+    r_grid, sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65
 ):
     """Core-minus-ring difference-of-Gaussians profile, peak-normalized
     (may dip below 0 near the ring edge; caller clips before Poisson noise).
@@ -114,7 +114,7 @@ def _gaussian_ring_profile(
     return core - ring
 
 
-def _gaussian_ring_extent(sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4):
+def _gaussian_ring_extent(sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65):
     """Pixel ROI radius needed to contain the core and the ring's outer tail."""
     ring_width = ring_width_factor * sigma
     core_extent = 3 * sigma
@@ -229,6 +229,17 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
     x_lo, x_hi, y_lo, y_hi = box
     background_level = peak * cfg.get("background_fraction", 0.25)
     img = np.full((H, W), background_level, dtype=np.float64)
+    # Per-pixel signed deviation from background_level, one layer shared by
+    # every particle -- NOT accumulated with `+=`. Plain additive compositing
+    # sums every overlapping particle's contribution, so two overlapping
+    # bright cores pile up into a single brighter blob with no visible
+    # boundary between them. Real opaque/reflective particles don't add
+    # brightness where they overlap -- whichever one is locally most
+    # prominent (furthest from background, in either direction) is what's
+    # visible there, so each stamp competes on |deviation| and the
+    # larger-magnitude one wins that pixel outright. See
+    # docs/superpowers/specs/2026-08-07-no-blob-merging-design.md.
+    deviation = np.zeros((H, W), dtype=np.float64)
 
     def _stamp(cx, cy, extent, intensity):
         x0, x1 = max(0, int(cx) - extent), min(W, int(cx) + extent + 1)
@@ -239,14 +250,17 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
         ys = np.arange(y0, y1, dtype=np.float64)
         X, Y = np.meshgrid(xs, ys)
         r_grid = np.hypot(X - cx, Y - cy)
-        img[y0:y1, x0:x1] += intensity(r_grid)
+        contribution = intensity(r_grid)
+        region = deviation[y0:y1, x0:x1]
+        winner = np.abs(contribution) > np.abs(region)
+        region[winner] = contribution[winner]
 
     if profile_map is None:
         sigma = cfg["psf_sigma"]
         ring_cfg = cfg.get("ring", {})
-        ring_radius_factor = ring_cfg.get("radius_factor", 2.2)
-        ring_width_factor = ring_cfg.get("width_factor", 0.5)
-        ring_depth = ring_cfg.get("depth", 0.4)
+        ring_radius_factor = ring_cfg.get("radius_factor", 1.0)
+        ring_width_factor = ring_cfg.get("width_factor", 0.3)
+        ring_depth = ring_cfg.get("depth", 0.65)
         extent = _gaussian_ring_extent(sigma, ring_radius_factor, ring_width_factor, ring_depth)
 
         for x, y in positions_lj:
@@ -275,6 +289,8 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
                 extent_fn(**params),
                 lambda r_grid, fn=intensity_fn, p=params: peak * fn(r_grid, **p),
             )
+
+    img += deviation
 
     # The ring/rim's negative dip can push some pixels below zero; rng.poisson
     # raises ValueError on negative input, so this clip must run before the
@@ -432,6 +448,36 @@ def _dispatch_render(
         return render_frame(positions_lj, box, cfg, rng, atom_ids=atom_ids, profile_map=profile_map)
 
 
+def _stretch_to_uint8(img, cfg):
+    """Convert a rendered uint16 frame to an 8-bit PNG-ready array.
+
+    lo/hi are fixed per-run, not recomputed per frame from that frame's own
+    observed min/max. A genuinely per-frame stretch makes a constant-sized
+    particle look like it's pulsing/breathing in a video: shot noise and
+    frame-to-frame overlap shift each frame's own min/max slightly, which
+    shifts the effective display scale, which shifts the apparent radius
+    where a Gaussian tail crosses the eye's visible threshold -- even though
+    the underlying psf_sigma never changes. lo=0 matches render_frame's own
+    floor (its output is always clipped to >= 0). hi is derived from
+    peak_intensity/background_fraction when the strategy exposes them
+    (procedural, randomized) -- the same fixed reference for every frame in
+    the run, regardless of that frame's own noise or particle count/overlap
+    -- falling back to this frame's own max otherwise (deeptrack, whose
+    config uses a different, unrelated key structure and is out of scope for
+    this fix). See docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-
+    stretch-design.md.
+    """
+    img_f = img.astype(np.float32)
+    lo = 0.0
+    if "peak_intensity" in cfg:
+        hi = cfg["peak_intensity"] * (1.0 + cfg.get("background_fraction", 0.25))
+    else:
+        hi = float(img_f.max())
+    if hi <= lo:
+        return np.zeros_like(img, dtype=np.uint8)
+    return ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Render synthetic TIFF frames from LAMMPS trajectory"
@@ -465,6 +511,24 @@ def main():
 
     output_dir = Path(cfg.get("output_dir", "verification_output/synthetic_frames/"))
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # _stretch_to_uint8 needs one fixed peak_intensity/background_fraction
+    # reference for the whole run (see its docstring on why per-frame
+    # stretching causes apparent pulsing). render_strategy: randomized
+    # samples a *different* peak_intensity per frame (and always forces
+    # background_fraction to 0.0 -- see render_randomized.py) via a private
+    # frame_cfg that never reaches main(), so cfg's own static
+    # peak_intensity/background_fraction (from config.yaml, unrelated to
+    # randomized's sampling) is the wrong reference for this strategy.
+    # Building a stretch_cfg from randomization.peak_range's upper bound
+    # keeps the reference fixed for the whole run (no pulsing) while
+    # actually covering every value randomized can sample (no clipping).
+    stretch_cfg = cfg
+    if strategy == "randomized":
+        peak_max = cfg.get("randomization", {}).get("peak_range", [20000, 60000])[1]
+        stretch_cfg = dict(cfg)
+        stretch_cfg["peak_intensity"] = peak_max
+        stretch_cfg["background_fraction"] = 0.0
 
     rng = np.random.default_rng(args.seed)
     # Cross-frame smoothing state for render_strategy: randomized (R8) — a
@@ -552,15 +616,21 @@ def main():
             profile_map=profile_map,
         )
 
-        img_f = img.astype(np.float32)
-        lo, hi = img_f.min(), img_f.max()
-        img8 = (
-            ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
-            if hi > lo
-            else np.zeros_like(img, dtype=np.uint8)
-        )
+        img8 = _stretch_to_uint8(img, stretch_cfg)
         png_path = output_dir / f"frame_{i:05d}.png"
-        mplimg.imsave(str(png_path), img8, cmap="gray")
+        # vmin/vmax=0/255 are required, not cosmetic: without them, imsave's
+        # own colormap normalization re-stretches img8 a second time against
+        # *this frame's own* observed min/max -- silently overriding
+        # _stretch_to_uint8's fixed-reference computation and reintroducing
+        # exactly the frame-to-frame drift that function exists to prevent.
+        # Confirmed directly: two uint8 arrays sharing a pixel value of 128
+        # but with different own-maxima (200 vs 255) round-tripped through
+        # imsave(cmap="gray") with no vmin/vmax read back as 0 and 0 --
+        # neither matching the literal value written -- until vmin=0/vmax=255
+        # was added, after which both correctly read back as 128. See
+        # docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-
+        # design.md.
+        mplimg.imsave(str(png_path), img8, cmap="gray", vmin=0, vmax=255)
 
         H, W = cfg["image_height"], cfg["image_width"]
         px_pos = (

@@ -3,10 +3,8 @@ Also contains U2 tests for render_deeptrack.py (DeepTrack2 PSF + enhanced noise)
 """
 
 import csv
-import io
 import json
 import sys
-import textwrap
 from pathlib import Path
 from unittest import mock
 
@@ -733,7 +731,6 @@ class TestDeeptrackStrategy:
         sys.path.insert(0, str(Path(__file__).parent.parent))
 
         with mock.patch.dict(sys.modules, {"deeptrack": None}):
-            import render_deeptrack as rdt  # noqa: F811
 
             for key in list(sys.modules.keys()):
                 if "render_deeptrack" in key:
@@ -1610,7 +1607,7 @@ def _mean_intensity_in_annulus(img, cx, cy, r_inner, r_outer):
     return float(img[mask].astype(np.float64).mean())
 
 
-_DEFAULT_RING = {"radius_factor": 2.2, "width_factor": 0.5, "depth": 0.4}
+_DEFAULT_RING = {"radius_factor": 1.0, "width_factor": 0.3, "depth": 0.65}
 
 
 def _procedural_cfg(
@@ -2210,10 +2207,13 @@ class TestProceduralRingEdgeCases:
 
     def test_missing_ring_config_falls_back_to_defaults(self, render_module):
         """No `ring` key in cfg at all must not raise KeyError, and must
-        still produce a visible dip using the documented defaults."""
+        still produce a visible dip using the documented defaults
+        (radius_factor: 1.0, tight against the core -- see config.yaml's
+        ring: comment for why)."""
         H, W = 64, 64
         cx, cy = 32.0, 32.0
-        cfg = _procedural_cfg(H, W, sigma=5.0, peak=40000)  # no ring=... passed
+        sigma = 5.0
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000)  # no ring=... passed
         assert "ring" not in cfg
         box = (0.0, float(W), 0.0, float(H))
         positions = np.array([[cx, cy]])
@@ -2223,7 +2223,10 @@ class TestProceduralRingEdgeCases:
 
         assert frame.dtype == np.uint16
         core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
-        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * 5.0 - 1.0, 2.2 * 5.0 + 1.0)
+        default_radius_factor = 1.0
+        ring_mean = _mean_intensity_in_annulus(
+            frame, cx, cy, default_radius_factor * sigma - 1.0, default_radius_factor * sigma + 1.0
+        )
         assert ring_mean < 0.3 * core_mean
 
     def test_crowded_overlapping_rings_render_without_error(self, render_module):
@@ -2251,6 +2254,106 @@ class TestProceduralRingEdgeCases:
         # between the particles (additive rings still leave the two bright
         # cores standing).
         assert frame.max() > 0.3 * 40000
+
+    def test_particles_stay_distinct_at_measured_dataset_spacing(self, render_module):
+        """2026-08-08: the default ring geometry (radius_factor: 1.0) is
+        sized against continuous_force_1500_5.0.lammpstrj's own measured
+        nearest-neighbor spacing (~10.9px median at this sigma/image size,
+        i.e. ~2.2*sigma) so that at typical real spacing, two particles'
+        rings stay local to their own cores instead of interconnecting into
+        a continuous dark mesh -- confirmed directly against the real
+        trajectory (see config.yaml's ring: comment). Two particles placed
+        at that measured typical spacing must show a midpoint that reads
+        closer to background (light) than to the ring's own dark trough --
+        the old radius_factor: 2.2 default put the ring almost exactly on
+        top of a neighbor at this spacing, which this regression guards
+        against. See docs/superpowers/specs/2026-08-08-tight-ring-and-
+        fixed-stretch-design.md."""
+        H, W = 80, 40
+        sigma = 5.0
+        peak = 40000
+        background_fraction = 0.25
+        measured_spacing_factor = 2.17  # ~10.9px median / 5.0px sigma, this dataset
+        separation = measured_spacing_factor * sigma
+        cfg = _procedural_cfg(
+            H,
+            W,
+            sigma=sigma,
+            peak=peak,
+            background_fraction=background_fraction,
+            ring=_DEFAULT_RING,
+        )
+        box = (0.0, float(W), 0.0, float(H))
+        cy1, cy2 = 40.0 - separation / 2, 40.0 + separation / 2
+        positions = np.array([[20.0, cy1], [20.0, cy2]])
+        rng = np.random.default_rng(0)
+
+        frame = render_module.render_frame(positions, box, cfg, rng).astype(np.float64)
+        midpoint_value = frame[40, 20]
+
+        background_level = peak * background_fraction
+        ring_trough_value = background_level - _DEFAULT_RING["depth"] * peak
+        # The midpoint sits closer to background (light) than to the ring's
+        # own dark trough -- proof the two particles' rings aren't fused
+        # into one continuous dark band spanning the gap between them.
+        assert abs(midpoint_value - background_level) < abs(midpoint_value - ring_trough_value)
+
+
+class TestStampWinnerTakeAllCompositing:
+    """2026-08-08: _stamp's `deviation` buffer (render.py:242-256) composites
+    overlapping particle stamps by picking whichever has the larger
+    |contribution| at each pixel, instead of summing via `img += intensity(...)`.
+    Real opaque/reflective particles don't add brightness where they overlap,
+    so this bounds a composited pixel to the single most-prominent stamp
+    touching it rather than letting overlapping bright cores pile into a
+    blob brighter than any one particle. See
+    docs/superpowers/specs/2026-08-07-no-blob-merging-design.md."""
+
+    # Pure Gaussian core, no ring dip -- isolates the compositing mechanism
+    # from the ring's separate negative-deviation behavior.
+    _PURE_CORE_RING = {"radius_factor": 1.0, "width_factor": 0.3, "depth": 0.0}
+
+    def test_fully_overlapping_particles_peak_matches_single_not_double(self, render_module):
+        H, W = 64, 64
+        sigma = 5.0
+        peak = 40000
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak, ring=self._PURE_CORE_RING)
+        box = (0.0, float(W), 0.0, float(H))
+
+        single = render_module.render_frame(
+            np.array([[32.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+        two_coincident = render_module.render_frame(
+            np.array([[32.0, 32.0], [32.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+
+        # Additive compositing (`+=`) would sum two exactly-coincident
+        # stamps to ~2x a single particle's peak. Winner-take-all bounds
+        # the composited peak to a single particle's own peak instead.
+        assert two_coincident.max() == pytest.approx(single.max(), rel=1e-6)
+        assert two_coincident.max() < 1.5 * single.max()
+
+    def test_overlapping_cores_never_exceed_single_particle_peak(self, render_module):
+        """Two particles close enough for their Gaussian cores to overlap
+        substantially, but not fully coincident -- winner-take-all still
+        bounds every pixel to the larger of the two individual
+        contributions there, so the composited frame's peak can't exceed a
+        lone particle's own peak. A future revert to additive compositing
+        would push this well past a single particle's peak."""
+        H, W = 64, 64
+        sigma = 5.0
+        peak = 40000
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak, ring=self._PURE_CORE_RING)
+        box = (0.0, float(W), 0.0, float(H))
+
+        single = render_module.render_frame(
+            np.array([[32.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+        close_pair = render_module.render_frame(
+            np.array([[30.0, 32.0], [34.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+
+        assert close_pair.max() <= single.max() + 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -2343,12 +2446,13 @@ class TestBackgroundNoiseVisibility:
         main() does) and inspecting only the background region yields a
         nonzero fraction of distinct pixel values, not a single flat 0.0."""
         synth = _load_synthetic_config()
+        peak, background_fraction = 40000, 0.0  # _render_background_region's own defaults
         frame, _ = _render_background_region(
             render_module, readout_noise=synth["readout_noise"], shot_noise=True
         )
 
         img_f = frame.astype(np.float32)
-        lo, hi = img_f.min(), img_f.max()
+        lo, hi = 0.0, peak * (1.0 + background_fraction)
         assert hi > lo
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
@@ -2368,6 +2472,7 @@ class TestBackgroundNoiseVisibility:
         contributors -- with shot_noise: false, readout noise alone must
         still produce visible background grain that survives the stretch."""
         synth = _load_synthetic_config()
+        peak, background_fraction = 40000, 0.0  # _render_background_region's own defaults
         frame, background = _render_background_region(
             render_module, readout_noise=synth["readout_noise"], shot_noise=False
         )
@@ -2376,7 +2481,7 @@ class TestBackgroundNoiseVisibility:
         assert background_f.std() > 50.0
 
         img_f = frame.astype(np.float32)
-        lo, hi = img_f.min(), img_f.max()
+        lo, hi = 0.0, peak * (1.0 + background_fraction)
         assert hi > lo
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
@@ -2421,7 +2526,7 @@ class TestBackgroundNoiseVisibility:
             peak=synth["peak_intensity"],
         )
         img_f = frame.astype(np.float32)
-        lo, hi = img_f.min(), img_f.max()
+        lo, hi = 0.0, synth["peak_intensity"] * (1.0 + synth["background_fraction"])
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
         assert background8.astype(np.float64).mean() > 40.0
@@ -2527,3 +2632,158 @@ class TestParticleRenderProfilesWiring:
         captured = capsys.readouterr()
         assert "particle_render_profiles is configured" in captured.out
         assert "derived from --lammps-in" not in captured.out
+
+
+class TestFixedStretchReference:
+    """2026-08-08: main()'s 8-bit PNG stretch (_stretch_to_uint8) uses a
+    fixed lo=0/hi (derived from peak_intensity/background_fraction) instead
+    of that frame's own observed min/max, so a constant-sized particle
+    doesn't appear to shrink/expand between frames purely because noise or
+    particle count shifted that frame's own max. See
+    docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-
+    design.md."""
+
+    def test_same_raw_value_maps_identically_regardless_of_frame_max(self, render_module):
+        """Two uint16 arrays sharing one pixel's raw value but with very
+        different overall maxima (simulating one frame with a single modest
+        particle vs. another with a much brighter one) must stretch that
+        shared raw value to the identical 8-bit output -- proving hi doesn't
+        depend on the frame's own content when peak_intensity is available."""
+        cfg = {"peak_intensity": 1000, "background_fraction": 0.25}
+        shared_raw_value = 600
+
+        frame_a = np.full((10, 10), shared_raw_value, dtype=np.uint16)
+        frame_a[0, 0] = 900  # frame A's own max is modest
+
+        frame_b = np.full((10, 10), shared_raw_value, dtype=np.uint16)
+        frame_b[0, 0] = 60000  # frame B's own max is far higher (clips under a fixed hi)
+
+        img8_a = render_module._stretch_to_uint8(frame_a, cfg)
+        img8_b = render_module._stretch_to_uint8(frame_b, cfg)
+
+        # The shared pixel (not the outlier) stretches identically in both --
+        # an old per-frame max stretch would instead compress frame_b's
+        # shared-value pixel much darker than frame_a's, since frame_b's own
+        # max (60000) is 66x larger than frame_a's (900).
+        assert img8_a[5, 5] == img8_b[5, 5]
+
+    def test_hi_is_derived_from_peak_intensity_not_frame_max(self, render_module):
+        cfg = {"peak_intensity": 1000, "background_fraction": 0.25}
+        img = np.full((10, 10), 200, dtype=np.uint16)  # frame max (200) << peak_intensity (1000)
+
+        img8 = render_module._stretch_to_uint8(img, cfg)
+
+        # hi = 1000 * 1.25 = 1250; 200/1250*255 ~= 40.8 -- nowhere near 255,
+        # which is what a per-frame max stretch (hi = img.max() = 200) would
+        # have produced for every pixel in this uniform frame.
+        expected = round(200 / 1250 * 255)
+        assert abs(int(img8[5, 5]) - expected) <= 1
+        assert img8[5, 5] < 250
+
+    def test_falls_back_to_frame_max_when_peak_intensity_absent(self, render_module):
+        """Strategies without peak_intensity in cfg (e.g. deeptrack) keep the
+        old per-frame min/max behavior -- this fix is scoped to procedural/
+        randomized, which do expose peak_intensity."""
+        cfg = {}  # no peak_intensity key
+        img = np.full((10, 10), 200, dtype=np.uint16)
+
+        img8 = render_module._stretch_to_uint8(img, cfg)
+
+        # hi = img.max() = 200 (this frame's own max) -> the uniform 200
+        # value stretches to the top of the 8-bit range.
+        assert img8[5, 5] == 255
+
+    def test_zero_peak_intensity_returns_all_zero_without_dividing_by_zero(self, render_module):
+        """hi = peak_intensity * (1 + background_fraction) = 0 when
+        peak_intensity is 0 -- must fall back to the all-zero guard rather
+        than dividing by zero."""
+        cfg = {"peak_intensity": 0, "background_fraction": 0.0}
+        img = np.zeros((10, 10), dtype=np.uint16)
+
+        img8 = render_module._stretch_to_uint8(img, cfg)
+
+        assert np.all(img8 == 0)
+
+    def test_saved_png_preserves_the_computed_8bit_value_literally(self, render_module, tmp_path):
+        """Regression guard for a real bug found during implementation:
+        matplotlib's imsave(cmap="gray") re-normalizes a 2D array against
+        *that array's own* min/max by default, even when the array is
+        already a finished uint8 image -- silently re-stretching
+        _stretch_to_uint8's fixed-reference output a second time and
+        reintroducing frame-to-frame drift at the file-write step, after
+        the in-memory computation was already correct. main() must pass
+        vmin=0/vmax=255 to disable that second normalization. This test
+        writes a real PNG through render.py's own main() and reads it back
+        -- a synthetic uint8 array fed straight to imsave/imread would not
+        catch a regression in main()'s own imsave call site."""
+        blocks = [_make_block(0, [1], [32.0], [32.0])]
+        _run_main_with_blocks(
+            render_module,
+            tmp_path,
+            blocks,
+            extra_synthetic={
+                "image_width": 64,
+                "image_height": 64,
+                "psf_sigma": 3.0,
+                "peak_intensity": 1000,
+                "shot_noise": False,
+                "readout_noise": 0.0,
+                "background_fraction": 0.25,
+            },
+        )
+
+        png_path = tmp_path / "frames" / "frame_00000.png"
+        img = mplimg.imread(str(png_path))
+        corner8 = (img[:5, :5, 0] * 255).round().astype(np.uint8)
+
+        # background_level = 1000*0.25 = 250; hi = 1000*1.25 = 1250;
+        # 250/1250*255 = 51 exactly, with zero noise to introduce rounding
+        # slack. A frame with no imsave normalization bug reads back
+        # literally 51 -- the pre-fix bug re-stretched this frame's own
+        # [min, max] (which never reaches 0 or 255 for an isolated
+        # background-only corner) and crushed it toward 0 instead.
+        assert corner8[2, 2] == 51
+
+    def test_randomized_strategy_stretch_reference_uses_peak_range_upper_bound(
+        self, render_module, tmp_path
+    ):
+        """2026-08-08: render_strategy: randomized samples a different
+        peak_intensity per frame via a private frame_cfg that never reaches
+        main() (see render_randomized.py), so main()'s own static
+        cfg["peak_intensity"] is the wrong fixed reference for
+        _stretch_to_uint8 -- it must instead build stretch_cfg from
+        randomization.peak_range's upper bound (render.py:526-533), with
+        background_fraction forced to 0.0 to match randomized's own
+        always-black background. Drives main() end-to-end with
+        render_strategy: randomized and spies on the real _stretch_to_uint8
+        call to catch a regression back to cfg's own (wrong, strategy-
+        irrelevant) static peak_intensity."""
+        blocks = [_make_block(0, [1], [32.0], [32.0])]
+        peak_range = [5000, 9000]
+        extra_synthetic = {
+            "render_strategy": "randomized",
+            # Deliberately different from peak_range's bound: if main() used
+            # this static value as the stretch reference instead, the
+            # captured cfg below would show 1000, not peak_range[1].
+            "peak_intensity": 1000,
+            "background_fraction": 0.25,
+            "randomization": {
+                "psf_sigma_range": [2.0, 4.0],
+                "peak_range": peak_range,
+                "readout_noise_range": [1.0, 2.0],
+            },
+        }
+
+        captured = []
+        original = render_module._stretch_to_uint8
+
+        def spy(img, cfg):
+            captured.append(dict(cfg))
+            return original(img, cfg)
+
+        with mock.patch.object(render_module, "_stretch_to_uint8", side_effect=spy):
+            _run_main_with_blocks(render_module, tmp_path, blocks, extra_synthetic=extra_synthetic)
+
+        assert len(captured) == 1
+        assert captured[0]["peak_intensity"] == peak_range[1]
+        assert captured[0]["background_fraction"] == 0.0

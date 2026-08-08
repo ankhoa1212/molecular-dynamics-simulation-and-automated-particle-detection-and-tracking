@@ -144,8 +144,11 @@ uv run python benchmark.py \
 Outputs (named per `--model-type` so a run of one model doesn't overwrite the other's results):
 - `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1
 - `verification_output/tracking_metrics_{model_type}.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
+- `verification_output/tracking_visualization_{model_type}.mp4` — detection boxes and trajectory traces overlaid on every frame (when `--save-video` is passed)
 
 **Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
+
+**Note:** MOTA/IDF1 are skipped (with a printed warning, not a crash) above a safe detection density or distinct-track-id count — building motmetrics' accumulator at this repo's default trajectory density (~1446 particles/frame) can grow memory into the double-digit-GB range even when the linking step itself succeeds. This is independent of `--save-video`'s own trajectory overlay, which uses a separate, always-attempted linking call and is unaffected by this guard (see `_run_tracking_metrics` in `benchmark.py`, and the multiprocessing/CUDA notes in `AGENTS.md`).
 
 ### Model Selection
 
@@ -169,15 +172,19 @@ Options:
 | `--config` | `config.yaml` | Config file |
 | `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--device` | `0` | CUDA device index or `cpu` |
+| `--save-video` | off | Write `tracking_visualization_{model_type}.mp4` with detection boxes and trajectory traces overlaid. Uses `tracking.search_range`/`memory` from `--config` to link detections, independent of `--ground-truth-tracks` (only needed for MOTA/IDF1) |
+| `--video-fps` | `10.0` | Frame rate for `--save-video` output |
+| `--trace-length` | `30` | Frames of trajectory history drawn in `--save-video` output |
 
 Key settings in `config.yaml` under `tracking:`:
 
 | Key | Description |
 |-----|-------------|
 | `enabled` | Enable/disable tracking metrics block |
-| `search_range` | trackpy max displacement between frames (px) |
+| `search_range` | trackpy max displacement between frames (px); both MOTA/IDF1 and `--save-video` linking retry this at a shrinking value (down to a 1.0px floor) on an oversized subnet instead of failing outright |
 | `memory` | Frames a particle can be absent before track ends |
 | `matching_threshold_radii` | motmetrics GT↔pred match threshold (× `psf_sigma_px`) |
+| `adaptive_stop` / `adaptive_step` | Opt-in trackpy per-subnet shrinking (off by default: `null`) — see `config.yaml`'s own comment before enabling against a dense dataset |
 
 ## Step 3 — Compare physics observables
 
@@ -235,6 +242,7 @@ verification_output/
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
 ├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1 (from benchmark.py)
 ├── tracking_metrics_{model_type}.csv   # MOTA/IDF1/fragmentation (from benchmark.py)
+├── tracking_visualization_{model_type}.mp4  # detection boxes + trajectory traces (from benchmark.py --save-video)
 ├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
 ├── renders_comparison.png      # side-by-side strategy comparison (from compare_renders.py)
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
