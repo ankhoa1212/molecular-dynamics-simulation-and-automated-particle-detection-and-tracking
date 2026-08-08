@@ -955,7 +955,7 @@ class TestLinkDetectionsForVideo:
         result = benchmark._link_detections_for_video(boxes_by_frame, {}, search_range=15, memory=3)
 
         assert set(result.keys()) == {0, 1}
-        for frame_idx, (boxes, track_ids) in result.items():
+        for boxes, track_ids in result.values():
             assert boxes.shape == (2, 4)
             assert track_ids.shape == (2,)
 
