@@ -1278,7 +1278,7 @@ class TestSubnetOversizeGuard:
 # ---------------------------------------------------------------------------
 
 
-def _slow_motmetrics_worker(acc, metrics, conn):
+def _slow_motmetrics_worker(_acc, _metrics, conn):
     """Module-level (not a test-method closure) so it's picklable by
     _compute_motmetrics_with_timeout's "spawn" context -- spawn re-imports
     the target function by its module+qualname in the child, which a local

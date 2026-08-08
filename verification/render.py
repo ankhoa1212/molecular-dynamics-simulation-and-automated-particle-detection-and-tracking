@@ -91,7 +91,7 @@ def _parse_positions(atom_header, atoms):
 
 
 def _gaussian_ring_profile(
-    r_grid, sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4
+    r_grid, sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65
 ):
     """Core-minus-ring difference-of-Gaussians profile, peak-normalized
     (may dip below 0 near the ring edge; caller clips before Poisson noise).
@@ -114,7 +114,7 @@ def _gaussian_ring_profile(
     return core - ring
 
 
-def _gaussian_ring_extent(sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4):
+def _gaussian_ring_extent(sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65):
     """Pixel ROI radius needed to contain the core and the ring's outer tail."""
     ring_width = ring_width_factor * sigma
     core_extent = 3 * sigma
