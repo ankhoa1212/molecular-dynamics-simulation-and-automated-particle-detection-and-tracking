@@ -39,15 +39,32 @@ synthetic:
   # fit against reference data, unlike crop_source: procedural's fitted
   # ring_* params below, since keeping the procedural strategy self-
   # contained (no curve-fit step, no dependency on real reference data) is
-  # the point of this code path. These are starting-point defaults, not
-  # precision-fit values -- confirm visually against a rendered frame and
-  # adjust if the ring looks obviously wrong (e.g. fully black or
-  # invisible). See docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+  # the point of this code path.
+  #
+  # radius_factor/width_factor are sized against this dataset's own measured
+  # geometry, not picked freely: continuous_force_1500_5.0.lammpstrj's
+  # nearest-neighbor particle spacing is ~10.9px (median) at this config's
+  # 512x512 image size -- confirmed via a direct cKDTree query against the
+  # trajectory. The previous defaults (radius_factor: 2.2 -> ring center at
+  # 11px from each particle's own center) put the ring almost exactly on top
+  # of the *next* particle's center at typical spacing, so at production
+  # density neighboring particles' rings interconnected into a continuous
+  # dark mesh spanning the whole frame, rather than each particle showing
+  # its own distinct, locally-contained boundary -- confirmed directly by
+  # rendering both configurations side by side against the real trajectory.
+  # Pulling the ring in tight against the core (radius_factor: 1.0, close to
+  # the core's own falloff) keeps each particle's ring local to itself, so
+  # even closely-packed/touching particles stay visually distinct instead of
+  # forming a connected web. Re-derive the spacing measurement (see this
+  # file's git history for the query) if the default trajectory or
+  # image_width/image_height changes materially. See
+  # docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-design.md
+  # and (historical) docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
   # and-noise-plan.md U2.
   ring:
-    radius_factor: 2.2   # ring center's distance from particle center, in units of psf_sigma
-    width_factor: 0.5    # ring Gaussian width, in units of psf_sigma
-    depth: 0.4            # ring depth, as a fraction of peak_intensity
+    radius_factor: 1.0    # ring center's distance from particle center, in units of psf_sigma
+    width_factor: 0.3     # ring Gaussian width, in units of psf_sigma
+    depth: 0.65           # ring depth, as a fraction of peak_intensity
 
   # --- Multiple particle render profiles (render_strategy: procedural) ---
   # Optional. When present, particles are assigned one of several named
