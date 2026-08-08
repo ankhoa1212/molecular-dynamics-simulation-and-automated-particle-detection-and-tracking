@@ -93,17 +93,17 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
     if detections_raw is None or len(detections_raw) == 0:
         return sv.Detections.empty()
 
-    # LodeSTAR det[2] is the model's radius/sigma output, not a confidence score.
-    # The raw value is in model-space (typically < 1.0); scale to pixels when that's the case.
-    frame_scale = max(frame.shape[:2])
+    # LodeSTAR det[2] (when present) is an auxiliary model output, not a calibrated
+    # radius/sigma in any known unit. Deeplay's own LodeSTAR.forward() only rescales
+    # channels 0/1 (x/y) into real pixel coordinates via the model's internal meshgrid;
+    # channel 2 is passed through unscaled, and empirically (lodestar_model_15) it is
+    # a near-constant value across detections, not a per-particle size signal. box_size
+    # is therefore the sole source of box radius, regardless of how many channels the
+    # model returns — see docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
     xyxy, confidences = [], []
     for det in detections_raw:
         y, x = det[0], det[1]
-        if len(det) >= 3:
-            sigma = abs(det[2])
-            r = sigma * frame_scale if sigma < 1.0 else sigma
-        else:
-            r = box_size / 2
+        r = box_size / 2
         xyxy.append([x - r, y - r, x + r, y + r])
         confidences.append(1.0)  # all detections passed the same cutoff; ordering is secondary
 

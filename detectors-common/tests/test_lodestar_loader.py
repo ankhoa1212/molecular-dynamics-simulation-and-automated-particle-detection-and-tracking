@@ -155,14 +155,17 @@ class TestDetectLodestar:
         fake_model.parameters.return_value = iter([mock.Mock(dtype="float32")])
         return fake_torch, fake_model
 
-    def test_converts_raw_detection_to_scaled_pixel_box(self):
+    def test_box_size_governs_radius_regardless_of_small_sigma(self):
         fake_torch, fake_model = self._fake_torch_module()
-        # sigma=0.01 (normalized, < 1.0) on a 512px frame -> radius = 0.01 * 512 = 5.12px
+        # sigma=0.01 -- small, previously would have been misread as a normalized
+        # frame-fraction and scaled by the frame size. Must have no effect now.
         fake_model.detect.return_value = np.array([[100.0, 200.0, 0.01]])
         frame = np.zeros((512, 512), dtype=np.float32)
 
         with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            result = lodestar_loader.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
+            result = lodestar_loader.detect_lodestar(
+                fake_model, frame, threshold=0.1, device="cpu", box_size=30
+            )
 
         assert len(result) == 1
         cx = (result.xyxy[0][0] + result.xyxy[0][2]) / 2
@@ -170,18 +173,33 @@ class TestDetectLodestar:
         assert cx == pytest.approx(200.0, abs=0.5)
         assert cy == pytest.approx(100.0, abs=0.5)
         radius = (result.xyxy[0][2] - result.xyxy[0][0]) / 2
-        assert radius == pytest.approx(0.01 * 512, rel=0.05)
+        assert radius == pytest.approx(30 / 2, rel=0.01)
 
-    def test_sigma_already_in_pixel_units_is_not_rescaled(self):
+    def test_box_size_governs_radius_regardless_of_large_sigma(self):
         fake_torch, fake_model = self._fake_torch_module()
+        # sigma=12.0 -- previously would have been read as an already-pixel-scale
+        # radius and used directly. Must have no effect now.
         fake_model.detect.return_value = np.array([[100.0, 200.0, 12.0]])
+        frame = np.zeros((512, 512), dtype=np.float32)
+
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+            result = lodestar_loader.detect_lodestar(
+                fake_model, frame, threshold=0.1, device="cpu", box_size=30
+            )
+
+        radius = (result.xyxy[0][2] - result.xyxy[0][0]) / 2
+        assert radius == pytest.approx(30 / 2, rel=0.01)
+
+    def test_default_box_size_used_when_not_specified(self):
+        fake_torch, fake_model = self._fake_torch_module()
+        fake_model.detect.return_value = np.array([[100.0, 200.0, 0.01]])
         frame = np.zeros((512, 512), dtype=np.float32)
 
         with mock.patch.dict(sys.modules, {"torch": fake_torch}):
             result = lodestar_loader.detect_lodestar(fake_model, frame, threshold=0.1, device="cpu")
 
         radius = (result.xyxy[0][2] - result.xyxy[0][0]) / 2
-        assert radius == pytest.approx(12.0, rel=0.01)
+        assert radius == pytest.approx(40 / 2, rel=0.01)  # detect_lodestar's own default
 
     def test_empty_detections_returns_empty(self):
         fake_torch, fake_model = self._fake_torch_module()
