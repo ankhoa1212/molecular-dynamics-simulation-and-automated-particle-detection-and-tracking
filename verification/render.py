@@ -512,6 +512,24 @@ def main():
     output_dir = Path(cfg.get("output_dir", "verification_output/synthetic_frames/"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # _stretch_to_uint8 needs one fixed peak_intensity/background_fraction
+    # reference for the whole run (see its docstring on why per-frame
+    # stretching causes apparent pulsing). render_strategy: randomized
+    # samples a *different* peak_intensity per frame (and always forces
+    # background_fraction to 0.0 -- see render_randomized.py) via a private
+    # frame_cfg that never reaches main(), so cfg's own static
+    # peak_intensity/background_fraction (from config.yaml, unrelated to
+    # randomized's sampling) is the wrong reference for this strategy.
+    # Building a stretch_cfg from randomization.peak_range's upper bound
+    # keeps the reference fixed for the whole run (no pulsing) while
+    # actually covering every value randomized can sample (no clipping).
+    stretch_cfg = cfg
+    if strategy == "randomized":
+        peak_max = cfg.get("randomization", {}).get("peak_range", [20000, 60000])[1]
+        stretch_cfg = dict(cfg)
+        stretch_cfg["peak_intensity"] = peak_max
+        stretch_cfg["background_fraction"] = 0.0
+
     rng = np.random.default_rng(args.seed)
     # Cross-frame smoothing state for render_strategy: randomized (R8) — a
     # small dict owned by this run, created once alongside rng, and threaded
@@ -598,7 +616,7 @@ def main():
             profile_map=profile_map,
         )
 
-        img8 = _stretch_to_uint8(img, cfg)
+        img8 = _stretch_to_uint8(img, stretch_cfg)
         png_path = output_dir / f"frame_{i:05d}.png"
         # vmin/vmax=0/255 are required, not cosmetic: without them, imsave's
         # own colormap normalization re-stretches img8 a second time against
