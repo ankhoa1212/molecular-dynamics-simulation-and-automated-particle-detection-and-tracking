@@ -317,6 +317,67 @@ def _load_frame_rgb(png_path):
 # ---------------------------------------------------------------------------
 
 
+def _link_df_kwargs(cfg, search_range, memory):
+    """tp.link_df kwargs shared by _run_tracking_metrics and
+    _link_detections_for_video. adaptive_stop/adaptive_step let trackpy
+    retry an oversized subnet with a shrunken search_range instead of
+    raising SubnetOversizeException -- a real failure mode once a detector's
+    recall is high enough to recover a genuinely dense physical cluster
+    (see tracking.adaptive_stop's config.yaml comment), not a synthetic-only
+    edge case. Mirrors particle-tracking/track.py's own adaptive_stop/
+    adaptive_step threading."""
+    kwargs = {"search_range": search_range, "memory": memory}
+    adaptive_stop = _cfg_get(cfg, "tracking", "adaptive_stop", default=None)
+    if adaptive_stop is not None:
+        kwargs["adaptive_stop"] = adaptive_stop
+        kwargs["adaptive_step"] = _cfg_get(cfg, "tracking", "adaptive_step", default=0.95)
+    return kwargs
+
+
+def _motmetrics_compute_worker(acc, metrics, conn):
+    """multiprocessing target for _compute_motmetrics_with_timeout. Must be a
+    module-level function (not a closure/lambda) -- multiprocessing pickles
+    the target callable to hand it to the child process."""
+    import motmetrics as mm
+
+    summary = mm.metrics.create().compute(acc, metrics=metrics, name="tracking")
+    conn.send(summary.iloc[0].to_dict())
+
+
+def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=90):
+    """Run motmetrics' mh.compute() in a subprocess with a hard wall-clock
+    timeout, terminating it if exceeded.
+
+    IDF1's global identity-assignment can scale very poorly with the number
+    of distinct GT/predicted track IDs -- confirmed directly (2026-08-08):
+    ~1446 GT particles against ~1700 distinct trackpy track IDs (fragmented
+    by this dataset's density) exhausted this machine's RAM+swap and had to
+    be killed manually. A signal-based timeout can't reliably interrupt this
+    -- the actual cost is inside a blocking C-extension call
+    (scipy.optimize.linear_sum_assignment) that doesn't check for pending
+    Python signals until it returns -- so this uses OS-level process
+    termination instead, which works regardless of what the call is doing.
+
+    Returns:
+        dict of the single-row summary (column -> value), or None if the
+        computation didn't finish within timeout_s.
+    """
+    import multiprocessing as mp
+
+    ctx = mp.get_context("fork")
+    parent_conn, child_conn = ctx.Pipe()
+    proc = ctx.Process(target=_motmetrics_compute_worker, args=(acc, metrics, child_conn))
+    proc.start()
+    proc.join(timeout_s)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+        return None
+    if parent_conn.poll():
+        return parent_conn.recv()
+    return None
+
+
 def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
     """Run trackpy linking + motmetrics evaluation.
 
@@ -376,7 +437,15 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 
     det_df = pd.DataFrame(rows)
     tp.quiet()
-    linked = tp.link_df(det_df, search_range=search_range, memory=memory)
+    try:
+        linked = tp.link_df(det_df, **_link_df_kwargs(cfg, search_range, memory))
+    except tp.linking.utils.SubnetOversizeException as exc:
+        print(
+            f"Warning: trackpy linking failed ({exc}) -- detections are too densely "
+            "packed in some frame to disambiguate frame-to-frame. Skipping tracking "
+            "metrics (MOTA/IDF1 need a complete linked trajectory set)."
+        )
+        return None
     linked = linked.rename(columns={"particle": "track_id"})
 
     # Build motmetrics accumulator frame-by-frame
@@ -408,8 +477,7 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
 
         acc.update(gt_ids, pred_ids, dist_matrix)
 
-    mh = mm.metrics.create()
-    summary = mh.compute(
+    summary_dict = _compute_motmetrics_with_timeout(
         acc,
         metrics=[
             "mota",
@@ -419,21 +487,152 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
             "num_misses",
             "num_false_positives",
         ],
-        name="tracking",
     )
+    if summary_dict is None:
+        print(
+            "Warning: MOTA/IDF1 computation did not finish in time -- motmetrics' IDF1 "
+            "global identity-assignment can scale very poorly with the number of distinct "
+            "GT/predicted track IDs (this dataset's density can produce thousands of "
+            "fragmented trackpy tracks). Skipping tracking metrics."
+        )
+        return None
 
     result = {
-        "mota": float(summary["mota"].iloc[0]),
-        "idf1": float(summary["idf1"].iloc[0]),
-        "num_fragmentations": int(summary["num_fragmentations"].iloc[0]),
-        "num_switches": int(summary["num_switches"].iloc[0]),
-        "num_misses": int(summary["num_misses"].iloc[0]),
-        "num_false_positives": int(summary["num_false_positives"].iloc[0]),
+        "mota": float(summary_dict["mota"]),
+        "idf1": float(summary_dict["idf1"]),
+        "num_fragmentations": int(summary_dict["num_fragmentations"]),
+        "num_switches": int(summary_dict["num_switches"]),
+        "num_misses": int(summary_dict["num_misses"]),
+        "num_false_positives": int(summary_dict["num_false_positives"]),
         "matching_threshold_radii": threshold_radii,
         "psf_sigma_px": psf_sigma_px,
         "match_threshold_px": match_threshold,
     }
     return result
+
+
+def _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory):
+    """Link detections across frames via trackpy, for --save-video only.
+
+    Unlike _run_tracking_metrics (which only needs (x, y) centers to compare
+    against ground truth), this needs to hand each linked track_id back its
+    own box for annotation -- so it threads an explicit local_idx column
+    through tp.link_df instead of trusting row order to survive linking.
+
+    Independent of ground_truth_tracks.csv: linking only needs the
+    accumulated detections themselves, not a comparison to ground truth, so
+    --save-video works whether or not --ground-truth-tracks was passed.
+
+    Returns:
+        dict frame_idx -> (boxes ordered array (M, 4), track_ids array (M,)),
+        only for frames with at least one detection. Empty dict if there are
+        no detections at all across every frame, OR if trackpy's linker
+        raised SubnetOversizeException (some frame-to-frame window is too
+        densely packed to disambiguate) -- callers fall back to drawing
+        boxes without trajectory traces in that case rather than skipping
+        the whole video, since the per-frame detections are still valid and
+        worth seeing even when cross-frame identity can't be established.
+    """
+    import trackpy as tp
+    import pandas as pd
+
+    rows = []
+    for frame_idx, boxes in sorted(all_boxes_by_frame.items()):
+        centers = (boxes[:, :2] + boxes[:, 2:]) / 2 if len(boxes) else np.zeros((0, 2))
+        for local_idx, (cx, cy) in enumerate(centers):
+            rows.append({"frame": frame_idx, "x": cx, "y": cy, "local_idx": local_idx})
+
+    if not rows:
+        return {}
+
+    det_df = pd.DataFrame(rows)
+    tp.quiet()
+    try:
+        linked = tp.link_df(det_df, **_link_df_kwargs(cfg, search_range, memory))
+    except tp.linking.utils.SubnetOversizeException as exc:
+        print(
+            f"Warning: trackpy linking failed ({exc}) -- detections are too densely "
+            "packed in some frame to disambiguate frame-to-frame. --save-video will "
+            "draw boxes without trajectory traces."
+        )
+        return {}
+
+    result = {}
+    for frame_idx, group in linked.groupby("frame"):
+        order = group.sort_values("local_idx")
+        local_indices = order["local_idx"].to_numpy(dtype=int)
+        result[int(frame_idx)] = (
+            all_boxes_by_frame[int(frame_idx)][local_indices],
+            order["particle"].to_numpy(dtype=int),
+        )
+    return result
+
+
+def _write_tracking_video(
+    tiff_files,
+    all_boxes_by_frame,
+    model_type,
+    output_dir,
+    cfg,
+    search_range,
+    memory,
+    trace_length,
+    fps,
+):
+    """Write tracking_visualization_{model_type}.mp4: detection boxes and
+    trajectory traces (via supervision's BoxAnnotator/TraceAnnotator, the
+    same library particle-tracking/track.py's own video output uses) overlaid
+    on every synthetic frame -- a visually-verifiable artifact proving each
+    detector is actually producing sane per-frame detections and tracks, not
+    just summary numbers in a CSV."""
+    import cv2
+    import supervision as sv
+
+    if not any(len(boxes) > 0 for boxes in all_boxes_by_frame.values()):
+        print("Warning: no detections to draw -- skipping --save-video.")
+        return
+
+    # linked is {} whenever linking wasn't attempted (no detections) or failed
+    # (SubnetOversizeException) -- _write_tracking_video still draws
+    # box-only frames (no trace/track_id) from all_boxes_by_frame in that case.
+    linked = _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory)
+
+    box_annotator = sv.BoxAnnotator()
+    trace_annotator = sv.TraceAnnotator(trace_length=trace_length)
+
+    video_path = output_dir / f"tracking_visualization_{model_type}.mp4"
+    writer = None
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    for png_path in tiff_files:
+        frame_idx = int(png_path.stem.replace("frame_", ""))
+        frame_rgb = _load_frame_rgb(png_path)
+        if writer is None:
+            h, w = frame_rgb.shape[:2]
+            writer = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
+
+        boxes_this_frame = all_boxes_by_frame.get(frame_idx, np.zeros((0, 4)))
+        if frame_idx in linked:
+            boxes, track_ids = linked[frame_idx]
+            detections = sv.Detections(
+                xyxy=boxes.astype(np.float32),
+                tracker_id=track_ids,
+                class_id=np.zeros(len(boxes), dtype=int),
+            )
+            annotated = trace_annotator.annotate(scene=frame_rgb.copy(), detections=detections)
+            annotated = box_annotator.annotate(scene=annotated, detections=detections)
+        elif len(boxes_this_frame) > 0:
+            detections = sv.Detections(
+                xyxy=boxes_this_frame.astype(np.float32),
+                class_id=np.zeros(len(boxes_this_frame), dtype=int),
+            )
+            annotated = box_annotator.annotate(scene=frame_rgb.copy(), detections=detections)
+        else:
+            annotated = frame_rgb
+
+        writer.write(cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR))
+
+    writer.release()
+    print(f"Video               → {video_path}")
 
 
 def main():
@@ -460,6 +659,23 @@ def main():
         "benchmark.model_type from --config)",
     )
     parser.add_argument("--device", default=None, help="Inference device (e.g. 0 or cpu)")
+    parser.add_argument(
+        "--save-video",
+        action="store_true",
+        help="Write tracking_visualization_{model_type}.mp4 with detection boxes and "
+        "trajectory traces overlaid, for visual verification of detector+tracker behavior. "
+        "Uses tracking.search_range/memory from --config to link detections across frames "
+        "(independent of --ground-truth-tracks, which is only needed for MOTA/IDF1).",
+    )
+    parser.add_argument(
+        "--video-fps", type=float, default=10.0, help="Frame rate for --save-video output"
+    )
+    parser.add_argument(
+        "--trace-length",
+        type=int,
+        default=30,
+        help="Frames of trajectory history drawn in --save-video output",
+    )
     args = parser.parse_args()
 
     # Loaded once as the full top-level dict (not just the benchmark: subtree) so the
@@ -576,6 +792,9 @@ def main():
     all_tp = all_fp = all_fn = 0
     all_dists = []
     all_detections_by_frame = {}  # frame_idx → (N, 2) array of (x, y) centroids
+    all_boxes_by_frame = (
+        {}
+    )  # frame_idx → (N, 4) array of xyxy boxes, only populated for --save-video
 
     for png_path in tiff_files:
         frame_idx = int(png_path.stem.replace("frame_", ""))
@@ -621,6 +840,10 @@ def main():
         all_fn += fn
         all_dists.extend(dists)
         all_detections_by_frame[frame_idx] = pred_centers
+        if args.save_video:
+            all_boxes_by_frame[frame_idx] = (
+                dets.xyxy.astype(np.float64) if len(dets) > 0 else np.zeros((0, 4))
+            )
 
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -683,7 +906,7 @@ def main():
                 writer.writeheader()
                 writer.writerow(tracking_metrics)
 
-            print(f"\n=== Tracking Metrics ===")
+            print("\n=== Tracking Metrics ===")
             print(f"MOTA:              {tracking_metrics['mota']:.4f}")
             print(f"IDF1:              {tracking_metrics['idf1']:.4f}")
             print(f"Fragmentations:    {tracking_metrics['num_fragmentations']}")
@@ -695,6 +918,21 @@ def main():
             print(f"Tracking metrics:  {tracking_csv_path}")
     else:
         print("\n(Tracking metrics skipped — pass --ground-truth-tracks to enable)")
+
+    if args.save_video:
+        video_search_range = _cfg_get(full_cfg, "tracking", "search_range", default=15)
+        video_memory = _cfg_get(full_cfg, "tracking", "memory", default=3)
+        _write_tracking_video(
+            tiff_files,
+            all_boxes_by_frame,
+            model_type,
+            output_dir,
+            full_cfg,
+            video_search_range,
+            video_memory,
+            args.trace_length,
+            args.video_fps,
+        )
 
 
 if __name__ == "__main__":

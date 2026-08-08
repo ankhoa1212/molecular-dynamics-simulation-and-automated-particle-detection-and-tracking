@@ -266,7 +266,20 @@ benchmark:
 
   tiling:
     enabled: true
-    tile_size: 512           # set < image size if the frame has >300 particles
+    # Must be < synthetic.image_width/image_height or detect_with_tiling's
+    # H<=tile_size and W<=tile_size guard short-circuits to a single
+    # full-frame predict() call, silently disabling tiling regardless of
+    # this enabled: true -- exactly the bug this value fixes. Previously
+    # 512, equal to the 512x512 default frame size, so tiling never
+    # actually engaged and every frame's ~1446 particles were capped at
+    # num_queries=300 detections (recall ~0.18). At 160px with 50px
+    # overlap, a 512x512 frame at this dataset's density (~0.0055
+    # particles/px^2) yields ~140 particles/tile -- comfortably under the
+    # 300-query cap with margin for local clustering. Re-tune if
+    # synthetic.image_width/image_height or particle density changes
+    # significantly. See docs/superpowers/specs/2026-08-07-rf-detr-
+    # tiling-fix-design.md.
+    tile_size: 160
     overlap: 50
     nms_threshold: 0.3
 
@@ -303,6 +316,31 @@ tracking:
   search_range: 15              # trackpy max displacement between frames (px)
   memory: 3                     # frames a particle can be missing before track ends
   matching_threshold_radii: 0.5 # motmetrics GT↔pred match threshold (× psf_sigma_px)
+  # trackpy.link_df's recursive subnet solver raises SubnetOversizeException
+  # when too many candidate particles are mutually within search_range of
+  # each other in the same frame-to-frame window -- e.g. once a detector's
+  # recall is high enough to actually recover a dense physical cluster (this
+  # dataset's continuous_force trajectory packs ~1400 of ~1446 particles into
+  # one mutually-connected subnet at its densest timesteps), not a
+  # synthetic-data edge case. benchmark.py catches this exception directly
+  # and degrades gracefully (skips MOTA/IDF1 for _run_tracking_metrics; draws
+  # boxes without trajectory traces for --save-video) -- that catch is the
+  # real safety net, always active regardless of this setting.
+  #
+  # adaptive_stop (off by default: null) is a SEPARATE, opt-in mechanism that
+  # retries an oversized subnet with a shrunken search_range down to this
+  # floor before giving up, mirroring particle-tracking/track.py's own
+  # tracking.adaptive_stop/adaptive_step knobs -- appropriate for moderately
+  # dense scenes. Do NOT enable it against this dataset's default trajectory:
+  # confirmed directly (2026-08-08) that retrying a ~1400-point subnet down
+  # from search_range=15 to adaptive_stop=3.0 in 0.95x steps exhausted this
+  # machine's 15GB RAM + 21GB swap and had to be killed -- each retry
+  # re-attempts neighbor-graph formation over the full frame, and subnet size
+  # does not necessarily shrink fast enough as search_range shrinks when
+  # particles are this tightly packed. See docs/superpowers/specs/2026-08-08-
+  # trackpy-subnet-oversize-guard-design.md.
+  adaptive_stop: null
+  adaptive_step: 0.95
 
 # --- compare.py: physics observable comparison ---
 compare:

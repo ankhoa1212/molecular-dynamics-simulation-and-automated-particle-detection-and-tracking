@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
-import pandas as pd
 import pytest
 
 # Force supervision's own real import (and its internal torch-availability
@@ -514,6 +513,10 @@ class TestMainModelTypeWiring:
     def test_lodestar_model_type_calls_lodestar_loader_and_skips_tiling(
         self, tmp_path, monkeypatch
     ):
+        # main()'s output_dir = Path("verification_output") is CWD-relative --
+        # without chdir-ing into tmp_path, this test would write into (and
+        # corrupt) the real verification/verification_output/ directory.
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -562,6 +565,7 @@ class TestMainModelTypeWiring:
         in config, get_lodestar_model must receive a normalized device string
         ("cuda:0"), not the raw unnormalized default ("0") that torch.device()
         rejects."""
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -602,6 +606,7 @@ class TestMainModelTypeWiring:
     def test_rf_detr_model_type_unchanged_from_before_this_plan(self, tmp_path, monkeypatch):
         """Regression guard: --model-type rf-detr (or omitted) exercises the
         same rf-detr code path as before LodeSTAR support was added."""
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -646,6 +651,7 @@ class TestMainModelTypeWiring:
     def test_missing_lodestar_checkpoint_prints_same_error_as_rf_detr(
         self, tmp_path, monkeypatch, capsys
     ):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -676,6 +682,7 @@ class TestMainModelTypeWiring:
     def test_ground_truth_tracks_with_lodestar_invokes_shared_tracking_metrics(
         self, tmp_path, monkeypatch
     ):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -721,6 +728,7 @@ class TestMainModelTypeWiring:
     def test_trackpy_model_type_skips_checkpoint_and_model_loading(self, tmp_path, monkeypatch):
         """trackpy has no checkpoint and no loaded model — main() must not call
         either loader and must not require a checkpoint file to exist."""
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -758,6 +766,7 @@ class TestMainModelTypeWiring:
         assert called_kwargs["diameter"] == 11
 
     def test_trackpy_accumulates_detections_like_other_model_types(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -805,6 +814,7 @@ class TestMainModelTypeWiring:
     def test_rf_detr_and_lodestar_unchanged_by_trackpy_addition(self, tmp_path, monkeypatch):
         """Regression guard: adding the trackpy branch must not alter rf-detr's
         or lodestar's existing checkpoint enforcement or model loading."""
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -830,6 +840,7 @@ class TestMainModelTypeWiring:
             benchmark.main()
 
     def test_unknown_model_type_rejected_by_argparse(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -855,6 +866,7 @@ class TestLodestarBoxSizeDerivation:
     an explicit benchmark.lodestar.box_size config value always wins."""
 
     def _run(self, tmp_path, monkeypatch, config_yaml_extra=""):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -922,3 +934,222 @@ class TestLodestarBoxSizeDerivation:
         not the literal 40 the old fallback config value used to carry."""
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
         assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "box_size") is None
+
+
+# ---------------------------------------------------------------------------
+# --save-video: _link_detections_for_video
+# ---------------------------------------------------------------------------
+
+
+class TestLinkDetectionsForVideo:
+    """--save-video's linking helper: unlike _run_tracking_metrics (which only
+    needs (x, y) centers), this must hand each linked track_id back its own
+    box, so it threads an explicit local_idx column through tp.link_df rather
+    than trusting row order to survive linking."""
+
+    def test_returns_a_box_and_track_id_per_detection_per_frame(self):
+        boxes_by_frame = {
+            0: np.array([[10.0, 10.0, 20.0, 20.0], [100.0, 100.0, 110.0, 110.0]]),
+            1: np.array([[11.0, 11.0, 21.0, 21.0], [101.0, 101.0, 111.0, 111.0]]),
+        }
+        result = benchmark._link_detections_for_video(boxes_by_frame, {}, search_range=15, memory=3)
+
+        assert set(result.keys()) == {0, 1}
+        for frame_idx, (boxes, track_ids) in result.items():
+            assert boxes.shape == (2, 4)
+            assert track_ids.shape == (2,)
+
+    def test_same_particle_gets_the_same_track_id_across_frames(self):
+        """A single particle drifting a few pixels per frame must link into
+        one consistent track_id, and its own box must travel with it."""
+        boxes_by_frame = {
+            0: np.array([[10.0, 10.0, 20.0, 20.0]]),
+            1: np.array([[12.0, 12.0, 22.0, 22.0]]),
+            2: np.array([[14.0, 14.0, 24.0, 24.0]]),
+        }
+        result = benchmark._link_detections_for_video(boxes_by_frame, {}, search_range=15, memory=3)
+
+        track_ids = [result[f][1][0] for f in (0, 1, 2)]
+        assert track_ids[0] == track_ids[1] == track_ids[2]
+        # Each frame's box must be the one that actually belongs to that frame,
+        # not e.g. frame 0's box relinked onto frame 2's entry.
+        np.testing.assert_array_equal(result[2][0][0], boxes_by_frame[2][0])
+
+    def test_two_particles_keep_their_own_boxes_after_linking(self):
+        """local_idx must correctly re-associate each track_id with its own
+        box, not e.g. accidentally swap two same-frame detections' boxes."""
+        boxes_by_frame = {
+            0: np.array([[10.0, 10.0, 20.0, 20.0], [200.0, 200.0, 210.0, 210.0]]),
+            1: np.array([[201.0, 201.0, 211.0, 211.0], [11.0, 11.0, 21.0, 21.0]]),  # order swapped
+        }
+        result = benchmark._link_detections_for_video(boxes_by_frame, {}, search_range=15, memory=3)
+
+        boxes0, ids0 = result[0]
+        boxes1, ids1 = result[1]
+        # Whichever track_id corresponds to the near-(10,10) particle must own
+        # the near-(11,11) box in frame 1, not the near-(201,201) box.
+        small_track_id = ids0[np.argmin(boxes0[:, 0])]
+        small_box_frame1 = boxes1[ids1 == small_track_id][0]
+        assert small_box_frame1[0] < 100  # the (11,11)-ish box, not the (201,201)-ish one
+
+    def test_empty_detections_returns_empty_dict(self):
+        boxes_by_frame = {0: np.zeros((0, 4)), 1: np.zeros((0, 4))}
+        result = benchmark._link_detections_for_video(boxes_by_frame, {}, search_range=15, memory=3)
+        assert result == {}
+
+    def test_frame_with_no_detections_is_absent_from_result(self):
+        boxes_by_frame = {
+            0: np.array([[10.0, 10.0, 20.0, 20.0]]),
+            1: np.zeros((0, 4)),
+        }
+        result = benchmark._link_detections_for_video(boxes_by_frame, {}, search_range=15, memory=3)
+        assert 0 in result
+        assert 1 not in result
+
+
+# ---------------------------------------------------------------------------
+# _link_df_kwargs / tracking.adaptive_stop — SubnetOversizeException guard
+# ---------------------------------------------------------------------------
+
+
+def _dense_cluster_detections_and_gt(tmp_path, n_particles=60, n_frames=3, seed=0):
+    """A tight cluster of particles all mutually within a typical
+    search_range of each other across consecutive frames -- exactly what
+    raises trackpy.linking.utils.SubnetOversizeException (default
+    max_subnet_size=30, so n_particles=60 reliably triggers it)."""
+    rng = np.random.default_rng(seed)
+    base = rng.uniform(0, 30, size=(n_particles, 2))
+    gt_rows = []
+    for frame in range(n_frames):
+        jitter = rng.uniform(-1, 1, size=(n_particles, 2))
+        for pid, (x, y) in enumerate(base + jitter):
+            gt_rows.append({"frame": frame, "particle_id": pid, "x": x, "y": y})
+    gt_path = tmp_path / "gt.csv"
+    _write_gt_tracks(gt_path, gt_rows)
+
+    detections = {
+        frame: base + rng.uniform(-1, 1, size=(n_particles, 2)) for frame in range(n_frames)
+    }
+    return detections, gt_path
+
+
+class TestLinkDfKwargs:
+    """tracking.adaptive_stop/adaptive_step (opt-in, off by default) let
+    trackpy retry an oversized subnet with a shrunken search_range instead of
+    immediately raising SubnetOversizeException -- appropriate for
+    moderately dense scenes. NOT the primary safety net against this
+    dataset's pathological density: confirmed directly (2026-08-08) that
+    enabling it against a ~1400-point mutually-connected subnet exhausted
+    this machine's RAM+swap and had to be killed, since subnet size doesn't
+    necessarily shrink fast enough as search_range shrinks when particles
+    are this tightly packed. _run_tracking_metrics/_link_detections_for_video
+    catching SubnetOversizeException directly (TestSubnetOversizeGuard below)
+    is the real, always-on safety net."""
+
+    def test_adaptive_stop_absent_omits_adaptive_kwargs(self):
+        cfg = {"tracking": {"search_range": 15, "memory": 3}}
+        kwargs = benchmark._link_df_kwargs(cfg, search_range=15, memory=3)
+        assert kwargs == {"search_range": 15, "memory": 3}
+
+    def test_adaptive_stop_set_adds_adaptive_kwargs(self):
+        cfg = {"tracking": {"adaptive_stop": 3.0, "adaptive_step": 0.9}}
+        kwargs = benchmark._link_df_kwargs(cfg, search_range=15, memory=3)
+        assert kwargs == {
+            "search_range": 15,
+            "memory": 3,
+            "adaptive_stop": 3.0,
+            "adaptive_step": 0.9,
+        }
+
+    def test_adaptive_step_defaults_to_0_95_when_only_stop_is_set(self):
+        cfg = {"tracking": {"adaptive_stop": 3.0}}
+        kwargs = benchmark._link_df_kwargs(cfg, search_range=15, memory=3)
+        assert kwargs["adaptive_step"] == 0.95
+
+    def test_shipped_config_yaml_leaves_adaptive_stop_disabled(self):
+        """Regression guard: verification/config.yaml's tracking.adaptive_stop
+        must stay null/absent by default -- enabling it against this repo's
+        default dense trajectory is the RAM/swap-exhaustion failure mode
+        confirmed above, not a safe default."""
+        real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
+        assert benchmark._cfg_get(real_cfg, "tracking", "adaptive_stop") is None
+
+
+class TestSubnetOversizeGuard:
+    """_run_tracking_metrics/_link_detections_for_video must catch
+    trackpy.linking.utils.SubnetOversizeException directly and degrade
+    gracefully -- the real, always-on safety net (independent of
+    tracking.adaptive_stop, which is opt-in and unsafe for this dataset;
+    see TestLinkDfKwargs). This is what actually fixed the 2026-08-08
+    incident: RF-DETR's tiling fix raised recall enough to recover a
+    genuinely dense physical cluster in verification_output/v2's
+    continuous_force_1500_5.0 trajectory, and the resulting oversized
+    subnet must not crash or hang the pipeline."""
+
+    def test_run_tracking_metrics_returns_none_instead_of_raising(self, tmp_path):
+        detections, gt_path = _dense_cluster_detections_and_gt(tmp_path)
+        cfg = _make_cfg(search_range=15)  # adaptive_stop absent -- default/unsafe-off state
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+
+        assert result is None
+
+    def test_link_detections_for_video_returns_empty_dict_instead_of_raising(self, tmp_path):
+        detections, _ = _dense_cluster_detections_and_gt(tmp_path)
+        boxes_by_frame = {
+            frame: np.concatenate([centers - 5, centers + 5], axis=1)
+            for frame, centers in detections.items()
+        }
+        cfg = {"tracking": {}}  # adaptive_stop absent
+
+        result = benchmark._link_detections_for_video(
+            boxes_by_frame, cfg, search_range=15, memory=3
+        )
+
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _compute_motmetrics_with_timeout — motmetrics IDF1 scaling guard
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMotmetricsWithTimeout:
+    """motmetrics' IDF1 global identity-assignment can scale catastrophically
+    with the number of distinct GT/predicted track IDs -- confirmed directly
+    (2026-08-08): a real ~1446 GT particle x ~1700 fragmented-track-id
+    trackpy run against verification_output/v2 exhausted this machine's
+    RAM+swap and had to be killed manually. This must never happen again
+    regardless of root cause, so mh.compute() runs in a subprocess with a
+    hard OS-level timeout."""
+
+    def test_happy_path_returns_summary_dict(self):
+        import motmetrics as mm
+
+        acc = mm.MOTAccumulator(auto_id=True)
+        acc.update([1, 2], [1, 2], np.array([[0.0, 5.0], [5.0, 0.0]]))
+
+        result = benchmark._compute_motmetrics_with_timeout(
+            acc, metrics=["mota", "idf1"], timeout_s=30
+        )
+
+        assert result is not None
+        assert "mota" in result
+        assert "idf1" in result
+
+    def test_returns_none_when_computation_exceeds_timeout(self, monkeypatch):
+        def _slow_worker(acc, metrics, conn):
+            import time
+
+            time.sleep(5)
+            conn.send({})
+
+        monkeypatch.setattr(benchmark, "_motmetrics_compute_worker", _slow_worker)
+        import motmetrics as mm
+
+        acc = mm.MOTAccumulator(auto_id=True)
+        acc.update([1], [1], np.array([[0.0]]))
+
+        result = benchmark._compute_motmetrics_with_timeout(acc, metrics=["mota"], timeout_s=1)
+
+        assert result is None
