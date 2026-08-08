@@ -3,11 +3,14 @@ Also contains U2 tests for render_deeptrack.py (DeepTrack2 PSF + enhanced noise)
 """
 
 import csv
+import io
 import json
 import sys
+import textwrap
 from pathlib import Path
 from unittest import mock
 
+import matplotlib.image as mplimg
 import numpy as np
 import pytest
 
@@ -554,12 +557,13 @@ class TestRenderStrategyDispatch:
         frame = render_module._dispatch_render(positions, box, cfg, rng, "unknown_strategy")
         assert frame.dtype == np.uint16
 
-    def test_procedural_strategy_plain_gaussian_through_dispatch(self, render_module):
-        """2026-08-08: the procedural path dispatched through
+    def test_procedural_strategy_ring_active_through_dispatch(self, render_module):
+        """U2 integration coverage: the procedural path dispatched through
         _dispatch_render (not just a direct render_frame call) produces a
-        plain Gaussian core -- bright at center, decaying smoothly outward,
-        with no dark ring. See docs/superpowers/specs/2026-08-08-remove-
-        procedural-ring-design.md."""
+        core-plus-ring profile — a dark annulus around radius_factor*sigma
+        that is much darker than the bright core — using the documented
+        ring defaults (no explicit `ring` key in cfg, matching config.yaml's
+        fallback). The old pure-Gaussian stamp had no such dip."""
         H, W = 64, 64
         cx, cy = 32.0, 32.0
         sigma = 5.0
@@ -572,7 +576,6 @@ class TestRenderStrategyDispatch:
             "peak_intensity": 40000,
             "shot_noise": False,
             "readout_noise": 0.0,
-            "background_fraction": 0.0,
         }
         rng = np.random.default_rng(42)
         frame = render_module._dispatch_render(positions, box, cfg, rng, "procedural")
@@ -580,9 +583,9 @@ class TestRenderStrategyDispatch:
         assert frame.shape == (H, W)
 
         core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
-        far_mean = _mean_intensity_in_annulus(frame, cx, cy, 3 * sigma - 1.0, 3 * sigma + 1.0)
+        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * sigma - 1.0, 2.2 * sigma + 1.0)
         assert core_mean > 0.5 * 40000
-        assert far_mean < 0.05 * core_mean  # smooth Gaussian falloff, not a distinct dark ring
+        assert ring_mean < 0.3 * core_mean
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +733,7 @@ class TestDeeptrackStrategy:
         sys.path.insert(0, str(Path(__file__).parent.parent))
 
         with mock.patch.dict(sys.modules, {"deeptrack": None}):
+            import render_deeptrack as rdt  # noqa: F811
 
             for key in list(sys.modules.keys()):
                 if "render_deeptrack" in key:
@@ -1606,10 +1610,13 @@ def _mean_intensity_in_annulus(img, cx, cy, r_inner, r_outer):
     return float(img[mask].astype(np.float64).mean())
 
 
+_DEFAULT_RING = {"radius_factor": 2.2, "width_factor": 0.5, "depth": 0.4}
+
+
 def _procedural_cfg(
-    H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0, background_fraction=0.0
+    H, W, sigma, peak=40000, shot_noise=False, readout_noise=0.0, ring=None, background_fraction=0.0
 ):
-    return {
+    cfg = {
         "image_height": H,
         "image_width": W,
         "psf_sigma": sigma,
@@ -1618,24 +1625,40 @@ def _procedural_cfg(
         "readout_noise": readout_noise,
         "background_fraction": background_fraction,
     }
+    if ring is not None:
+        cfg["ring"] = ring
+    return cfg
 
 
-class TestGaussianProfile:
-    """2026-08-08: the dark ring was removed from render_strategy: procedural's
-    default particle stamp (see docs/superpowers/specs/2026-08-08-remove-
-    procedural-ring-design.md) -- the stamp is now a plain 2D Gaussian core."""
+class TestGaussianRingProfileExtraction:
+    """Task 1: _gaussian_ring_profile/_gaussian_ring_extent, extracted from
+    render_frame's inline math with no behavior change."""
 
-    def test_gaussian_profile_matches_manual_formula(self, render_module):
+    def test_gaussian_ring_profile_matches_manual_core_minus_ring_math(self, render_module):
         sigma = 4.0
         r_grid = np.array([0.0, 2.0, 8.8, 20.0])
-        profile = render_module._gaussian_profile(r_grid, sigma)
+        profile = render_module._gaussian_ring_profile(r_grid, sigma, 2.2, 0.5, 0.4)
+
+        core = np.exp(-0.5 * (r_grid / sigma) ** 2)
+        ring_width = 0.5 * sigma
+        ring = 0.4 * np.exp(-0.5 * ((r_grid - 2.2 * sigma) / ring_width) ** 2)
+        expected = core - ring
+
+        np.testing.assert_allclose(profile, expected)
+
+    def test_gaussian_ring_profile_zero_depth_is_pure_core(self, render_module):
+        sigma = 3.0
+        r_grid = np.array([0.0, 3.0, 9.0])
+        profile = render_module._gaussian_ring_profile(r_grid, sigma, ring_depth=0.0)
         expected = np.exp(-0.5 * (r_grid / sigma) ** 2)
         np.testing.assert_allclose(profile, expected)
 
-    def test_gaussian_extent_matches_manual_formula(self, render_module):
+    def test_gaussian_ring_extent_matches_manual_formula(self, render_module):
         sigma = 6.0
-        extent = render_module._gaussian_extent(sigma)
-        assert extent == int(3 * sigma) + 1
+        extent = render_module._gaussian_ring_extent(sigma, 2.2, 0.5, 0.4)
+        ring_width = 0.5 * sigma
+        expected = int(max(3 * sigma, 2.2 * sigma + 3 * ring_width)) + 1
+        assert extent == expected
 
 
 class TestDiskRimProfile:
@@ -1683,8 +1706,8 @@ class TestDiskRimProfile:
         np.testing.assert_array_equal(explicit_zero, default)
 
     def test_output_can_go_negative_before_caller_clips(self, render_module):
-        # A strong rim can dip the raw profile below 0 -- callers must clip
-        # (render_frame's clip-before-Poisson guard exists for exactly this).
+        # A strong rim can dip the raw profile below 0 -- callers must clip,
+        # exactly as render_frame already does for gaussian_ring's ring dip.
         r_grid = np.linspace(0, 30, 300)
         profile = render_module._disk_rim_profile(
             r_grid,
@@ -1735,47 +1758,17 @@ class TestBackgroundFractionCanvas:
         )
         assert np.all(frame == 250)
 
-    def test_disk_rim_dip_clips_to_zero_against_nonzero_baseline(self, render_module):
-        """The existing img = np.clip(img, 0, None) guard must still floor a
-        profile's negative dip at exactly 0, not a negative value, against a
-        nonzero background baseline. Uses disk_rim's rim_depth -- since the
-        default gaussian profile has no ring, disk_rim (via
-        particle_render_profiles) is the remaining profile whose output can
-        go negative. See docs/superpowers/specs/2026-08-08-remove-
-        procedural-ring-design.md."""
-        cfg = {
-            "image_height": 64,
-            "image_width": 64,
-            "peak_intensity": 1000,
-            "shot_noise": False,
-            "readout_noise": 0.0,
-            "background_fraction": 0.01,
-            "particle_render_profiles": {
-                "profiles": [
-                    {
-                        "name": "rimmed",
-                        "type": "disk_rim",
-                        "proportion": 1.0,
-                        "params": {
-                            "disk_radius_px": 20.0,
-                            "blur_sigma_px": 3.0,
-                            "rim_depth": 0.9,
-                            "rim_width_px": 2.0,
-                            "rim_offset_px": 1.0,
-                        },
-                    }
-                ]
-            },
-        }
+    def test_ring_dip_clips_to_zero_against_nonzero_baseline(self, render_module):
+        """The existing img = np.clip(img, 0, None) guard (render.py:281)
+        must still floor the ring's negative dip at exactly 0, not a
+        negative value, now that the canvas starts at a nonzero baseline
+        instead of 0."""
+        cfg = _procedural_cfg(
+            64, 64, sigma=5.0, peak=1000, background_fraction=0.01, ring=_DEFAULT_RING
+        )
         positions = np.array([[32.0, 32.0]])
-        atom_ids = np.array([1])
         frame = render_module.render_frame(
-            positions,
-            (0.0, 64.0, 0.0, 64.0),
-            cfg,
-            np.random.default_rng(0),
-            atom_ids=atom_ids,
-            profile_map={1: "rimmed"},
+            positions, (0.0, 64.0, 0.0, 64.0), cfg, np.random.default_rng(0)
         )
         assert frame.min() == 0
 
@@ -1802,7 +1795,7 @@ class TestDiskRimExtent:
 
 class TestParticleProfileRegistry:
     def test_registry_contains_both_profile_types(self, render_module):
-        assert set(render_module._PARTICLE_PROFILES) == {"disk_rim", "gaussian"}
+        assert set(render_module._PARTICLE_PROFILES) == {"disk_rim", "gaussian_ring"}
 
     def test_each_entry_is_an_intensity_and_extent_function_pair(self, render_module):
         for name, (intensity_fn, extent_fn) in render_module._PARTICLE_PROFILES.items():
@@ -1814,10 +1807,10 @@ class TestParticleProfileRegistry:
         assert intensity_fn is render_module._disk_rim_profile
         assert extent_fn is render_module._disk_rim_extent
 
-    def test_gaussian_entry_matches_the_standalone_functions(self, render_module):
-        intensity_fn, extent_fn = render_module._PARTICLE_PROFILES["gaussian"]
-        assert intensity_fn is render_module._gaussian_profile
-        assert extent_fn is render_module._gaussian_extent
+    def test_gaussian_ring_entry_matches_the_standalone_functions(self, render_module):
+        intensity_fn, extent_fn = render_module._PARTICLE_PROFILES["gaussian_ring"]
+        assert intensity_fn is render_module._gaussian_ring_profile
+        assert extent_fn is render_module._gaussian_ring_extent
 
 
 class TestAssignParticleProfiles:
@@ -1895,39 +1888,21 @@ class TestRenderFrameProfileMap:
     """Task 5: render_frame's new atom_ids/profile_map params, with
     profile_map=None as the exact pre-this-feature fallback."""
 
-    def test_profile_map_none_matches_plain_gaussian_shape(self, render_module):
-        """profile_map=None's default path must render byte-identically to
-        explicitly routing the same particle through the "gaussian" registry
-        entry via particle_render_profiles -- the documented equivalence
-        (render.py's render_frame docstring)."""
+    def test_profile_map_none_matches_gaussian_ring_shape(self, render_module):
         H, W = 64, 64
         positions = np.array([[5.0, 5.0]])
         box = (0.0, 10.0, 0.0, 10.0)
-        cfg_default = _procedural_cfg(
-            H, W, sigma=3.0, peak=20000, shot_noise=False, readout_noise=0.0
+        cfg = _procedural_cfg(
+            H, W, sigma=3.0, peak=20000, shot_noise=False, readout_noise=0.0, ring=_DEFAULT_RING
         )
 
-        frame_default = render_module.render_frame(
-            positions, box, cfg_default, np.random.default_rng(3)
-        )
+        frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(3))
 
-        cfg_explicit = dict(cfg_default)
-        cfg_explicit["particle_render_profiles"] = {
-            "profiles": [
-                {"name": "plain", "type": "gaussian", "proportion": 1.0, "params": {"sigma": 3.0}}
-            ]
-        }
-        atom_ids = np.array([1])
-        frame_explicit = render_module.render_frame(
-            positions,
-            box,
-            cfg_explicit,
-            np.random.default_rng(3),
-            atom_ids=atom_ids,
-            profile_map={1: "plain"},
-        )
-
-        np.testing.assert_array_equal(frame_default, frame_explicit)
+        cx, cy = 32.0, 32.0  # (5,5) LJ in a (0,10)x(0,10) box, 64x64 image -> pixel (32,32)
+        core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
+        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * 3.0 - 1.0, 2.2 * 3.0 + 1.0)
+        assert core_mean > 0.5 * 20000
+        assert ring_mean < 0.3 * core_mean
 
     def test_profile_map_routes_each_particle_to_its_assigned_profile_size(self, render_module):
         H, W = 200, 200
@@ -2078,19 +2053,18 @@ class TestDispatchRenderProfileMap:
         assert frame.shape == (4, 4)
 
 
-class TestProceduralGaussianProfile:
-    """2026-08-08: render_frame's default per-particle stamp is a plain
-    Gaussian, not a core-plus-ring profile, evaluated over an explicit 2D
-    radius grid (not the core's separable outer-product form). See
-    docs/superpowers/specs/2026-08-08-remove-procedural-ring-design.md."""
+class TestProceduralRingProfile:
+    """R3/R4: render_frame's per-particle stamp is a core-plus-ring
+    difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
+    2D radius grid (not the core's separable outer-product form)."""
 
-    def test_angularly_averaged_profile_peaks_at_center_and_fades_to_zero(self, render_module):
+    def test_angularly_averaged_profile_has_peak_dip_and_fades_to_zero(self, render_module):
         H, W = 128, 128
         sigma = 5.0
         cx, cy = W / 2.0, H / 2.0
         box = (0.0, float(W), 0.0, float(H))
         positions = np.array([[cx, cy]])
-        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000)
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, ring=_DEFAULT_RING)
 
         frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(0))
 
@@ -2104,34 +2078,44 @@ class TestProceduralGaussianProfile:
         peak_idx = np.nanargmax(means)
         peak_val = means[peak_idx]
         assert peak_val > 0.5 * 40000
-        assert centers[peak_idx] < sigma  # peak sits at/near r=0
+        assert centers[peak_idx] < sigma  # peak sits at/near r=0, not out at the ring
 
-        # Fades to near-zero with increasing radius -- no local minimum/dip
-        # anywhere (the direct behavioral proof there is no ring). A small
-        # positive tolerance absorbs per-bin pixel-count/discretization
-        # noise in the angular averaging without masking a real ring rebound
-        # (which would be a jump of thousands of ADU, not tens).
-        valid = ~np.isnan(means)
-        assert np.all(np.diff(means[valid]) <= 0.02 * peak_val)
+        # Local minimum at approximately radius_factor * sigma.
+        min_idx = np.nanargmin(means)
+        expected_ring_r = _DEFAULT_RING["radius_factor"] * sigma
+        assert means[min_idx] < 0.3 * peak_val
+        assert abs(centers[min_idx] - expected_ring_r) < 1.5 * sigma
+
+        # Fades to near-zero beyond the ring.
         far_mean = np.nanmean(means[-5:])
         assert far_mean < 0.05 * peak_val
 
-    def test_gaussian_stamp_is_invariant_under_90_degree_rotation(self, render_module):
-        """The stamp must be evaluated over a true 2D radius grid, not the
-        core's separable outer-product form -- a stamp that only depends on
-        Euclidean radius from center is exactly invariant under rotation
-        about that center. This test places the particle exactly on the
-        center pixel of an odd-sized square frame -- so np.rot90 is an
-        *exact* pixel permutation about that same point, with no
-        interpolation error to tolerate -- and requires the rendered frame
-        to be numerically identical to its own 90/180/270-degree
+    def test_ring_is_invariant_under_90_degree_rotation(self, render_module):
+        """R3: the ring must be evaluated over a true 2D radius grid, not the
+        core's separable outer-product form -- a separable/outer-product
+        implementation of the ring term is not rotationally symmetric about
+        the particle center in general (confirmed directly: a naive
+        generalization of the core's np.outer(gy, gx) pattern to the ring
+        term -- np.outer(gy_ring, gx_ring) -- concentrates its artifact in
+        one quadrant rather than distributing it around a circle, breaking
+        90-degree rotational symmetry, while radius-binned/angle-averaged
+        profile checks and even direct same-radius multi-angle sampling can
+        both fail to catch this depending on exactly where the artifact
+        lands relative to the sampled points).
+
+        A stamp that only depends on Euclidean radius from center is exactly
+        invariant under rotation about that center. This test places the
+        particle exactly on the center pixel of an odd-sized square frame --
+        so np.rot90 is an *exact* pixel permutation about that same point,
+        with no interpolation error to tolerate -- and requires the rendered
+        frame to be numerically identical to its own 90/180/270-degree
         rotations."""
         H = W = 101  # odd size: exact center pixel at index 50
         sigma = 5.0
         cx = cy = 50.0
         box = (0.0, float(W), 0.0, float(H))
         positions = np.array([[cx, cy]])
-        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000)
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, ring=_DEFAULT_RING)
 
         frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(0)).astype(
             np.float64
@@ -2145,20 +2129,76 @@ class TestProceduralGaussianProfile:
                 rotated,
                 atol=1e-9,
                 err_msg=(
-                    f"render_frame's Gaussian stamp is not invariant under a {90*k}-degree "
+                    f"render_frame's core+ring stamp is not invariant under a {90*k}-degree "
                     "rotation about the particle center -- this is the signature of a "
-                    "separable/outer-product implementation rather than one evaluated over a "
-                    "true 2D radius grid, which is exactly rotation-invariant."
+                    "separable/outer-product ring implementation (its artifact concentrates "
+                    "in one quadrant rather than distributing around a circle) rather than one "
+                    "evaluated over a true 2D radius grid, which is exactly rotation-invariant."
                 ),
             )
 
+    def test_ring_pixel_radius_scales_with_psf_sigma(self, render_module):
+        """Doubling psf_sigma roughly doubles the ring's pixel radius, since
+        radius_factor*sigma scales linearly with sigma."""
+        H, W = 256, 256
+        cx, cy = W / 2.0, H / 2.0
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[cx, cy]])
 
-class TestProceduralGaussianEdgeCases:
+        def ring_radius_px(sigma):
+            cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, ring=_DEFAULT_RING)
+            frame = render_module.render_frame(positions, box, cfg, np.random.default_rng(1))
+            centers, means = _angular_radial_profile(
+                frame.astype(np.float64), cx, cy, n_bins=100, r_max=8 * sigma
+            )
+            return centers[np.nanargmin(means)]
+
+        r_small = ring_radius_px(sigma=5.0)
+        r_large = ring_radius_px(sigma=10.0)
+        assert r_small > 0
+        assert 1.5 * r_small < r_large < 2.5 * r_small
+
+
+class TestRingClipBeforePoisson:
+    """R5: the ring's negative dip must be clipped to non-negative values
+    before rng.poisson is invoked, or numpy.random.Generator.poisson raises
+    ValueError on negative input. Confirmed directly (red) against this
+    plan's implementation before the `img = np.clip(img, 0, None)` fix was
+    added: representative ring parameters against peak_intensity=40000
+    produce a stamped value around -6,500 ADU at the ring's trough, and
+    rng.poisson(negative) raises `ValueError: lam < 0 or lam contains NaNs`."""
+
+    def test_shot_noise_with_ring_completes_without_valueerror(self, render_module):
+        H, W = 128, 128
+        cfg = _procedural_cfg(
+            H,
+            W,
+            sigma=5.0,
+            peak=40000,
+            shot_noise=True,
+            readout_noise=15.0,
+            ring=_DEFAULT_RING,
+        )
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[64.0, 64.0]])
+        rng = np.random.default_rng(0)
+
+        # Must not raise ValueError from rng.poisson on the ring's negative dip.
+        frame = render_module.render_frame(positions, box, cfg, rng)
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (H, W)
+
+
+class TestProceduralRingEdgeCases:
     def test_boundary_particle_renders_without_error(self, render_module):
         """A particle near the image edge (ROI clipped by render.py's
-        existing max(0,...)/min(W,...) bounds) still renders cleanly."""
+        existing max(0,...)/min(W,...) bounds) still renders cleanly with
+        the ring active, same as today's boundary handling."""
         H, W = 64, 64
-        cfg = _procedural_cfg(H, W, sigma=5.0, peak=40000, shot_noise=True, readout_noise=15.0)
+        cfg = _procedural_cfg(
+            H, W, sigma=5.0, peak=40000, shot_noise=True, readout_noise=15.0, ring=_DEFAULT_RING
+        )
         box = (0.0, float(W), 0.0, float(H))
         positions = np.array([[0.2, 0.2], [W - 0.2, H - 0.2], [0.2, H - 0.2]])
         rng = np.random.default_rng(2)
@@ -2168,15 +2208,37 @@ class TestProceduralGaussianEdgeCases:
         assert frame.dtype == np.uint16
         assert frame.shape == (H, W)
 
-    def test_crowded_overlapping_particles_render_without_error(self, render_module):
-        """Two particles close enough that their Gaussian cores overlap
-        heavily: compositing is max-|deviation| (2026-08-07, see
-        TestOverlapCompositing below), not additive, so this must still
-        render cleanly without error."""
+    def test_missing_ring_config_falls_back_to_defaults(self, render_module):
+        """No `ring` key in cfg at all must not raise KeyError, and must
+        still produce a visible dip using the documented defaults."""
+        H, W = 64, 64
+        cx, cy = 32.0, 32.0
+        cfg = _procedural_cfg(H, W, sigma=5.0, peak=40000)  # no ring=... passed
+        assert "ring" not in cfg
+        box = (0.0, float(W), 0.0, float(H))
+        positions = np.array([[cx, cy]])
+        rng = np.random.default_rng(3)
+
+        frame = render_module.render_frame(positions, box, cfg, rng)  # must not raise KeyError
+
+        assert frame.dtype == np.uint16
+        core_mean = _mean_intensity_in_annulus(frame, cx, cy, 0.0, 1.5)
+        ring_mean = _mean_intensity_in_annulus(frame, cx, cy, 2.2 * 5.0 - 1.0, 2.2 * 5.0 + 1.0)
+        assert ring_mean < 0.3 * core_mean
+
+    def test_crowded_overlapping_rings_render_without_error(self, render_module):
+        """Two particles closer than 2 * radius_factor * sigma apart: their
+        rings overlap/add (additively darkening shared background, then
+        floored at 0 by the pre-Poisson clip) — expected per the plan's
+        Risks & Dependencies, must render without error."""
         H, W = 64, 64
         sigma = 5.0
-        separation = 2 * sigma  # cores overlap substantially
-        cfg = _procedural_cfg(H, W, sigma=sigma, peak=40000, shot_noise=True, readout_noise=15.0)
+        radius_factor = _DEFAULT_RING["radius_factor"]
+        separation = 1.5 * radius_factor * sigma  # < 2 * radius_factor * sigma (=22)
+        assert separation < 2 * radius_factor * sigma
+        cfg = _procedural_cfg(
+            H, W, sigma=sigma, peak=40000, shot_noise=True, readout_noise=15.0, ring=_DEFAULT_RING
+        )
         box = (0.0, float(W), 0.0, float(H))
         positions = np.array([[32.0 - separation / 2, 32.0], [32.0 + separation / 2, 32.0]])
         rng = np.random.default_rng(4)
@@ -2185,82 +2247,10 @@ class TestProceduralGaussianEdgeCases:
 
         assert frame.dtype == np.uint16
         assert frame.shape == (H, W)
+        # Interstitial darkening shouldn't fully black out every pixel
+        # between the particles (additive rings still leave the two bright
+        # cores standing).
         assert frame.max() > 0.3 * 40000
-
-
-class TestOverlapCompositing:
-    """2026-08-07 no-blob-merging redesign: overlapping particle stamps
-    composite via max-|deviation-from-background|, not addition, so two
-    overlapping bright cores don't pile up into a single brighter blob and
-    stay visually distinguishable. See
-    docs/superpowers/specs/2026-08-07-no-blob-merging-design.md."""
-
-    def test_overlapping_cores_do_not_exceed_single_particle_peak(self, render_module):
-        """Two particle centers close enough that their core Gaussians
-        overlap heavily (well inside 1 sigma apart) must not sum past
-        peak_intensity anywhere -- additive compositing would produce a
-        brightness pileup roughly 2x peak at the midpoint."""
-        H, W = 64, 64
-        sigma = 5.0
-        peak = 40000
-        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak, shot_noise=False, readout_noise=0.0)
-        box = (0.0, float(W), 0.0, float(H))
-        positions = np.array([[30.0, 32.0], [34.0, 32.0]])  # 4px apart, deep core overlap
-        rng = np.random.default_rng(0)
-
-        frame = render_module.render_frame(positions, box, cfg, rng).astype(np.float64)
-
-        assert frame.max() <= peak + 1  # +1 tolerance for float->uint16 rounding
-
-    def test_local_minimum_exists_between_two_overlapping_particles(self, render_module):
-        """Two particles close enough that their Gaussian cores overlap must
-        still show a local-minimum saddle between their two bright centers
-        -- the visual signature of two distinctly identifiable particles,
-        rather than a fused blob (which would show a flat or rising bridge
-        instead). No ring is involved (removed 2026-08-08); the saddle comes
-        purely from max-|deviation| compositing between two decaying
-        Gaussian cores."""
-        H, W = 80, 40
-        sigma = 5.0
-        peak = 40000
-        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak)
-        box = (0.0, float(W), 0.0, float(H))
-        separation = 2 * sigma  # cores overlap substantially but centers remain distinguishable
-        cy1, cy2 = 40.0 - separation / 2, 40.0 + separation / 2
-        positions = np.array([[20.0, cy1], [20.0, cy2]])
-        rng = np.random.default_rng(0)
-
-        frame = render_module.render_frame(positions, box, cfg, rng).astype(np.float64)
-        profile = frame[:, 20]  # column through both centers
-
-        idx1, idx2 = int(round(cy1)), int(round(cy2))
-        saddle = profile[(idx1 + idx2) // 2]
-        assert saddle < profile[idx1]
-        assert saddle < profile[idx2]
-
-    def test_matches_additive_result_when_stamps_never_overlap(self, render_module):
-        """Two particles far enough apart that their ROIs never touch:
-        max-|deviation| compositing must be indistinguishable from the old
-        additive behavior, since there's nothing to compete over."""
-        H, W = 128, 128
-        sigma = 5.0
-        peak = 40000
-        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak, shot_noise=False, readout_noise=0.0)
-        box = (0.0, float(W), 0.0, float(H))
-        positions_both = np.array([[20.0, 20.0], [100.0, 100.0]])
-        rng = np.random.default_rng(0)
-
-        frame_both = render_module.render_frame(positions_both, box, cfg, rng).astype(np.float64)
-        frame_a = render_module.render_frame(
-            positions_both[:1], box, cfg, np.random.default_rng(0)
-        ).astype(np.float64)
-        frame_b = render_module.render_frame(
-            positions_both[1:], box, cfg, np.random.default_rng(0)
-        ).astype(np.float64)
-
-        background = cfg["peak_intensity"] * cfg["background_fraction"]
-        combined = background + (frame_a - background) + (frame_b - background)
-        np.testing.assert_allclose(frame_both, combined, atol=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -2289,8 +2279,8 @@ def _render_background_region(
 ):
     """Render a single isolated particle far from the image corner and
     return (frame, background_corner). The particle sits at the center of a
-    128x128 frame with sigma=5, whose ROI radius (~16px, see
-    render_frame's _gaussian_extent) never reaches the [:20, :20]
+    128x128 frame with sigma=5 and the default ring, whose ROI radius
+    (~19px, see render_frame's ring_extent) never reaches the [:20, :20]
     corner -- so that corner is genuinely unaffected by the particle stamp
     and isolates readout/shot noise's own contribution."""
     H, W = 128, 128
@@ -2301,6 +2291,7 @@ def _render_background_region(
         peak=peak,
         shot_noise=shot_noise,
         readout_noise=readout_noise,
+        ring=_DEFAULT_RING,
         background_fraction=background_fraction,
     )
     box = (0.0, float(W), 0.0, float(H))
@@ -2357,7 +2348,7 @@ class TestBackgroundNoiseVisibility:
         )
 
         img_f = frame.astype(np.float32)
-        lo, hi = 0.0, img_f.max()
+        lo, hi = img_f.min(), img_f.max()
         assert hi > lo
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
@@ -2385,7 +2376,7 @@ class TestBackgroundNoiseVisibility:
         assert background_f.std() > 50.0
 
         img_f = frame.astype(np.float32)
-        lo, hi = 0.0, img_f.max()
+        lo, hi = img_f.min(), img_f.max()
         assert hi > lo
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
@@ -2430,7 +2421,7 @@ class TestBackgroundNoiseVisibility:
             peak=synth["peak_intensity"],
         )
         img_f = frame.astype(np.float32)
-        lo, hi = 0.0, img_f.max()
+        lo, hi = img_f.min(), img_f.max()
         img8 = ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
         background8 = img8[:20, :20]
         assert background8.astype(np.float64).mean() > 40.0

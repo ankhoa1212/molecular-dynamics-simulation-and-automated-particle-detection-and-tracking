@@ -90,19 +90,36 @@ def _parse_positions(atom_header, atoms):
     return positions
 
 
-def _gaussian_profile(r_grid, sigma):
-    """Peak-normalized 2D Gaussian core. r_grid must be a 2D array of
-    Euclidean distances from the particle center (never x/y offsets
-    independently) -- kept as an explicit radius grid, not the separable
-    outer-product form, for consistency with other profile functions that
-    do need a true 2D radius (e.g. _disk_rim_profile).
+def _gaussian_ring_profile(
+    r_grid, sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4
+):
+    """Core-minus-ring difference-of-Gaussians profile, peak-normalized
+    (may dip below 0 near the ring edge; caller clips before Poisson noise).
+    The caller multiplies by peak_intensity and clips to non-negative --
+    this function does neither.
+
+    Same math render_frame has always used inline: a bright Gaussian core
+    with a dark ring subtracted at ring_radius_factor*sigma. r_grid must be
+    a 2D array of Euclidean distances from the particle center (never x/y
+    offsets independently) -- the ring term is not separable into an outer
+    product, or it produces a non-isotropic diamond-shaped artifact instead
+    of a circular ring.
     """
-    return np.exp(-0.5 * (r_grid / sigma) ** 2)
+    ring_width = ring_width_factor * sigma
+    core = np.exp(-0.5 * (r_grid / sigma) ** 2)
+    if ring_depth > 0 and ring_width > 0:
+        ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_radius_factor * sigma) / ring_width) ** 2)
+    else:
+        ring = 0.0
+    return core - ring
 
 
-def _gaussian_extent(sigma):
-    """Pixel ROI radius needed to contain the Gaussian core."""
-    return int(3 * sigma) + 1
+def _gaussian_ring_extent(sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4):
+    """Pixel ROI radius needed to contain the core and the ring's outer tail."""
+    ring_width = ring_width_factor * sigma
+    core_extent = 3 * sigma
+    ring_extent = ring_radius_factor * sigma + 3 * ring_width
+    return int(max(core_extent, ring_extent)) + 1
 
 
 def _disk_rim_profile(
@@ -145,7 +162,7 @@ def _disk_rim_extent(
 
 _PARTICLE_PROFILES = {
     "disk_rim": (_disk_rim_profile, _disk_rim_extent),
-    "gaussian": (_gaussian_profile, _gaussian_extent),
+    "gaussian_ring": (_gaussian_ring_profile, _gaussian_ring_extent),
 }
 
 
@@ -195,8 +212,8 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
             zip() below, not a bespoke validation error.
         profile_map: optional dict of atom_id -> profile name, from
             _assign_particle_profiles. When None (the default), every
-            particle renders with a plain Gaussian shape from
-            cfg["psf_sigma"] -- unchanged from before this
+            particle renders with the single gaussian_ring shape from
+            cfg["psf_sigma"]/cfg["ring"] -- unchanged from before this
             feature existed. When given, each particle's shape and ROI
             extent come from cfg["particle_render_profiles"]["profiles"]
             (looked up by name via profile_map[atom_id]) through
@@ -212,17 +229,6 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
     x_lo, x_hi, y_lo, y_hi = box
     background_level = peak * cfg.get("background_fraction", 0.25)
     img = np.full((H, W), background_level, dtype=np.float64)
-    # Per-pixel signed deviation from background_level, one layer shared by
-    # every particle -- NOT accumulated with `+=`. Plain additive compositing
-    # sums every overlapping particle's contribution, so two overlapping
-    # bright cores pile up into a single brighter blob with no visible
-    # boundary between them. Real opaque/reflective
-    # particles don't add brightness where they overlap -- whichever one is
-    # locally most prominent (furthest from background, in either direction)
-    # is what's visible there, so each stamp competes on |deviation| and the
-    # larger-magnitude one wins that pixel outright. See
-    # docs/superpowers/specs/2026-08-07-no-blob-merging-design.md.
-    deviation = np.zeros((H, W), dtype=np.float64)
 
     def _stamp(cx, cy, extent, intensity):
         x0, x1 = max(0, int(cx) - extent), min(W, int(cx) + extent + 1)
@@ -233,14 +239,15 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
         ys = np.arange(y0, y1, dtype=np.float64)
         X, Y = np.meshgrid(xs, ys)
         r_grid = np.hypot(X - cx, Y - cy)
-        contribution = intensity(r_grid)
-        region = deviation[y0:y1, x0:x1]
-        winner = np.abs(contribution) > np.abs(region)
-        region[winner] = contribution[winner]
+        img[y0:y1, x0:x1] += intensity(r_grid)
 
     if profile_map is None:
         sigma = cfg["psf_sigma"]
-        extent = _gaussian_extent(sigma)
+        ring_cfg = cfg.get("ring", {})
+        ring_radius_factor = ring_cfg.get("radius_factor", 2.2)
+        ring_width_factor = ring_cfg.get("width_factor", 0.5)
+        ring_depth = ring_cfg.get("depth", 0.4)
+        extent = _gaussian_ring_extent(sigma, ring_radius_factor, ring_width_factor, ring_depth)
 
         for x, y in positions_lj:
             cx = (x - x_lo) / (x_hi - x_lo) * W
@@ -249,7 +256,10 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
                 cx,
                 cy,
                 extent,
-                lambda r_grid: peak * _gaussian_profile(r_grid, sigma),
+                lambda r_grid: peak
+                * _gaussian_ring_profile(
+                    r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
+                ),
             )
     else:
         profiles_by_name = {p["name"]: p for p in cfg["particle_render_profiles"]["profiles"]}
@@ -266,9 +276,7 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
                 lambda r_grid, fn=intensity_fn, p=params: peak * fn(r_grid, **p),
             )
 
-    img += deviation
-
-    # The rim's negative dip can push some pixels below zero; rng.poisson
+    # The ring/rim's negative dip can push some pixels below zero; rng.poisson
     # raises ValueError on negative input, so this clip must run before the
     # shot-noise branch below (not just at the function's final clip).
     img = np.clip(img, 0, None)
@@ -545,16 +553,7 @@ def main():
         )
 
         img_f = img.astype(np.float32)
-        # lo is fixed at 0 (true black), not img_f.min() -- render_frame's
-        # output is already clipped to >= 0, so stretching against the
-        # per-frame observed minimum instead of true zero silently crushes
-        # the background toward black whenever nothing in the frame reaches
-        # near 0 (e.g. no ring/rim dip clipping there) -- confirmed directly:
-        # 2026-08-08's ring removal exposed exactly this, since the ring's
-        # clipped negative dip had been the only thing anchoring the old
-        # per-frame min to 0. See docs/superpowers/specs/2026-08-08-remove-
-        # procedural-ring-design.md.
-        lo, hi = 0.0, img_f.max()
+        lo, hi = img_f.min(), img_f.max()
         img8 = (
             ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
             if hi > lo

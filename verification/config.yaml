@@ -33,6 +33,22 @@ synthetic:
                                  # and-noise-plan.md U3.
   output_dir: verification_output/synthetic_frames/
 
+  # --- Dark ring for the procedural PSF stamp (render_strategy: procedural) ---
+  # Self-contained difference-of-Gaussians ring, parameterized as factors of
+  # psf_sigma (radius/width) and peak_intensity (depth) -- deliberately NOT
+  # fit against reference data, unlike crop_source: procedural's fitted
+  # ring_* params below, since keeping the procedural strategy self-
+  # contained (no curve-fit step, no dependency on real reference data) is
+  # the point of this code path. These are starting-point defaults, not
+  # precision-fit values -- confirm visually against a rendered frame and
+  # adjust if the ring looks obviously wrong (e.g. fully black or
+  # invisible). See docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+  # and-noise-plan.md U2.
+  ring:
+    radius_factor: 2.2   # ring center's distance from particle center, in units of psf_sigma
+    width_factor: 0.5    # ring Gaussian width, in units of psf_sigma
+    depth: 0.4            # ring depth, as a fraction of peak_intensity
+
   # --- Multiple particle render profiles (render_strategy: procedural) ---
   # Optional. When present, particles are assigned one of several named
   # profiles (a shape `type` from render.py's _PARTICLE_PROFILES registry,
@@ -40,9 +56,9 @@ synthetic:
   # by LAMMPS atom_id and persisted for the whole render run -- not
   # re-randomized per frame, and independent of any LAMMPS atom `type`
   # column (works the same whether the trajectory has one atom type or many).
-  # Absent entirely (the default) -> every particle renders as a plain
-  # Gaussian sized by psf_sigma above, unchanged from before this feature
-  # existed. --lammps-in has no effect when this is configured
+  # Absent entirely (the default) -> every particle renders with the single
+  # gaussian_ring shape above (psf_sigma / ring.*), unchanged from before
+  # this feature existed. --lammps-in has no effect when this is configured
   # (see main()'s warning above) -- each profile's own params already set
   # its size explicitly.
   # See docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md.
