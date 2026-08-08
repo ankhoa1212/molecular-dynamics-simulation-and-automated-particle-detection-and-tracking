@@ -847,3 +847,80 @@ class TestMainModelTypeWiring:
 
         with pytest.raises(SystemExit):
             benchmark.main()
+
+
+class TestLodestarBoxSizeDerivation:
+    """box_size (for main()'s lodestar accuracy loop) derives from psf_sigma_px --
+    an explicit benchmark.lodestar.box_size config value always wins."""
+
+    _FWHM_TO_SIGMA = 2.355  # render.py's own constant; kept local so these tests don't
+    # depend on render.py's private name surviving unchanged.
+
+    def _run(self, tmp_path, monkeypatch, config_yaml_extra=""):
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        checkpoint = tmp_path / "lodestar_model.pt"
+        checkpoint.write_bytes(b"")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"benchmark:\n  lodestar:\n    checkpoint: {checkpoint}\n{config_yaml_extra}"
+        )
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "lodestar",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        with mock.patch.object(
+            benchmark, "get_lodestar_model", return_value=mock.Mock()
+        ), mock.patch.object(
+            benchmark, "detect_lodestar", return_value=_sv_preload.Detections.empty()
+        ) as mock_detect_lodestar, mock.patch.object(
+            benchmark, "_load_lodestar_defaults", return_value={}
+        ):
+            benchmark.main()
+
+        return mock_detect_lodestar.call_args.kwargs["box_size"]
+
+    def test_derives_from_synthetic_psf_sigma(self, tmp_path, monkeypatch):
+        box_size = self._run(tmp_path, monkeypatch, "synthetic:\n  psf_sigma: 6.0\n")
+        assert box_size == pytest.approx(6.0 * self._FWHM_TO_SIGMA)
+
+    def test_falls_back_to_synthetic_psf_sigma_px_when_psf_sigma_absent(
+        self, tmp_path, monkeypatch
+    ):
+        box_size = self._run(tmp_path, monkeypatch, "synthetic:\n  psf:\n    sigma_px: 8.21\n")
+        assert box_size == pytest.approx(8.21 * self._FWHM_TO_SIGMA)
+
+    def test_falls_back_to_default_5_0_when_neither_present(self, tmp_path, monkeypatch):
+        box_size = self._run(tmp_path, monkeypatch)
+        assert box_size == pytest.approx(5.0 * self._FWHM_TO_SIGMA)
+
+    def test_explicit_box_size_overrides_derivation(self, tmp_path, monkeypatch):
+        box_size = self._run(
+            tmp_path,
+            monkeypatch,
+            "    box_size: 17\nsynthetic:\n  psf_sigma: 6.0\n",
+        )
+        assert box_size == 17
+
+    def test_shipped_config_yaml_no_longer_short_circuits_to_40(self):
+        """Regression guard for the override-always-wins failure mode this unit
+        fixes: verification/config.yaml's own lodestar.box_size must stay unset
+        (commented out) so the derived value actually takes effect by default,
+        not the literal 40 the old fallback config value used to carry."""
+        real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
+        assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "box_size") is None

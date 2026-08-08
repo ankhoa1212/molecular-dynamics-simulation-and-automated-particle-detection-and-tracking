@@ -454,7 +454,12 @@ def main():
     parser.add_argument("--device", default=None, help="Inference device (e.g. 0 or cpu)")
     args = parser.parse_args()
 
-    cfg = _load_config(args.config).get("benchmark", {})
+    # Loaded once as the full top-level dict (not just the benchmark: subtree) so the
+    # lodestar box_size derivation below can reach synthetic.psf_sigma/synthetic.psf.sigma_px
+    # -- those are siblings of benchmark: in config.yaml, not nested under it. Reused for
+    # _run_tracking_metrics's own full-config parameter further down instead of reloading.
+    full_cfg = _load_config(args.config)
+    cfg = full_cfg.get("benchmark", {})
     # Sourced from the same _MODEL_VENV_DIRS/_DEFAULT_MODEL_TYPE as the
     # module-level _resolve_model_type pre-parse, so the two can't drift.
     model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
@@ -482,7 +487,20 @@ def main():
         _lodestar_defaults = _load_lodestar_defaults(cfg)
         alpha = _lodestar_defaults.get("alpha", 0.5)
         nms_distance = _lodestar_defaults.get("nms_distance")
-        box_size = _cfg_get(cfg, "lodestar", "box_size", default=40)
+        # box_size: an explicit benchmark.lodestar.box_size config value always wins;
+        # otherwise derive it from the same psf_sigma_px this file's tracking-metrics
+        # match-threshold already uses (synthetic.psf_sigma -> synthetic.psf.sigma_px ->
+        # 5.0), converted to a pixel diameter via render.py's FWHM/sigma relationship --
+        # see docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
+        box_size = _cfg_get(cfg, "lodestar", "box_size", default=None)
+        if box_size is None:
+            sys.path.insert(0, str(SCRIPT_DIR))
+            from render import _FWHM_TO_SIGMA
+
+            psf_sigma_px = _cfg_get(full_cfg, "synthetic", "psf_sigma", default=None)
+            if psf_sigma_px is None:
+                psf_sigma_px = _cfg_get(full_cfg, "synthetic", "psf", "sigma_px", default=5.0)
+            box_size = psf_sigma_px * _FWHM_TO_SIGMA
         fp16 = _cfg_get(cfg, "lodestar", "fp16", default=False)
         device_raw = args.device or _cfg_get(cfg, "lodestar", "device", default=None)
         # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
@@ -650,7 +668,6 @@ def main():
 
     # --- Tracking metrics (optional) ---
     if args.ground_truth_tracks:
-        full_cfg = _load_config(args.config)
         tracking_metrics = _run_tracking_metrics(
             all_detections_by_frame, args.ground_truth_tracks, full_cfg
         )
