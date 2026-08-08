@@ -484,7 +484,10 @@ def _link_df_with_fallback(det_df, cfg, search_range, memory, timeout_s=90):
     # poll() unblocks the moment the child starts writing, which lets the
     # child's send() complete too.
     if parent_conn.poll(timeout_s):
-        result = parent_conn.recv()
+        try:
+            result = parent_conn.recv()
+        except EOFError:
+            result = None, None
         proc.join()
         return result
     proc.terminate()
@@ -511,7 +514,11 @@ def _motmetrics_compute_worker(acc, metrics, conn):
     # linear_sum_assignment here has the same failure shape.
     resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
 
-    summary = mm.metrics.create().compute(acc, metrics=metrics, name="tracking")
+    try:
+        summary = mm.metrics.create().compute(acc, metrics=metrics, name="tracking")
+    except MemoryError:
+        conn.send(None)
+        return
     conn.send(summary.iloc[0].to_dict())
 
 
@@ -550,7 +557,10 @@ def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=90):
     proc = ctx.Process(target=_motmetrics_compute_worker, args=(acc, metrics, child_conn))
     proc.start()
     if parent_conn.poll(timeout_s):
-        result = parent_conn.recv()
+        try:
+            result = parent_conn.recv()
+        except EOFError:
+            result = None
         proc.join()
         return result
     proc.terminate()
@@ -655,8 +665,8 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
     #   particles against ~1700 distinct trackpy track IDs ... exhausted
     #   this machine's RAM+swap", previously believed contained by that
     #   function's own timeout -- it isn't, because this loop runs first).
-    #   2000 leaves margin below that ~1700 reference point... deliberately
-    #   LOWER, since 1700 already OOM'd once.
+    #   1000 leaves margin below that ~1700 reference point --
+    #   deliberately LOWER, since 1700 already OOM'd once.
     avg_det_per_frame = len(det_df) / max(1, det_df["frame"].nunique())
     n_distinct_tracks = linked["track_id"].nunique()
     if avg_det_per_frame > 400 or n_distinct_tracks > 1000:
