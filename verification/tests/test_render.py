@@ -2299,6 +2299,63 @@ class TestProceduralRingEdgeCases:
         assert abs(midpoint_value - background_level) < abs(midpoint_value - ring_trough_value)
 
 
+class TestStampWinnerTakeAllCompositing:
+    """2026-08-08: _stamp's `deviation` buffer (render.py:242-256) composites
+    overlapping particle stamps by picking whichever has the larger
+    |contribution| at each pixel, instead of summing via `img += intensity(...)`.
+    Real opaque/reflective particles don't add brightness where they overlap,
+    so this bounds a composited pixel to the single most-prominent stamp
+    touching it rather than letting overlapping bright cores pile into a
+    blob brighter than any one particle. See
+    docs/superpowers/specs/2026-08-07-no-blob-merging-design.md."""
+
+    # Pure Gaussian core, no ring dip -- isolates the compositing mechanism
+    # from the ring's separate negative-deviation behavior.
+    _PURE_CORE_RING = {"radius_factor": 1.0, "width_factor": 0.3, "depth": 0.0}
+
+    def test_fully_overlapping_particles_peak_matches_single_not_double(self, render_module):
+        H, W = 64, 64
+        sigma = 5.0
+        peak = 40000
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak, ring=self._PURE_CORE_RING)
+        box = (0.0, float(W), 0.0, float(H))
+
+        single = render_module.render_frame(
+            np.array([[32.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+        two_coincident = render_module.render_frame(
+            np.array([[32.0, 32.0], [32.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+
+        # Additive compositing (`+=`) would sum two exactly-coincident
+        # stamps to ~2x a single particle's peak. Winner-take-all bounds
+        # the composited peak to a single particle's own peak instead.
+        assert two_coincident.max() == pytest.approx(single.max(), rel=1e-6)
+        assert two_coincident.max() < 1.5 * single.max()
+
+    def test_overlapping_cores_never_exceed_single_particle_peak(self, render_module):
+        """Two particles close enough for their Gaussian cores to overlap
+        substantially, but not fully coincident -- winner-take-all still
+        bounds every pixel to the larger of the two individual
+        contributions there, so the composited frame's peak can't exceed a
+        lone particle's own peak. A future revert to additive compositing
+        would push this well past a single particle's peak."""
+        H, W = 64, 64
+        sigma = 5.0
+        peak = 40000
+        cfg = _procedural_cfg(H, W, sigma=sigma, peak=peak, ring=self._PURE_CORE_RING)
+        box = (0.0, float(W), 0.0, float(H))
+
+        single = render_module.render_frame(
+            np.array([[32.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+        close_pair = render_module.render_frame(
+            np.array([[30.0, 32.0], [34.0, 32.0]]), box, cfg, np.random.default_rng(0)
+        ).astype(np.float64)
+
+        assert close_pair.max() <= single.max() + 1e-6
+
+
 # ---------------------------------------------------------------------------
 # U3: background noise visibility (R6/R7)
 # ---------------------------------------------------------------------------
@@ -2686,3 +2743,49 @@ class TestFixedStretchReference:
         # [min, max] (which never reaches 0 or 255 for an isolated
         # background-only corner) and crushed it toward 0 instead.
         assert corner8[2, 2] == 51
+
+    def test_randomized_strategy_stretch_reference_uses_peak_range_upper_bound(
+        self, render_module, tmp_path
+    ):
+        """2026-08-08: render_strategy: randomized samples a different
+        peak_intensity per frame via a private frame_cfg that never reaches
+        main() (see render_randomized.py), so main()'s own static
+        cfg["peak_intensity"] is the wrong fixed reference for
+        _stretch_to_uint8 -- it must instead build stretch_cfg from
+        randomization.peak_range's upper bound (render.py:526-533), with
+        background_fraction forced to 0.0 to match randomized's own
+        always-black background. Drives main() end-to-end with
+        render_strategy: randomized and spies on the real _stretch_to_uint8
+        call to catch a regression back to cfg's own (wrong, strategy-
+        irrelevant) static peak_intensity."""
+        blocks = [_make_block(0, [1], [32.0], [32.0])]
+        peak_range = [5000, 9000]
+        extra_synthetic = {
+            "render_strategy": "randomized",
+            # Deliberately different from peak_range's bound: if main() used
+            # this static value as the stretch reference instead, the
+            # captured cfg below would show 1000, not peak_range[1].
+            "peak_intensity": 1000,
+            "background_fraction": 0.25,
+            "randomization": {
+                "psf_sigma_range": [2.0, 4.0],
+                "peak_range": peak_range,
+                "readout_noise_range": [1.0, 2.0],
+            },
+        }
+
+        captured = []
+        original = render_module._stretch_to_uint8
+
+        def spy(img, cfg):
+            captured.append(dict(cfg))
+            return original(img, cfg)
+
+        with mock.patch.object(render_module, "_stretch_to_uint8", side_effect=spy):
+            _run_main_with_blocks(
+                render_module, tmp_path, blocks, extra_synthetic=extra_synthetic
+            )
+
+        assert len(captured) == 1
+        assert captured[0]["peak_intensity"] == peak_range[1]
+        assert captured[0]["background_fraction"] == 0.0
