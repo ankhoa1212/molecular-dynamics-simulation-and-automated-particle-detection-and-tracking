@@ -1,0 +1,50 @@
+dataset:
+  path: /data/2um-coco-merged/             # mounted from PVC; copy merged dataset here before submitting
+  train_experiments:
+    # Higher Concentration (all 5 LI levels — only 1 video each, none held out)
+    - "2um PS + Au Cit + NaCl 60%"           # Higher 60%
+    - "2um PS + Au Cit + NaCl 80%"           # Higher 80%
+    - "NaCl + 2um PS + Au Cit 20%"           # Higher 20%
+    - "NaCl + 2um PS + Au Cit 40%"           # Higher 40%
+    - "NaCl + 2um PS + Au Cit 100%"          # Higher 100%
+    # Lower Concentration (6 of 10 — one per LI level + spare 40%)
+    - "Trial 1 20% Light Intensity_2"         # Lower 20% trial _2
+    - "Trial 1 40% Light Intensity_1"         # Lower 40% trial _1
+    - "Trial 1 40% Light Intensity_2"         # Lower 40% trial _2
+    - "Trial 1 60% Light Intensity_1"         # Lower 60% trial _1
+    - "Trial 1 80% Light Intensity_5"         # Lower 80% trial _5
+    - "Trial 1 100% Light Intensity_3"        # Lower 100% trial _3
+  val_experiments:
+    - "Trial 1 60% Light Intensity_2"         # Lower 60% trial _2 — mid-range LI
+    - "Trial 1 80% Light Intensity_6"         # Lower 80% trial _6 — mid-range LI
+  test_experiments:
+    - "Trial 1 20% Light Intensity_3"         # Lower 20% trial _3 — extreme (dim)
+    - "Trial 1 100% Light Intensity_4"        # Lower 100% trial _4 — extreme (bright)
+
+model:
+  variant: large
+  num_queries: 300                  # paper default; tiling in particle-tracking handles >300 particles/frame
+  num_select: 300                   # must match num_queries
+  pretrain_weights: "rf-detr-large-2026.pth"  # backbone loads via strict=False even with num_queries != 300
+  amp: true                         # A100 supports bfloat16 natively
+  gradient_checkpointing: false     # not needed at 40GB VRAM
+  resolution: null                  # rfdetr large default: 704px
+
+training:
+  epochs: 50
+  batch_size: 2                     # A40 48GB; group_detr=13 expands queries to 3900 in loss, same memory as 3400 without group_detr
+  grad_accum_steps: 4               # effective_batch = 2 * 4 = 8 (same as local config)
+  learning_rate: 1.0e-4
+  num_workers: 8                    # cluster nodes have more CPU cores than local
+  pin_memory: true
+  prefetch_factor: 4                # cluster storage (NFS/Lustre) benefits from deeper prefetch
+  persistent_workers: true          # keep workers alive between epochs
+  checkpoint_dir: /outputs/checkpoints
+  eval_max_dets: 300                # must be >= num_queries
+  early_stopping: true
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.001
+  early_stopping_use_ema: true
+
+mlflow:
+  experiment_name: rf-detr-a40      # separate from local runs for clean comparison

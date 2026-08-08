@@ -1,29 +1,46 @@
 dataset:
-  path: /mnt/d/Particle Tracking Data/2um-rf-detr/          # directory containing images/ and annotations.json
+  path: /mnt/d/Particle Tracking Data/2um-coco-merged/
   train_experiments:
-    - train1
+    # Higher Concentration (all 5 LI levels — only 1 video each, none held out)
+    - "2um PS + Au Cit + NaCl 60%"           # Higher 60%
+    - "2um PS + Au Cit + NaCl 80%"           # Higher 80%
+    - "NaCl + 2um PS + Au Cit 20%"           # Higher 20%
+    - "NaCl + 2um PS + Au Cit 40%"           # Higher 40%
+    - "NaCl + 2um PS + Au Cit 100%"          # Higher 100%
+    # Lower Concentration (6 of 10 — one per LI level + spare 40%)
+    - "Trial 1 20% Light Intensity_2"         # Lower 20% trial _2
+    - "Trial 1 40% Light Intensity_1"         # Lower 40% trial _1
+    - "Trial 1 40% Light Intensity_2"         # Lower 40% trial _2
+    - "Trial 1 60% Light Intensity_1"         # Lower 60% trial _1
+    - "Trial 1 80% Light Intensity_5"         # Lower 80% trial _5
+    - "Trial 1 100% Light Intensity_3"        # Lower 100% trial _3
   val_experiments:
-    - val1
+    - "Trial 1 60% Light Intensity_2"         # Lower 60% trial _2 — mid-range LI
+    - "Trial 1 80% Light Intensity_6"         # Lower 80% trial _6 — mid-range LI
   test_experiments:
-    - test1
+    - "Trial 1 20% Light Intensity_3"         # Lower 20% trial _3 — extreme (dim)
+    - "Trial 1 100% Light Intensity_4"        # Lower 100% trial _4 — extreme (bright)
 
 model:
   variant: large                   # base | large
-  num_queries: 6000                # max detections per frame (default 300); must retrain to change
+  num_queries: 300                 # paper default; tiling in particle-tracking handles >300 particles/frame
+  num_select: 300                  # must match num_queries; controls top-k proposals kept for final output
+  pretrain_weights: rf-detr-large-2026.pth  # backbone loads via strict=False even with num_queries != 300
   amp: true                        # mixed precision: auto-selects bf16 (Ampere+) or fp16; set false for fp32
-  gradient_checkpointing: false    # trade ~20% speed for lower VRAM; enable on ≤12 GB GPUs
+  gradient_checkpointing: true     # trade ~20% speed for lower VRAM; enable on ≤12 GB GPUs
   resolution: null                 # input resolution in px (null = rfdetr default: 704 for large, 560 for base)
 
 training:
   epochs: 50
-  batch_size: 4                    # set to "auto" to let rfdetr tune for available VRAM
-  grad_accum_steps: 4              # effective_batch = batch_size * grad_accum_steps; drop to 1 on large GPUs
+  batch_size: 1                    # forced to 1; auto-tuner understimates peak VRAM from 600-query IoU loss on 12 GB GPUs
+  grad_accum_steps: 8              # effective_batch = batch_size * grad_accum_steps; drop to 1 on large GPUs
   learning_rate: 1.0e-4
   num_workers: 4
   pin_memory: true
   prefetch_factor: null            # prefetch batches per worker (null = PyTorch default 2); increase to 4 on fast SSDs
   persistent_workers: null         # keep workers alive between epochs (null = false); set true if num_workers > 0
   checkpoint_dir: checkpoints
+  eval_max_dets: 300               # COCO eval detection cap; must be >= num_queries to avoid silently capping mAP
   early_stopping: true
   early_stopping_patience: 10    # epochs with no improvement before stopping
   early_stopping_min_delta: 0.001  # minimum mAP improvement to reset patience

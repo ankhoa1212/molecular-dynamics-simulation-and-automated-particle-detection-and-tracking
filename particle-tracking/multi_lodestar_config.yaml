@@ -1,0 +1,67 @@
+# Particle Tracking Configuration — LodeSTAR detector, multi-input
+# All paths are relative to the particle-tracking/ directory unless absolute.
+# CLI arguments always override values set here.
+
+# Input: list of TIFF stacks to process; each produces a named subdirectory under output.dir
+input:
+  - "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
+  - "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
+  - "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_6_MMStack_Default.ome.tif"
+  - "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Higher Concentration/NaCl + 2um PS + Au Cit 100% Light Intensity Trial 1 Redo_1_MMStack_Default.ome.tif"
+
+# Model:
+model:
+  type: lodestar
+
+  checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+
+  device: "0"  # "0" for first GPU, "cpu" for CPU-only
+
+# Detection:
+detection:
+  # LodeSTAR cutoff uses mode="ratio": fraction of the per-frame max score.
+  threshold: 0.01  # from autolabel_2um_lodestar_model_15.json (cutoff)
+  alpha: 0.9        # weight score exponent (autolabel default)
+  nms_distance: 30  # suppress detections within 30px of a higher-scoring one
+  fp16: true        # run model in float16
+
+# Tracking:
+tracking:
+  tracker: trackpy  # trackpy (default, offline) | bytetrack (online)
+
+  # Trackpy: maximum pixel distance a particle can move between frames
+  search_range: 20.0
+
+  # Trackpy: number of consecutive frames a particle may be missing before its track ends
+  memory: 10
+
+  # Trackpy: discard tracks shorter than this many frames (0 = keep all)
+  stub_filter: 6
+
+  # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
+  adaptive_stop: 1.0  # minimum search_range before giving up (set to null to disable)
+  adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
+
+  # ByteTrack: frames to keep a lost track alive before discarding it
+  lost_track_buffer: 60
+
+  # ByteTrack: consecutive frames a detection must appear before a track is confirmed
+  minimum_consecutive_frames: 1
+
+  # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0)
+  track_activation_threshold: 0.1
+
+# Output:
+output:
+  dir: /mnt/d/Particle Tracking Data/2um/lodestar/
+
+  save_video: true  # Save an annotated MP4 with bounding boxes drawn
+
+  # Draw the "#<track_id>" label next to each bounding box in the output video.
+  # Off by default since the labels tend to clutter dense scenes.
+  video_labels: false
+
+  fps: 30
+
+  # Number of historical frames shown as a trail per trajectory in the output video
+  trace_length: 60

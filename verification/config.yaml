@@ -8,53 +8,294 @@ synthetic:
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
   peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
+  background_fraction: 0.25     # uniform background baseline, as a fraction of peak_intensity
+                                 # (procedural strategy; silently ignored under render_strategy:
+                                 # deeptrack or randomized -- randomized explicitly zeroes it
+                                 # before delegating to stay black, deeptrack never reads this
+                                 # key at all). Sized as a fraction (not a fixed ADU value)
+                                 # because peak_intensity is an arbitrary synthetic scale,
+                                 # not calibrated to real sensor
+                                 # counts; 0.25 matches the real reference video's background/peak
+                                 # ratio (median 1148 / max 3832 ADU). Set to 0 for the old flat-
+                                 # black canvas. See docs/superpowers/specs/2026-08-07-gray-
+                                 # background-default-design.md.
   shot_noise: true              # add Poisson photon noise
-  readout_noise: 15.0           # Gaussian readout noise std dev (ADU)
+  readout_noise: 200.0          # Gaussian readout noise std dev (ADU). Raised from 15.0 --
+                                 # render.py's main() 8-bit PNG stretch is a per-frame true
+                                 # min/max ((img-lo)/(hi-lo)*255), and with peak_intensity:
+                                 # 40000 one 8-bit gray level is ~157 ADU, so 15 ADU of noise
+                                 # was invisible after the stretch (confirmed: >50% of pixels
+                                 # exactly 0.0 at the old default). 200.0 clears one gray
+                                 # level with margin. Starting-point value, not precision-
+                                 # fit -- confirm visually against a rendered frame and adjust
+                                 # if the background reads too grainy or still too flat. See
+                                 # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+                                 # and-noise-plan.md U3.
   output_dir: verification_output/synthetic_frames/
 
-  # --- DeepTrack2 PSF parameters (render_strategy: deeptrack) ---
+  # --- Dark ring for the procedural PSF stamp (render_strategy: procedural) ---
+  # Self-contained difference-of-Gaussians ring, parameterized as factors of
+  # psf_sigma (radius/width) and peak_intensity (depth) -- deliberately NOT
+  # fit against reference data, unlike crop_source: procedural's fitted
+  # ring_* params below, since keeping the procedural strategy self-
+  # contained (no curve-fit step, no dependency on real reference data) is
+  # the point of this code path. These are starting-point defaults, not
+  # precision-fit values -- confirm visually against a rendered frame and
+  # adjust if the ring looks obviously wrong (e.g. fully black or
+  # invisible). See docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+  # and-noise-plan.md U2.
+  ring:
+    radius_factor: 2.2   # ring center's distance from particle center, in units of psf_sigma
+    width_factor: 0.5    # ring Gaussian width, in units of psf_sigma
+    depth: 0.4            # ring depth, as a fraction of peak_intensity
+
+  # --- Multiple particle render profiles (render_strategy: procedural) ---
+  # Optional. When present, particles are assigned one of several named
+  # profiles (a shape `type` from render.py's _PARTICLE_PROFILES registry,
+  # plus that shape's own `params`) via a seeded weighted-random draw, keyed
+  # by LAMMPS atom_id and persisted for the whole render run -- not
+  # re-randomized per frame, and independent of any LAMMPS atom `type`
+  # column (works the same whether the trajectory has one atom type or many).
+  # Absent entirely (the default) -> every particle renders with the single
+  # gaussian_ring shape above (psf_sigma / ring.*), unchanged from before
+  # this feature existed. --lammps-in has no effect when this is configured
+  # (see main()'s warning above) -- each profile's own params already set
+  # its size explicitly.
+  # See docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md.
+  #
+  # particle_render_profiles:
+  #   seed: 42   # optional; defaults to 42
+  #   profiles:
+  #     - name: small
+  #       type: disk_rim
+  #       proportion: 0.7
+  #       params:
+  #         disk_radius_px: 17.5
+  #         blur_sigma_px: 3.0
+  #         rim_depth: 0.55
+  #         rim_width_px: 2.5
+  #         rim_offset_px: 1.5
+  #     - name: large
+  #       type: disk_rim
+  #       proportion: 0.3
+  #       params:
+  #         disk_radius_px: 22.5
+  #         blur_sigma_px: 3.0
+  #         rim_depth: 0.55
+  #         rim_width_px: 2.5
+  #         rim_offset_px: 1.5
+
+  # --- PSF parameters ---
+  # sigma_px is written here by: uv run python calibrate_psf.py --merge-config config.yaml
+  # deeptrack ignores sigma_px and uses na/wavelength/resolution instead.
   psf:
     na: 1.4                     # numerical aperture
     wavelength: 520e-9          # emission wavelength (metres)
-    resolution: 65e-9           # pixel size (metres/pixel)
-    defocus: 0.0                # Zernike defocus coefficient (waves)
-    spherical_aberration: 0.0   # Zernike spherical aberration (waves)
+    resolution: 6.5e-08  # pixel size (metres/pixel)
+    defocus: 0.0  # Zernike defocus coefficient (waves)
+    spherical_aberration: 0.0  # Zernike spherical aberration (waves)
+    sigma_px: 8.21  # empirical PSF sigma (px) — filled by calibrate_psf.py
 
   # --- Spatially varying background (render_strategy: deeptrack) ---
+  # Calibrated (2026-07-22) via calibrate_psf.py --merge-config against 512x512
+  # crops of particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
+  # -- the same source dataset procedural_shape's ring_* params below are
+  # fitted from, so background/noise and ring shape describe the same real
+  # imaging conditions. Previously hand-set defaults, never calibrated
+  # against real data at all -- see docs/plans/2026-07-22-001-fix-procedural-
+  # particle-realism-plan.md U3.
   background:
-    heterogeneity_scale: 50     # spatial scale of background variation (px)
-    amplitude: 500              # max background variation (ADU)
+    heterogeneity_scale: 203.1  # spatial scale of background variation (px)
+    amplitude: 705.0  # max background variation (ADU)
 
   # --- Per-particle intensity distribution (render_strategy: deeptrack) ---
   particle:
     intensity_distribution: lognormal   # fixed | lognormal
-    peak_mean: 40000            # mean peak intensity (ADU)
-    intensity_sigma: 0.3        # log-normal sigma
+    peak_mean: 987.4  # mean peak intensity (ADU). Represents each particle's own peak
+                                 # brightness (before background/noise), consistently across all
+                                 # crop_source values (physics/real/procedural) — each source's
+                                 # template/kernel is peak-normalized (max value 1) rather than
+                                 # sum-normalized, so peak_mean's meaning doesn't drift with template
+                                 # spatial extent or PSF optical spread. See docs/plans/2026-07-21-001-
+                                 # fix-peak-normalized-particle-brightness-plan.md.
+    intensity_sigma: 1.015  # log-normal sigma
 
   # --- sCMOS noise model (render_strategy: deeptrack) ---
+  # Calibrated (2026-07-22), same source/command as background: above. No
+  # --dark-frames were available, so read_noise is estimated from image
+  # stats rather than a clean dark-frame measurement (calibrate_psf.py
+  # warns on this) -- revisit with real dark frames if this proves noisier
+  # than intended once compared visually via compare_renders.py.
   noise:
-    gain_sigma: 0.02            # per-pixel gain variation (fraction of mean gain)
-    read_noise: 15.0            # Gaussian read noise std dev (ADU)
+    gain_sigma: 0.02  # per-pixel gain variation (fraction of mean gain)
+    read_noise: 62.42  # Gaussian read noise std dev (ADU)
 
   # --- Domain randomization (render_strategy: randomized) ---
   randomization:
     psf_sigma_range: [3.0, 7.0]          # Uniform range for per-frame PSF sigma (px)
     peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
-    readout_noise_range: [10.0, 25.0]    # Uniform range for per-frame readout noise std (ADU)
+    readout_noise_range: [150.0, 300.0]  # Uniform range for per-frame readout noise std (ADU).
+                                          # Raised from [10.0, 25.0] to the same visible-noise
+                                          # scale as synthetic.readout_noise above (R7) --
+                                          # otherwise randomized output would be inconsistently
+                                          # "cleaner" than procedural after that fix. See
+                                          # docs/plans/2026-07-22-004-feat-procedural-renderer-
+                                          # ring-and-noise-plan.md U3.
 
-# --- benchmark.py: RF-DETR accuracy on synthetic frames ---
+    # --- Frame-to-frame smoothing for the above ranges (R8/R9) ---
+    # Only takes effect when render.py's main() drives render_frame_randomized
+    # with a real cross-frame state dict (render_strategy: randomized); a
+    # bare call without a state argument still samples each parameter fresh
+    # and independently every time, unaffected by this block. See
+    # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-
+    # plan.md U4.
+    smoothing:
+      step_std_fraction: 0.15   # per-frame random-walk step std, as a fraction of each
+                                 # parameter's own (max - min) range. Starting-point value,
+                                 # not precision-fit -- balances "smooth enough to stop
+                                 # looking jumpy" against "still exploring the full range
+                                 # over a normal clip length, without dwelling at the
+                                 # boundaries." Confirm visually against a rendered
+                                 # randomized clip and adjust if it looks too jumpy (raise)
+                                 # or too static (lower).
+
+  # --- Particle appearance source (render_strategy: deeptrack) ---
+  crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above.
+                          # All three peak-normalize their template/kernel (max value 1, not sum 1),
+                          # so peak_mean means the same thing (particle's own peak brightness)
+                          # regardless of which source is selected.
+
+  # --- Empirical crop-template library (crop_source: real) ---
+  # Built once via render_crop_templates.build_template_library(), then cached; see
+  # docs/plans/2026-07-19-001-feat-crop-based-particle-rendering-plan.md.
+  crop_template:
+    # video_paths / min_area / max_area / max_sigma below are tuned for
+    # particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif.
+    # min_area/max_area were previously 20/400, sized for a different,
+    # smaller-particle "2 um dataset" -- measured (2026-07-22) that this 5um
+    # dataset's genuine particle blob areas run 400-3100px^2 at
+    # percentile: 95.0, so the old max_area rejected every real particle as
+    # "oversized" and left only noise-level candidates. See
+    # docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md.
+    video_paths:
+      - ../particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
+    crop_half: 90                # half-width (px) of the harvested crop window — covers the measured
+                                  # diffraction-ring extent (bright core, first dark ring, secondary
+                                  # bright ring); see docs/plans/2026-07-20-001-fix-crop-template-
+                                  # harvest-quality-plan.md
+    fit_half: 20                 # half-width (px) of the small sub-window _fit_crop_gaussian actually
+                                  # fits — decoupled from crop_half so a larger crop_half doesn't
+                                  # multiply per-crop curve_fit cost
+    min_sep: 40                  # min candidate separation (px); also the contamination exclusion radius
+    percentile: 95.0             # candidate-detection brightness percentile
+    min_area: 100                 # min connected-component pixel area to count as a candidate
+    max_area: 4000                # max connected-component pixel area (excludes merged/oversized blobs)
+    max_crops: 500                # bounds harvest_crops' per-frame scan cost — early-exits once reached,
+                                   # so a rebuild against the full multi-hundred-frame video stays fast
+    target_half: 65              # half-width (px) of the final registered template — raised to cover
+                                  # through the measured secondary bright ring (~r=50-58); must stay
+                                  # <= crop_half or the ring data captured by crop_half is thrown away
+    n_clusters: 5                # number of empirical templates to build
+    min_sigma: 3.0                # reject fits at/near curve_fit's 0.5px floor (hot pixels/shot-noise
+                                   # spikes, not real particles) — see docs/plans/2026-07-20-001-fix-
+                                   # crop-template-harvest-quality-plan.md
+    max_sigma: 20.0                 # reject fits above this — genuine but out-of-focus particles
+                                    # (defocus blur broadens + lowers contrast), not hot pixels/noise but
+                                    # not in-focus PSF either; mixing them in washes out the dark-ring
+                                    # contrast (found via /ce-debug). null disables the upper bound.
+                                    # Raised from 15.0 -- this 5um dataset's genuine in-focus particles
+                                    # measure sigma up to ~19.7px, above the old ceiling tuned for a
+                                    # smaller-particle dataset.
+    ring_method: empirical         # empirical | model | hybrid — how each cluster's template is built.
+                                    # empirical: today's sigma-clipped raw-pixel average (default,
+                                    # unchanged behavior). model: fit a parametric ring function to the
+                                    # measured radial profile, generate a smoother/denoised template from
+                                    # the fit. hybrid: empirical core blended with a modeled ring.
+                                    # All three are implemented so template quality can be visually
+                                    # compared before picking a default — once a default is chosen, the
+                                    # unchosen ring_method code paths should be pruned rather than kept
+                                    # as a permanent three-way fork (see plan Scope Boundaries).
+    core_radius: 20.0              # (ring_method: hybrid only) radius (px) where the blend transitions
+                                    # from the empirical core to the modeled ring
+    transition_width: 10.0         # (ring_method: hybrid only) width (px) of the crossfade band centered
+                                    # on core_radius
+    cache_path: crop_templates.npz   # cached template library (.npz)
+
+  # --- Procedural particle shape generator (crop_source: procedural) ---
+  procedural_shape:
+    size: 41                       # fallback shape side length (px), used only when no
+                                    # ring_* keys below are set (plain circular Gaussian)
+    sigma: 5.0                     # base sigma (px) for the fallback circular Gaussian
+    # ring_B / ring_A0 / ring_s0 / ring_A1 / ring_r1 / ring_s1 -- fitted
+    # _ring_model parameters (see verification/render_crop_templates.py's
+    # _ring_model/fit_ring_model). When all six are set, generate_procedural_
+    # shape renders a circular core + dark ring sized to fit ring_r1 without
+    # clipping, instead of the fallback Gaussian above. Fitted (2026-07-22)
+    # from crop_template's harvested library (see above -- min_area/max_area/
+    # max_sigma retuned for this dataset's particle scale first; an initial
+    # fit against the old 20/400/15.0 values was contaminated by noise-level
+    # candidates and got reverted, see git history) via:
+    #   uv run python fit_procedural_ring.py --merge-config config.yaml
+    # (physics's own PSF kernel has no meaningful ring to fit at this
+    # config's optics -- see docs/plans/2026-07-22-001-fix-procedural-
+    # particle-realism-plan.md.)
+    ring_B: 0.0288
+    ring_A0: 0.9407
+    ring_s0: 9.5
+    ring_A1: 0.8997
+    ring_r1: 47.56
+    ring_s1: 11.05
+
+# --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth
+  model_type: rf-detr       # rf-detr | lodestar | trackpy — overridden by --model-type
+  match_distance: 10        # pixels — max center-to-center dist to count a detection as TP; shared across model types
+
+  # --- model_type: rf-detr ---
+  # checkpoints/checkpoint_best_ema.pth (May) is an undertrained/stale run —
+  # confidence never exceeds ~0.04 on any input, real or synthetic, so it
+  # produces 0 detections at any reasonable threshold. checkpoints-a40/ is the
+  # completed K8s A40 training run (confidence up to ~0.74 on real data);
+  # verified via debugging session on 2026-07-17.
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
   variant: large            # nano | small | medium | large
   num_queries: 300
-  threshold: 0.3            # detection confidence threshold
-  match_distance: 10        # pixels — max center-to-center dist to count a detection as TP
+  threshold: 0.2            # detection confidence threshold — 0.2 peaks F1 (0.47) on the
+                             # checkpoints-a40 model; swept 0.05-0.3 on 2026-07-17, see
+                             # docs/plans/2026-07-16-002-feat-lodestar-verification-benchmark-plan.md
 
   tiling:
     enabled: true
     tile_size: 512           # set < image size if the frame has >300 particles
     overlap: 50
     nms_threshold: 0.3
+
+  # --- model_type: lodestar (requires particle-tracking/.venv — run `uv sync` there first) ---
+  lodestar:
+    checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+    threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
+    alpha: 0.9                # weight score exponent
+    nms_distance: 30          # pixels; matches particle-tracking/{lodestar,multi_lodestar,basic_lodestar}_config.yaml —
+                              # null (disabled) previously let unsuppressed detections balloon to 10x+ ground truth
+    # box_size intentionally NOT set here -- leaving it unset lets benchmark.py derive it
+    # from synthetic.psf_sigma/synthetic.psf.sigma_px (see docs/plans/2026-08-07-001-fix-
+    # lodestar-box-sizing-plan.md). Set box_size here only to override that derived value
+    # for a specific investigation -- any value set here always wins.
+    fp16: false                # run model in float16
+    device: null                # used only when --device is not passed on the CLI; --device always wins
+
+  # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
+  # runs natively in verification/.venv, trackpy is already a dependency here) ---
+  trackpy:
+    diameter: 15               # must be odd — trackpy.locate raises otherwise. Documented starting
+                                # value only, not yet empirically tuned against this repo's synthetic
+                                # frames (see docs/plans/2026-07-18-001-feat-trackpy-benchmark-comparison-plan.md);
+                                # should be somewhat larger than a particle's visible pixel diameter.
+    minmass: null               # minimum integrated brightness; null lets trackpy use its own default
+                                 # (0 — no mass-based filtering; trackpy.locate's percentile filter,
+                                 # default 64, still applies regardless of this value)
+    separation: null            # minimum pixel distance between distinct features; null lets trackpy
+                                 # default to diameter + 1
 
 # --- benchmark.py: tracking metrics (requires ground_truth_tracks.csv from render.py) ---
 tracking:

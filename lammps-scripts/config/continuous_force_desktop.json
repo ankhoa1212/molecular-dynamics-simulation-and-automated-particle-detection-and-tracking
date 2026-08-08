@@ -1,0 +1,14 @@
+{
+    "input_file": "continuous_force.in",
+    "output_dir": "/mnt/c/Users/AnKhoa/Desktop/results/simulation/continuous_force",
+    "molecules": "100",
+    "molecules_end": "1500",
+    "molecules_step": "100",
+    "var_epsilon": "0.5",
+    "var_epsilon_end": "5.0",
+    "var_epsilon_step": "0.5",
+    "t_start": "1.0",
+    "t_stop": "0.05",
+    "steps": "15000",
+    "vel_force_scale": "1"
+}

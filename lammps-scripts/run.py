@@ -292,12 +292,16 @@ def run_parallel_tasks(commands, output_dir, max_workers):
     print("All parallel jobs finished.")
 
 
-def cleanup_files(output_dir):
-    """Moves any remaining .lammpstrj files to the output directory."""
+def cleanup_files(output_dir, base_script_name):
+    """Moves any remaining .lammpstrj files belonging to this simulation to the output directory."""
     for file in os.listdir("."):
-        if file.endswith(".lammpstrj"):
-            shutil.move(file, os.path.join(output_dir, file))
-            print(f"Moved trajectory file '{file}' to '{output_dir}/'")
+        if file.endswith(".lammpstrj") and file.startswith(base_script_name):
+            dst = os.path.join(output_dir, file)
+            try:
+                shutil.move(file, dst)
+                print(f"Moved trajectory file '{file}' to '{output_dir}/'")
+            except FileNotFoundError:
+                pass  # another parallel process already moved it
 
 
 def print_visualization_commands(config, base_name):
@@ -355,7 +359,7 @@ def main():
     run_parallel_tasks(commands, config["output_dir"], num_cpus)
 
     # Cleanup
-    cleanup_files(config["output_dir"])
+    cleanup_files(config["output_dir"], base_script_name)
 
     print("=" * 100)
     print("LAMMPS simulation finished.")

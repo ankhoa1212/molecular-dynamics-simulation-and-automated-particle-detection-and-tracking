@@ -3,10 +3,11 @@
 End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering.
 
 1. **`render.py`** — converts a LAMMPS trajectory into synthetic microscopy TIFFs with known particle positions; writes `ground_truth.json` (per-frame positions) and `ground_truth_tracks.csv` (per-particle track ground truth for MOTA/IDF1).
-2. **`benchmark.py`** — runs RF-DETR on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
+2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
+6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error across `benchmark.py`'s per-model-type outputs, for comparing detector performance side by side.
 
 ## Setup
 
@@ -15,10 +16,12 @@ cd verification/
 uv sync
 ```
 
-`benchmark.py` also needs the RF-DETR venv:
+`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default) and LodeSTAR each pull their compiled dependencies (torch, and either `rfdetr` or `deeplay`/`supervision`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv. `trackpy` needs no sibling-project venv — it's a classical, non-CUDA algorithm and already a native dependency of `verification/`'s own venv (installed by the `uv sync` above):
 
 ```bash
-cd ../rf-detr && uv sync
+cd ../rf-detr && uv sync             # --model-type rf-detr (default)
+cd ../particle-tracking && uv sync   # --model-type lodestar
+# --model-type trackpy needs nothing further — runs natively in verification/.venv
 ```
 
 `compare.py` needs `freud` for hexatic order (optional — skipped if missing):
@@ -29,44 +32,57 @@ cd ../lammps-scripts && pip install -r requirements.txt
 
 ## Rendering Strategies
 
-Set `render_strategy` in `config.yaml` under `synthetic:`:
+Ready-to-use configs for each strategy live in `configs/`:
 
-| Strategy | Description |
-|----------|-------------|
-| `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
-| `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
-| `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
+| Config | Strategy | Description |
+|--------|----------|-------------|
+| `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
+| `configs/render_deeptrack.yaml` | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
+| `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
+
+Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
+
+`config.yaml` is the full reference config used by `benchmark.py`, `compare.py`, and `calibrate_psf.py --merge-config`.
 
 ## Calibration Workflow
 
-Before benchmarking on `deeptrack` renders, calibrate the imaging parameters from real frames:
+Before benchmarking on calibrated renders, fit imaging parameters from real frames and merge them into `config.yaml` automatically:
 
 ```bash
-# 1. Fit PSF and noise from real microscopy frames
-uv run python calibrate_psf.py --real-frames /path/to/real/tifs/
+# 1. Fit PSF, intensity, background, and noise from real microscopy frames
+#    --merge-config writes the calibrated values directly into config.yaml
+uv run python calibrate_psf.py \
+    --real-frames /path/to/real/tifs/ \
+    --merge-config config.yaml
 
-# 2. Copy the printed values into config.yaml under synthetic:
-
-# 3. Render with calibrated deeptrack strategy
+# 2. Render with calibrated strategy
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 
-# 4. Check rendering quality against real frame
+# 3. Check rendering quality against real frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
     --strategies procedural deeptrack randomized
 ```
 
-**Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between the calibrated deeptrack render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
+`--merge-config` writes calibrated values under `synthetic.psf`, `synthetic.particle`, `synthetic.background`, and `synthetic.noise` in `config.yaml`, preserving all existing keys. Omit it to print calibrated values to stdout instead (useful for inspection before committing).
+
+**Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between a calibrated render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
 
 ## Step 1 — Render synthetic frames
 
 ```bash
+# Default (procedural, uses config.yaml)
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
+
+# Pick a specific strategy
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_procedural.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_deeptrack.yaml
 ```
 
 Outputs:
-- `verification_output/synthetic_frames/frame_NNNNN.tif` — 16-bit TIFFs
+- `verification_output/synthetic_frames/frame_NNNNN.png` — 8-bit PNG previews
 - `verification_output/ground_truth.json` — pixel positions per frame
 - `verification_output/ground_truth_tracks.csv` — stable per-particle tracks (frame, particle_id, x, y)
 
@@ -89,19 +105,34 @@ Key settings in `config.yaml` under `synthetic:`:
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
+| `background_fraction` | Flat background baseline for `procedural`, as a fraction of `peak_intensity` |
+| `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config` |
 | `psf.na` / `psf.wavelength` / `psf.resolution` | DeepTrack2 PSF optics params |
 | `background.amplitude` | Max spatial background variation (ADU) |
 | `particle.peak_mean` / `particle.intensity_sigma` | Log-normal intensity distribution |
 | `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params |
 | `randomization.psf_sigma_range` / `.peak_range` / `.readout_noise_range` | Per-frame sampling ranges for `randomized` strategy |
 
+
 ## Step 2 — Benchmark detection and tracking accuracy
 
 ```bash
-# Detection only
+# Detection only (RF-DETR, the default)
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
     --ground-truth verification_output/ground_truth.json
+
+# Detection only, LodeSTAR
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type lodestar
+
+# Detection only, trackpy (classical baseline, no venv/checkpoint needed)
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type trackpy
 
 # Detection + tracking metrics (MOTA/IDF1/fragmentation)
 uv run python benchmark.py \
@@ -110,11 +141,23 @@ uv run python benchmark.py \
     --ground-truth-tracks verification_output/ground_truth_tracks.csv
 ```
 
-Outputs:
-- `verification_output/accuracy_metrics.csv` — per-frame precision/recall/F1
-- `verification_output/tracking_metrics.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
+Outputs (named per `--model-type` so a run of one model doesn't overwrite the other's results):
+- `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1
+- `verification_output/tracking_metrics_{model_type}.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
 
 **Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
+
+### Model Selection
+
+`--model-type` (or `benchmark.model_type` in `config.yaml`; the CLI flag wins when both are set) picks the detector:
+
+| `--model-type` | Config keys read | Venv required | Notes |
+|----------------|-------------------|----------------|-------|
+| `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
+| `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
+| `trackpy` | `benchmark.trackpy.*` (`diameter`, `minmass`, `separation`) | none — runs natively in `verification/.venv` | Classical brightness-thresholding baseline (`trackpy.locate`), not a learned model; no checkpoint file, no loaded model object |
+
+`--device` is shared across model types; `benchmark.lodestar.device` overrides it for LodeSTAR specifically when set. `trackpy` is CPU-only and ignores `--device`.
 
 Options:
 
@@ -124,6 +167,7 @@ Options:
 | `--ground-truth` | *(required)* | `ground_truth.json` from render.py |
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
+| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--device` | `0` | CUDA device index or `cpu` |
 
 Key settings in `config.yaml` under `tracking:`:
@@ -150,8 +194,8 @@ Writes `hexatic_order.png`, `msd.png`, `velocity_dist.png` to `verification_outp
 ```bash
 cd verification/
 
-# 0. Calibrate from real frames (run once; paste output into config.yaml)
-uv run python calibrate_psf.py --real-frames /path/to/real/tifs/
+# 0. Calibrate from real frames (run once; writes values directly into config.yaml)
+uv run python calibrate_psf.py --real-frames /path/to/real/tifs/ --merge-config config.yaml
 
 # 1. Render with calibrated params
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --frames 50
@@ -160,7 +204,7 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack
+    --strategies procedural deeptrack randomized
 
 # 3. Benchmark detection + tracking
 uv run python benchmark.py \
@@ -185,12 +229,13 @@ uv run pytest tests/ -v
 
 ```
 verification_output/
-├── synthetic_frames/           # 16-bit TIFFs (from render.py)
-│   └── frame_NNNNN.tif
+├── synthetic_frames/           # 8-bit PNG previews (from render.py)
+│   └── frame_NNNNN.png
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
-├── accuracy_metrics.csv        # per-frame precision/recall/F1 (from benchmark.py)
-├── tracking_metrics.csv        # MOTA/IDF1/fragmentation (from benchmark.py)
+├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1 (from benchmark.py)
+├── tracking_metrics_{model_type}.csv   # MOTA/IDF1/fragmentation (from benchmark.py)
+├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
 ├── renders_comparison.png      # side-by-side strategy comparison (from compare_renders.py)
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
 ├── hexatic_order.png           # structural order comparison (from compare.py)

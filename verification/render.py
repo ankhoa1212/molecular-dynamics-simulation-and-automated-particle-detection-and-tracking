@@ -21,15 +21,20 @@ Render strategies (set via synthetic.render_strategy in config.yaml):
     deeptrack   — physics-accurate scalar-diffraction PSF via DeepTrack2
     randomized  — procedural with per-frame stochastic parameter sampling
 """
+
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
+import matplotlib.image as mplimg
 import numpy as np
-import tifffile
 import yaml
+from scipy.special import erf
+
+from frames_to_video import frames_to_video
 
 # lammps_parser.py lives in lammps-scripts/ (pure Python, no venv needed)
 sys.path.insert(0, str(Path(__file__).parent / ".." / "lammps-scripts"))
@@ -85,7 +90,115 @@ def _parse_positions(atom_header, atoms):
     return positions
 
 
-def render_frame(positions_lj, box, cfg, rng):
+def _gaussian_ring_profile(
+    r_grid, sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4
+):
+    """Core-minus-ring difference-of-Gaussians profile, peak-normalized
+    (may dip below 0 near the ring edge; caller clips before Poisson noise).
+    The caller multiplies by peak_intensity and clips to non-negative --
+    this function does neither.
+
+    Same math render_frame has always used inline: a bright Gaussian core
+    with a dark ring subtracted at ring_radius_factor*sigma. r_grid must be
+    a 2D array of Euclidean distances from the particle center (never x/y
+    offsets independently) -- the ring term is not separable into an outer
+    product, or it produces a non-isotropic diamond-shaped artifact instead
+    of a circular ring.
+    """
+    ring_width = ring_width_factor * sigma
+    core = np.exp(-0.5 * (r_grid / sigma) ** 2)
+    if ring_depth > 0 and ring_width > 0:
+        ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_radius_factor * sigma) / ring_width) ** 2)
+    else:
+        ring = 0.0
+    return core - ring
+
+
+def _gaussian_ring_extent(sigma, ring_radius_factor=2.2, ring_width_factor=0.5, ring_depth=0.4):
+    """Pixel ROI radius needed to contain the core and the ring's outer tail."""
+    ring_width = ring_width_factor * sigma
+    core_extent = 3 * sigma
+    ring_extent = ring_radius_factor * sigma + 3 * ring_width
+    return int(max(core_extent, ring_extent)) + 1
+
+
+def _disk_rim_profile(
+    r_grid, disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
+):
+    """Flat-top disk (smoothed step) with an optional dark rim near its edge,
+    peak-normalized (may dip below 0 near the rim edge; caller clips before
+    Poisson noise). The caller multiplies by peak_intensity and clips to
+    non-negative -- this function does neither.
+
+    Two disks that are merely touching have ~zero geometric overlap, unlike
+    two Gaussian cores of comparable width -- summing two of these under
+    plain additive compositing does not overshoot the way two overlapping
+    Gaussian tails do. The rim gives touching particles a visible seam
+    rather than a flat continuous plateau. See
+    docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md.
+    """
+    flat_top = 0.5 * (1 - erf((r_grid - disk_radius_px) / (np.sqrt(2) * blur_sigma_px)))
+    if rim_depth > 0 and rim_width_px > 0:
+        rim_radius = disk_radius_px - rim_offset_px
+        rim = rim_depth * np.exp(-0.5 * ((r_grid - rim_radius) / rim_width_px) ** 2)
+    else:
+        rim = 0.0
+    return flat_top - rim
+
+
+def _disk_rim_extent(
+    disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
+):
+    """Pixel ROI radius needed to contain the disk and its blurred edge.
+
+    rim_depth/rim_width_px/rim_offset_px are accepted (not just
+    disk_radius_px/blur_sigma_px) so every profile type's extent function
+    has the same call signature as its params dict -- the rim never needs a
+    larger ROI than the disk-plus-blur margin alone, since rim_offset_px is
+    subtracted from disk_radius_px, not added.
+    """
+    return int(disk_radius_px + 4 * blur_sigma_px) + 1
+
+
+_PARTICLE_PROFILES = {
+    "disk_rim": (_disk_rim_profile, _disk_rim_extent),
+    "gaussian_ring": (_gaussian_ring_profile, _gaussian_ring_extent),
+}
+
+
+def _assign_particle_profiles(atom_ids, profiles_cfg, default_seed=42):
+    """Weighted-random, seeded, persistent-for-the-run assignment of a named
+    profile to each particle, keyed by atom_id.
+
+    Never reads a LAMMPS atom-type column -- this function's inputs are
+    atom_ids and profiles_cfg only, so it produces the same kind of
+    proportion-respecting split whether the trajectory has one LAMMPS atom
+    type or many.
+
+    Args:
+        atom_ids: (N,) array of atom IDs, typically from the first parsed
+            frame. Safe to use only frame 0's IDs because render.py's
+            main() already asserts atom IDs are stable across the whole
+            trajectory before writing tracking output.
+        profiles_cfg: synthetic.particle_render_profiles config dict, with a
+            "profiles" list of {"name": str, "proportion": float, ...}
+            dicts. "proportion" values are normalized by their sum -- they
+            are not required to total 1.
+        default_seed: used when profiles_cfg has no "seed" key.
+
+    Returns:
+        dict mapping int(atom_id) -> profile name (str).
+    """
+    rng = np.random.default_rng(profiles_cfg.get("seed", default_seed))
+    profiles = profiles_cfg["profiles"]
+    names = [p["name"] for p in profiles]
+    proportions = np.array([p["proportion"] for p in profiles], dtype=np.float64)
+    proportions = proportions / proportions.sum()
+    choices = rng.choice(names, size=len(atom_ids), p=proportions)
+    return {int(aid): name for aid, name in zip(atom_ids, choices)}
+
+
+def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
     """Render one synthetic microscopy frame.
 
     Args:
@@ -93,39 +206,84 @@ def render_frame(positions_lj, box, cfg, rng):
         box: (x_lo, x_hi, y_lo, y_hi) simulation box bounds
         cfg: synthetic config dict
         rng: numpy random Generator
+        atom_ids: optional (N,) array of atom IDs, parallel to
+            positions_lj. Required together with profile_map -- omitting
+            atom_ids while passing profile_map raises TypeError from the
+            zip() below, not a bespoke validation error.
+        profile_map: optional dict of atom_id -> profile name, from
+            _assign_particle_profiles. When None (the default), every
+            particle renders with the single gaussian_ring shape from
+            cfg["psf_sigma"]/cfg["ring"] -- unchanged from before this
+            feature existed. When given, each particle's shape and ROI
+            extent come from cfg["particle_render_profiles"]["profiles"]
+            (looked up by name via profile_map[atom_id]) through
+            _PARTICLE_PROFILES[profile["type"]], using that profile's own
+            "params".
 
     Returns:
         uint16 numpy array of shape (H, W)
     """
     H = cfg["image_height"]
     W = cfg["image_width"]
-    sigma = cfg["psf_sigma"]
     peak = cfg["peak_intensity"]
     x_lo, x_hi, y_lo, y_hi = box
+    background_level = peak * cfg.get("background_fraction", 0.25)
+    img = np.full((H, W), background_level, dtype=np.float64)
 
-    img = np.zeros((H, W), dtype=np.float64)
-    r = int(3 * sigma) + 1
-
-    for x, y in positions_lj:
-        # Map LJ → pixel coordinates (auto-scales to any box size)
-        cx = (x - x_lo) / (x_hi - x_lo) * W
-        cy = (y - y_lo) / (y_hi - y_lo) * H
-
-        # Stamp a Gaussian PSF onto a small ROI (avoids full-frame ops)
-        x0, x1 = max(0, int(cx) - r), min(W, int(cx) + r + 1)
-        y0, y1 = max(0, int(cy) - r), min(H, int(cy) + r + 1)
+    def _stamp(cx, cy, extent, intensity):
+        x0, x1 = max(0, int(cx) - extent), min(W, int(cx) + extent + 1)
+        y0, y1 = max(0, int(cy) - extent), min(H, int(cy) + extent + 1)
         if x0 >= x1 or y0 >= y1:
-            continue
-
+            return
         xs = np.arange(x0, x1, dtype=np.float64)
         ys = np.arange(y0, y1, dtype=np.float64)
-        gx = np.exp(-0.5 * ((xs - cx) / sigma) ** 2)
-        gy = np.exp(-0.5 * ((ys - cy) / sigma) ** 2)
-        img[y0:y1, x0:x1] += peak * np.outer(gy, gx)
+        X, Y = np.meshgrid(xs, ys)
+        r_grid = np.hypot(X - cx, Y - cy)
+        img[y0:y1, x0:x1] += intensity(r_grid)
+
+    if profile_map is None:
+        sigma = cfg["psf_sigma"]
+        ring_cfg = cfg.get("ring", {})
+        ring_radius_factor = ring_cfg.get("radius_factor", 2.2)
+        ring_width_factor = ring_cfg.get("width_factor", 0.5)
+        ring_depth = ring_cfg.get("depth", 0.4)
+        extent = _gaussian_ring_extent(sigma, ring_radius_factor, ring_width_factor, ring_depth)
+
+        for x, y in positions_lj:
+            cx = (x - x_lo) / (x_hi - x_lo) * W
+            cy = (y - y_lo) / (y_hi - y_lo) * H
+            _stamp(
+                cx,
+                cy,
+                extent,
+                lambda r_grid: peak
+                * _gaussian_ring_profile(
+                    r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
+                ),
+            )
+    else:
+        profiles_by_name = {p["name"]: p for p in cfg["particle_render_profiles"]["profiles"]}
+        for (x, y), atom_id in zip(positions_lj, atom_ids):
+            profile = profiles_by_name[profile_map[int(atom_id)]]
+            intensity_fn, extent_fn = _PARTICLE_PROFILES[profile["type"]]
+            params = profile.get("params", {})
+            cx = (x - x_lo) / (x_hi - x_lo) * W
+            cy = (y - y_lo) / (y_hi - y_lo) * H
+            _stamp(
+                cx,
+                cy,
+                extent_fn(**params),
+                lambda r_grid, fn=intensity_fn, p=params: peak * fn(r_grid, **p),
+            )
+
+    # The ring/rim's negative dip can push some pixels below zero; rng.poisson
+    # raises ValueError on negative input, so this clip must run before the
+    # shot-noise branch below (not just at the function's final clip).
+    img = np.clip(img, 0, None)
 
     if cfg.get("shot_noise", True):
         img = rng.poisson(img).astype(np.float64)
-    img += rng.normal(0.0, cfg.get("readout_noise", 15.0), img.shape)
+    img += rng.normal(0.0, cfg.get("readout_noise", 200.0), img.shape)
     return np.clip(img, 0, 65535).astype(np.uint16)
 
 
@@ -137,17 +295,119 @@ def _lj_to_pixels(positions_lj, box, H, W):
     return np.stack([px, py], axis=1)
 
 
-def _dispatch_render(positions_lj, box, cfg, rng, strategy):
+# Public (no leading underscore): imported by benchmark.py's lodestar box_size
+# derivation, not just used internally here.
+FWHM_TO_SIGMA = 2.355  # FWHM = 2*sqrt(2*ln2)*sigma ~= 2.355*sigma
+
+
+def _parse_particle_diameter_lj(lammps_in_path):
+    """Extract a particle diameter in LJ units from a LAMMPS .in script.
+
+    Prefers a `set type <N> shape <sx> <sy> <sz>` line (diameter = 2*sx,
+    assuming a spherical particle where sx == sy == sz — the common case
+    for this repo's ellipsoid-as-sphere sims, e.g.
+    lammps-scripts/central_pair_interaction.in:27).
+
+    Falls back to the `variable sigma equal <value>` LJ parameter (e.g.
+    central_pair_interaction.in:18) if no `shape` line is present — this
+    repo's sims set the LJ pair-interaction sigma equal to the particle
+    diameter, so the bare sigma value is used directly as the diameter.
+
+    Raises:
+        FileNotFoundError: if lammps_in_path does not exist.
+        ValueError: if the file exists but neither a `shape` line nor a
+            `variable sigma equal <value>` line with a parseable literal
+            number can be found, or if the parsed diameter is not a
+            positive, finite number -- a zero/negative/NaN diameter would
+            otherwise propagate into a zero/negative psf_sigma and crash
+            rng.poisson downstream with a much less legible error.
+    """
+    path = Path(lammps_in_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"LAMMPS input script not found: {lammps_in_path}")
+
+    text = path.read_text()
+    lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+
+    def _require_positive(value, source_desc):
+        if not (value > 0) or not np.isfinite(value):
+            raise ValueError(
+                f"{source_desc} in {lammps_in_path} yields a non-positive or "
+                f"non-finite diameter ({value!r}) -- cannot derive a particle size from it."
+            )
+        return value
+
+    shape_re = re.compile(r"^set\s+type\s+\d+\s+shape\s+(\S+)\s+(\S+)\s+(\S+)")
+    for line in lines:
+        m = shape_re.match(line)
+        if m:
+            try:
+                sx = float(m.group(1))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Could not parse numeric shape value from '{line}' in " f"{lammps_in_path}"
+                ) from exc
+            return _require_positive(2.0 * sx, f"'set type ... shape' line ('{line}')")
+
+    sigma_re = re.compile(r"^variable\s+sigma\s+equal\s+(\S+)")
+    for line in lines:
+        m = sigma_re.match(line)
+        if m:
+            try:
+                sigma_value = float(m.group(1))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Could not parse numeric sigma value from '{line}' in "
+                    f"{lammps_in_path} (likely an unresolved LAMMPS variable "
+                    "reference, e.g. '${sigma}' — a literal number is required)"
+                ) from exc
+            return _require_positive(sigma_value, f"'variable sigma' line ('{line}')")
+
+    raise ValueError(
+        f"Could not find a 'set type <N> shape ...' line or a "
+        f"'variable sigma equal <value>' line in {lammps_in_path}; "
+        "cannot derive particle diameter."
+    )
+
+
+def _derive_psf_sigma_from_lammps_in(lammps_in_path, box, image_width):
+    """Derive a psf_sigma (px) from a LAMMPS .in script's particle diameter.
+
+    Converts the LJ-unit diameter to pixels using the same per-axis
+    LJ-to-pixel scale `_lj_to_pixels` derives from the box bounds
+    (image_width / (x_hi - x_lo)), then converts pixel diameter to a
+    Gaussian sigma via the FWHM relationship: sigma = FWHM / 2.355.
+    """
+    diameter_lj = _parse_particle_diameter_lj(lammps_in_path)
+    x_lo, x_hi, _y_lo, _y_hi = box
+    scale = image_width / (x_hi - x_lo)
+    diameter_px = diameter_lj * scale
+    return diameter_px / FWHM_TO_SIGMA
+
+
+def _dispatch_render(
+    positions_lj, box, cfg, rng, strategy, state=None, atom_ids=None, profile_map=None
+):
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
         strategy: 'procedural' | 'deeptrack' | 'randomized'
+        state: optional dict carrying cross-frame smoothing state for the
+            'randomized' strategy (see render_randomized.render_frame_randomized).
+            Passed through only for that branch; 'procedural' and 'deeptrack'
+            ignore it entirely — their signatures/calls are unchanged.
+        atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
+            Passed through only to the 'procedural' branch's render_frame,
+            for particle_render_profiles lookup. 'deeptrack'/'randomized'
+            never receive it.
+        profile_map: optional dict of atom_id -> profile name from
+            _assign_particle_profiles. Passed through only to the
+            'procedural' branch; 'deeptrack'/'randomized' never receive it.
 
     Returns:
         uint16 numpy array of shape (H, W)
     """
     if strategy == "deeptrack":
-        # U2 will implement this; import guard gives a clear error until then
         try:
             from render_deeptrack import render_frame_deeptrack
 
@@ -156,22 +416,20 @@ def _dispatch_render(positions_lj, box, cfg, rng, strategy):
             raise ImportError(
                 "DeepTrack2 rendering requires 'deeptrack==2.0.1'. "
                 "Run 'uv add deeptrack==2.0.1' inside verification/. "
-                "(render_strategy: deeptrack — implemented in U2)"
             )
     elif strategy == "randomized":
-        # U3 will implement this
         try:
             from render_randomized import render_frame_randomized
 
-            return render_frame_randomized(positions_lj, box, cfg, rng)
+            return render_frame_randomized(positions_lj, box, cfg, rng, state=state)
         except ImportError:
             raise ImportError(
-                "Randomized rendering not yet implemented. "
-                "(render_strategy: randomized — implemented in U3)"
+                "Randomized rendering requires render_randomized.py. "
+                "Ensure the file exists in the verification/ directory."
             )
     else:
-        # Default: procedural Gaussian PSF
-        return render_frame(positions_lj, box, cfg, rng)
+        # Default: procedural
+        return render_frame(positions_lj, box, cfg, rng, atom_ids=atom_ids, profile_map=profile_map)
 
 
 def main():
@@ -182,8 +440,24 @@ def main():
     parser.add_argument(
         "--config", default="config.yaml", help="Config file (default: config.yaml)"
     )
+    parser.add_argument(
+        "--lammps-in",
+        default=None,
+        help=(
+            "Path to the LAMMPS .in script that produced --lammps's trajectory. "
+            "When given, psf_sigma is derived from the script's particle diameter "
+            "(overriding config.yaml's psf_sigma for this run) instead of using "
+            "an arbitrary constant. Only affects render_strategy: procedural -- "
+            "randomized and deeptrack sample/derive their own particle size and "
+            "never read this override; a warning is printed if combined with them."
+        ),
+    )
     parser.add_argument("--frames", type=int, default=None, help="Limit to first N timesteps")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
+    parser.add_argument("--video", action="store_true", help="Also encode frames into preview.mp4")
+    parser.add_argument(
+        "--fps", type=float, default=10.0, help="Frame rate for --video output (default: 10)"
+    )
     args = parser.parse_args()
 
     cfg = _load_config(args.config).get("synthetic", {})
@@ -193,6 +467,17 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(args.seed)
+    # Cross-frame smoothing state for render_strategy: randomized (R8) — a
+    # small dict owned by this run, created once alongside rng, and threaded
+    # through _dispatch_render the same way rng already is. Deliberately not
+    # stuffed into cfg: render_frame_randomized already makes a private
+    # dict(cfg) copy per call to avoid mutating the caller's config, and
+    # carrying runtime state through cfg would break that boundary (see
+    # plan's Key Decisions, "cfg dict mutation is rejected"). Other
+    # strategies never see this — it stays None for them.
+    state = {} if strategy == "randomized" else None
+    profile_map = None
+
     ground_truth = []
     # Collect per-frame data for tracks CSV: list of (atom_ids, px_positions)
     all_frame_ids = []
@@ -200,7 +485,29 @@ def main():
 
     print(f"Rendering from: {args.lammps}")
     print(f"Image size:     {cfg['image_width']}×{cfg['image_height']} px")
-    print(f"PSF sigma:      {cfg.get('psf_sigma', cfg.get('psf', {}).get('sigma_px', 5.0))} px")
+    if not args.lammps_in:
+        print(f"PSF sigma:      {cfg.get('psf_sigma', cfg.get('psf', {}).get('sigma_px', 5.0))} px")
+    elif strategy != "procedural":
+        # randomized samples its own psf_sigma from randomization.psf_sigma_range
+        # every frame (render_randomized.py) and deeptrack derives particle
+        # appearance from psf.na/wavelength/resolution or crop_source templates --
+        # neither ever reads cfg["psf_sigma"], so overriding it here would be a
+        # silent no-op. Warn instead of letting --lammps-in's derived value (and
+        # the "derived from --lammps-in" print below) misleadingly imply it's in
+        # effect for this run's actual rendered output.
+        print(
+            f"WARNING:        --lammps-in has no effect on render_strategy: {strategy} -- "
+            "only procedural reads the derived psf_sigma."
+        )
+    elif cfg.get("particle_render_profiles"):
+        # Same reasoning as the strategy!=procedural branch above, but for
+        # particle_render_profiles: each profile's own params (e.g.
+        # disk_radius_px) already sets its size explicitly, so there's no
+        # longer one unambiguous cfg["psf_sigma"] target to override.
+        print(
+            "WARNING:        --lammps-in has no effect when synthetic.particle_render_profiles "
+            "is configured -- each profile's own params already set its size explicitly."
+        )
     print(f"Render strategy: {strategy}")
     print(f"Output:         {output_dir}")
 
@@ -209,12 +516,51 @@ def main():
             break
 
         box = _parse_box(block["box_bounds"])
+
+        if (
+            args.lammps_in
+            and i == 0
+            and strategy == "procedural"
+            and not cfg.get("particle_render_profiles")
+        ):
+            cfg["psf_sigma"] = _derive_psf_sigma_from_lammps_in(
+                args.lammps_in, box, cfg["image_width"]
+            )
+            print(
+                f"PSF sigma:      {cfg['psf_sigma']:.3f} px "
+                f"(derived from --lammps-in {args.lammps_in})"
+            )
+
         positions_lj, atom_ids = _parse_atoms(block["atom_header"], block["atoms"])
 
-        img = _dispatch_render(positions_lj, box, cfg, rng, strategy)
+        if i == 0 and strategy == "procedural" and cfg.get("particle_render_profiles"):
+            profile_map = _assign_particle_profiles(atom_ids, cfg["particle_render_profiles"])
+            n_profiles = len(cfg["particle_render_profiles"]["profiles"])
+            print(
+                f"Particle profiles: {n_profiles} configured, {len(profile_map)} particles assigned "
+                f"(seed={cfg['particle_render_profiles'].get('seed', 42)})"
+            )
 
-        tiff_path = output_dir / f"frame_{i:05d}.tif"
-        tifffile.imwrite(str(tiff_path), img)
+        img = _dispatch_render(
+            positions_lj,
+            box,
+            cfg,
+            rng,
+            strategy,
+            state=state,
+            atom_ids=atom_ids,
+            profile_map=profile_map,
+        )
+
+        img_f = img.astype(np.float32)
+        lo, hi = img_f.min(), img_f.max()
+        img8 = (
+            ((img_f - lo) / (hi - lo) * 255).clip(0, 255).astype(np.uint8)
+            if hi > lo
+            else np.zeros_like(img, dtype=np.uint8)
+        )
+        png_path = output_dir / f"frame_{i:05d}.png"
+        mplimg.imsave(str(png_path), img8, cmap="gray")
 
         H, W = cfg["image_height"], cfg["image_width"]
         px_pos = (
@@ -263,6 +609,15 @@ def main():
 
     print(f"\nRendered {len(ground_truth)} frames → {output_dir}")
     print(f"Ground truth  → {gt_path}")
+
+    if args.video and ground_truth:
+        video_path = output_dir / "preview.mp4"
+        try:
+            frames_to_video(output_dir, video_path, fps=args.fps)
+        except (ValueError, RuntimeError) as exc:
+            print(f"Video generation failed: {exc}")
+        else:
+            print(f"Video         → {video_path}")
 
 
 if __name__ == "__main__":

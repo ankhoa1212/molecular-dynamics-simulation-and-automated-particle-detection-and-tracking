@@ -1,0 +1,138 @@
+# RF-DETR training job for Kubernetes (A40 48GB node)
+#
+# Before applying:
+#   1. Registry: ankhoa1212 (Docker Hub)
+#   2. Replace ryu-classroom with your cluster namespace
+#   3. Create the two PVCs below (or replace claimName with your existing ones)
+#   4. Copy the merged dataset to the data PVC:
+#        kubectl cp /mnt/d/Particle\ Tracking\ Data/2um-coco-merged <pod>:/data/
+#
+# Apply with:
+#   kubectl apply -f k8s-job.yaml -n ryu-classroom
+#
+# Stream logs:
+#   kubectl logs -f job/rf-detr-training -n ryu-classroom
+#
+# Copy checkpoints back:
+#   kubectl cp <pod>:/outputs/checkpoints ./checkpoints-a40
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rf-detr-k8s-config
+  namespace: ryu-classroom
+data:
+  config.yaml: |
+    dataset:
+      path: /data/2um-coco-merged/
+      train_experiments:
+        - "2um PS + Au Cit + NaCl 60%"
+        - "2um PS + Au Cit + NaCl 80%"
+        - "NaCl + 2um PS + Au Cit 20%"
+        - "NaCl + 2um PS + Au Cit 40%"
+        - "NaCl + 2um PS + Au Cit 100%"
+        - "Trial 1 20% Light Intensity_2"
+        - "Trial 1 40% Light Intensity_1"
+        - "Trial 1 40% Light Intensity_2"
+        - "Trial 1 60% Light Intensity_1"
+        - "Trial 1 80% Light Intensity_5"
+        - "Trial 1 100% Light Intensity_3"
+      val_experiments:
+        - "Trial 1 60% Light Intensity_2"
+        - "Trial 1 80% Light Intensity_6"
+      test_experiments:
+        - "Trial 1 20% Light Intensity_3"
+        - "Trial 1 100% Light Intensity_4"
+    model:
+      variant: large
+      num_queries: 300
+      num_select: 300
+      pretrain_weights: "rf-detr-large-2026.pth"  # backbone loads via strict=False even with num_queries != 300
+      amp: true
+      gradient_checkpointing: false
+      resolution: null
+    training:
+      epochs: 50
+      batch_size: 2
+      grad_accum_steps: 4
+      learning_rate: 1.0e-4
+      num_workers: 8
+      pin_memory: true
+      prefetch_factor: 4
+      persistent_workers: true
+      checkpoint_dir: /outputs/checkpoints
+      eval_max_dets: 300
+      early_stopping: true
+      early_stopping_patience: 10
+      early_stopping_min_delta: 0.001
+      early_stopping_use_ema: true
+    mlflow:
+      experiment_name: rf-detr-a40
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rf-detr-training
+  namespace: ryu-classroom
+spec:
+  backoffLimit: 0                   # no retries — training failures should be investigated
+  ttlSecondsAfterFinished: 86400    # clean up pod 24h after completion
+  template:
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A40
+              - key: nvidia.com/cuda.driver.major
+                operator: Gt
+                values:
+                - "569"             # driver > 569 = driver >= 570 (required for cu130 PyTorch wheels)
+      containers:
+        - name: trainer
+          image: ankhoa1212/rf-detr-trainer:latest
+          command: ["python", "train.py", "--config", "/config/config.yaml"]
+          resources:
+            requests:
+              nvidia.com/a40: "1"
+              memory: "24Gi"
+              cpu: "10"
+            limits:
+              nvidia.com/a40: "1"
+              memory: "32Gi"
+              cpu: "12"
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "sqlite:////outputs/mlflow.db"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: outputs
+              mountPath: /outputs
+            - name: config
+              mountPath: /config
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rf-detr-data
+        - name: outputs
+          persistentVolumeClaim:
+            claimName: rf-detr-outputs
+        - name: config
+          configMap:
+            name: rf-detr-k8s-config
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi

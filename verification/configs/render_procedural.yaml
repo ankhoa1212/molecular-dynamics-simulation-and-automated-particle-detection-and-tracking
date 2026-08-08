@@ -1,0 +1,15 @@
+# render.py config — procedural strategy
+# Simple 2D Gaussian PSF with Poisson + readout noise. Fast; no extra deps.
+#
+# Usage:
+#   uv run python render.py --lammps <path> --config config.procedural.yaml
+
+synthetic:
+  render_strategy: procedural
+  image_width: 3200
+  image_height: 2200
+  psf_sigma: 5.0                # Gaussian PSF half-width in pixels
+  peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
+  shot_noise: true
+  readout_noise: 15.0           # Gaussian readout noise std dev (ADU)
+  output_dir: verification_output/synthetic_frames_procedural/

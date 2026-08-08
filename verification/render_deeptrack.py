@@ -10,6 +10,8 @@ Requires deeptrack==2.0.1:
     uv add deeptrack==2.0.1    (inside verification/)
 """
 
+import warnings
+
 import numpy as np
 
 try:
@@ -41,7 +43,7 @@ def _build_psf_kernel(cfg, H, W):
         H, W: image height/width in pixels
 
     Returns:
-        2-D float32 array, normalised so kernel.sum() == 1.
+        2-D float32 array, normalised so kernel.max() == 1.
     """
     try:
         import deeptrack  # noqa: PLC0415
@@ -76,21 +78,123 @@ def _build_psf_kernel(cfg, H, W):
     kernel = np.abs(np.array(kernel, dtype=np.float64).squeeze())
 
     # Guard against all-zero kernel (e.g., PSF entirely outside output_region)
-    total = kernel.sum()
-    if total == 0.0:
+    if kernel.sum() == 0.0:
         # Fall back to a small unit-impulse so stamping still works
         kernel = np.zeros_like(kernel)
         kernel[H // 2, W // 2] = 1.0
-        total = 1.0
 
-    kernel = (kernel / total).astype(np.float32)
-    return kernel
+    # Crop to a small patch around the PSF centre so that
+    # scipy.ndimage.convolve doesn't allocate O(image_size^4) memory. The
+    # crop radius is a memory/performance bound, not a guarantee of
+    # capturing the PSF's full energy -- measured at this module's default
+    # NA/wavelength/resolution, only ~41% of the kernel's total energy
+    # lies within r=10px of a 65x65 (r=32) crop, so the PSF here is
+    # considerably broader than a naive "tightly concentrated" assumption.
+    # Peak-normalizing (rather than sum-normalizing) after the crop makes
+    # rendered brightness insensitive to how much of that tail the crop
+    # radius happens to capture.
+    cy, cx = H // 2, W // 2
+    r = min(32, cy, cx)
+    kernel = kernel[cy - r : cy + r + 1, cx - r : cx + r + 1]
+    peak = kernel.max()
+    if peak > 0:
+        kernel = kernel / peak
+
+    return kernel.astype(np.float32)
+
+
+def _composite_crop_templates(pixel_positions, intensities, cfg, rng, H, W):
+    """Composite each particle's template onto the canvas at its sub-pixel
+    position (crop_source: real / procedural).
+
+    Unlike the physics path's single kernel convolved globally, each
+    particle draws from its own template source. 'real' picks uniformly at
+    random from the cached empirical library, so appearance still varies
+    particle-to-particle within a frame. 'procedural' is deterministic given
+    `procedural_shape` config (no per-particle randomization) -- the same
+    template is reused for every particle in the frame. A particle near the
+    canvas edge has its template patch clipped to canvas bounds (matching
+    _lj_to_pixels' clip-to-bounds contract) rather than indexed out of range.
+    """
+    from render_crop_templates import RING_PARAM_NAMES, generate_procedural_shape
+    from render_crop_templates import load_template_library
+
+    crop_source = cfg["crop_source"]
+    canvas = np.zeros((H, W), dtype=np.float32)
+
+    if crop_source == "real":
+        crop_template_cfg = cfg.get("crop_template", {})
+        cache_path = crop_template_cfg.get("cache_path")
+        if not cache_path:
+            raise ValueError(
+                "crop_source: 'real' requires synthetic.crop_template.cache_path — a template "
+                "library built via render_crop_templates.build_template_library()."
+            )
+        try:
+            templates = load_template_library(cache_path)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"crop_source: 'real' requires a pre-built template library at '{cache_path}'. "
+                "Build one via render_crop_templates.build_template_library() first."
+            ) from exc
+        if len(templates) == 0:
+            raise ValueError(f"Template library at '{cache_path}' is empty.")
+    else:  # procedural
+        proc_cfg = cfg.get("procedural_shape", {})
+        proc_size = int(proc_cfg.get("size", 41))
+        proc_sigma = float(proc_cfg.get("sigma", 5.0))
+        present = [key for key in RING_PARAM_NAMES if key in proc_cfg]
+        if present and len(present) < len(RING_PARAM_NAMES):
+            missing = [key for key in RING_PARAM_NAMES if key not in proc_cfg]
+            warnings.warn(
+                f"synthetic.procedural_shape has {len(present)}/{len(RING_PARAM_NAMES)} "
+                f"ring_* keys set (missing {missing}) -- falling back to the plain circular "
+                "Gaussian. Set all six (via fit_procedural_ring.py --merge-config) or none.",
+                stacklevel=2,
+            )
+        ring_params = (
+            tuple(proc_cfg[key] for key in RING_PARAM_NAMES)
+            if len(present) == len(RING_PARAM_NAMES)
+            else None
+        )
+        procedural_template = generate_procedural_shape(proc_size, proc_sigma, ring_params)
+
+    for (px, py), intensity in zip(pixel_positions, intensities):
+        if crop_source == "real":
+            template = templates[int(rng.integers(0, len(templates)))]
+        else:
+            template = procedural_template
+
+        th, tw = template.shape
+        half_h, half_w = th // 2, tw // 2
+
+        iy, ix = int(round(float(py))), int(round(float(px)))
+        frac_y, frac_x = float(py) - iy, float(px) - ix
+        shifted = scipy.ndimage.shift(
+            template, shift=(frac_y, frac_x), order=3, mode="constant", cval=0.0
+        )
+        patch = shifted.astype(np.float32) * float(intensity)
+
+        r0, r1 = iy - half_h, iy - half_h + th
+        c0, c1 = ix - half_w, ix - half_w + tw
+
+        pr0, pr1 = max(0, r0), min(H, r1)
+        pc0, pc1 = max(0, c0), min(W, c1)
+        if pr0 >= pr1 or pc0 >= pc1:
+            continue  # template patch falls entirely outside the canvas
+        tr0, tr1 = pr0 - r0, pr1 - r0
+        tc0, tc1 = pc0 - c0, pc1 - c0
+
+        canvas[pr0:pr1, pc0:pc1] += patch[tr0:tr1, tc0:tc1]
+
+    return canvas
 
 
 def render_frame_deeptrack(positions_lj, box, cfg, rng):
-    """Render one synthetic microscopy frame using a DeepTrack2 PSF kernel.
+    """Render one synthetic microscopy frame using a DeepTrack2 PSF kernel,
+    an empirical crop-template library, or a procedural shape generator.
 
-    Strategy:
+    Strategy (crop_source: physics, default — unchanged from before crop_source existed):
         1. Build a PSF kernel via a single deeptrack call (render-kernel-then-stamp).
         2. Sample per-particle intensities from a log-normal distribution.
         3. Stamp particles onto an empty canvas, then convolve with the kernel.
@@ -99,10 +203,17 @@ def render_frame_deeptrack(positions_lj, box, cfg, rng):
            noise + Gaussian read noise.
         6. Clip to [0, 65535] and cast to uint16.
 
+    Strategy (crop_source: real / procedural): steps 1-3 above are replaced by
+    per-particle template compositing (_composite_crop_templates) — each
+    particle draws its own template rather than sharing one convolved
+    kernel. Steps 4-6 (background + noise) are unchanged and shared across
+    all three crop_source values.
+
     Args:
         positions_lj: (N, 2) float array of particle positions in LJ units.
         box: (x_lo, x_hi, y_lo, y_hi) simulation box bounds.
-        cfg: synthetic config dict (sub-dicts: psf, background, particle, noise).
+        cfg: synthetic config dict (sub-dicts: psf, background, particle, noise,
+            and — for crop_source real/procedural — crop_template/procedural_shape).
         rng: numpy.random.Generator instance.
 
     Returns:
@@ -110,9 +221,7 @@ def render_frame_deeptrack(positions_lj, box, cfg, rng):
     """
     H = cfg["image_height"]
     W = cfg["image_width"]
-
-    # --- PSF kernel --------------------------------------------------------
-    kernel = _build_psf_kernel(cfg, H, W)
+    crop_source = cfg.get("crop_source", "physics")
 
     # --- LJ -> pixel coordinates ------------------------------------------
     if len(positions_lj) == 0:
@@ -135,15 +244,25 @@ def render_frame_deeptrack(positions_lj, box, cfg, rng):
     else:
         intensities = np.array([], dtype=np.float32)
 
-    # --- Stamp particles ---------------------------------------------------
-    canvas = np.zeros((H, W), dtype=np.float32)
-    for (px, py), intensity in zip(pixel_positions, intensities):
-        ix = int(np.clip(px, 0, W - 1))
-        iy = int(np.clip(py, 0, H - 1))
-        canvas[iy, ix] += float(intensity)
+    if crop_source == "physics":
+        # --- PSF kernel ------------------------------------------------------
+        kernel = _build_psf_kernel(cfg, H, W)
 
-    # Convolve the delta-function stamps with the PSF kernel
-    frame = scipy.ndimage.convolve(canvas, kernel, mode="reflect").astype(np.float32)
+        # --- Stamp particles ---------------------------------------------------
+        canvas = np.zeros((H, W), dtype=np.float32)
+        for (px, py), intensity in zip(pixel_positions, intensities):
+            ix = int(np.clip(px, 0, W - 1))
+            iy = int(np.clip(py, 0, H - 1))
+            canvas[iy, ix] += float(intensity)
+
+        # Convolve the delta-function stamps with the PSF kernel
+        frame = scipy.ndimage.convolve(canvas, kernel, mode="reflect").astype(np.float32)
+    elif crop_source in ("real", "procedural"):
+        frame = _composite_crop_templates(pixel_positions, intensities, cfg, rng, H, W)
+    else:
+        raise ValueError(
+            f"Unknown crop_source: {crop_source!r}. Expected 'physics', 'real', or 'procedural'."
+        )
 
     # --- Spatially varying background -------------------------------------
     bg_cfg = cfg.get("background", {})

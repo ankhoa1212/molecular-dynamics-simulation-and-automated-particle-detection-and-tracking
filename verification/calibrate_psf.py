@@ -5,8 +5,15 @@ Usage:
     uv run python calibrate_psf.py --real-frames <dir> [--output-config <path>] [--dark-frames <dir>]
 
 Prints a YAML fragment ready to paste into config.yaml under synthetic:.
+
+Real saturated bright-field data should tune --min-area/--max-area/--percentile
+away from the small-particle-friendly defaults -- start from this repo's
+config.yaml crop_template values (--min-area 100 --max-area 4000 --percentile 95.0)
+and retune per dataset.
 """
+
 import argparse
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -28,13 +35,37 @@ def _load_tifs(directory: Path) -> list[np.ndarray]:
     return [tifffile.imread(str(p)).astype(np.float32) for p in paths]
 
 
-def _detect_spots(frame: np.ndarray, min_sep: float) -> np.ndarray:
-    """Return (N, 2) array of local-maxima (row, col) with min_sep separation."""
-    fs = max(3, int(min_sep) | 1)  # odd footprint size
-    local_max = scipy.ndimage.maximum_filter(frame, footprint=np.ones((fs, fs), dtype=bool))
-    threshold = np.percentile(frame, 90)
-    rows, cols = np.where((frame == local_max) & (frame > threshold))
-    return np.column_stack([rows, cols]) if len(rows) > 0 else np.zeros((0, 2), dtype=int)
+def _detect_particle_centers(frame, min_area, max_area, percentile):
+    """Detect candidate particle centers via connected-component labeling on
+    a percentile-thresholded mask, filtered by component pixel-area.
+
+    A per-pixel local-maxima approach (frame == maximum_filter(frame))
+    assumes isolated point-like peaks. Real bright-field particle frames can
+    instead contain sensor-saturated intensity plateaus (measured on the 2 um
+    dataset: up to ~4.5% of pixels at the sensor max) — every pixel in such a
+    plateau ties for "local max" under that approach, producing tens of
+    thousands of spurious candidates per frame instead of one per particle.
+    Connected-component centroiding treats each contiguous bright region as
+    one candidate regardless of internal saturation.
+
+    `max_area=None` is treated as unbounded, so callers don't each need to
+    repeat their own None-to-unbounded sentinel conversion.
+
+    Returns:
+        (N, 2) float array of (row, col) intensity-weighted centroids.
+    """
+    max_area = np.inf if max_area is None else max_area
+    threshold = np.percentile(frame, percentile)
+    mask = frame > threshold
+    labels, n_labels = scipy.ndimage.label(mask)
+    if n_labels == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    sizes = scipy.ndimage.sum(mask, labels, index=np.arange(1, n_labels + 1))
+    keep = np.where((sizes >= min_area) & (sizes <= max_area))[0] + 1
+    if len(keep) == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    centroids = scipy.ndimage.center_of_mass(frame, labels, index=keep)
+    return np.array(centroids).reshape(-1, 2)
 
 
 def _gaussian_2d(xy, A, x0, y0, sx, sy, B):
@@ -43,6 +74,11 @@ def _gaussian_2d(xy, A, x0, y0, sx, sy, B):
 
 
 def _fit_gaussian(crop: np.ndarray):
+    """Fit a 2-D Gaussian to `crop`, returning (sx, sy, A) -- the fitted
+    sigmas and the background-subtracted peak amplitude -- or None on
+    failure. `A` is the particle's own fitted contribution, excluding the
+    local background baseline `B` (also fitted, but not needed by callers
+    today)."""
     H, W = crop.shape
     xs, ys = np.arange(W, dtype=np.float64), np.arange(H, dtype=np.float64)
     xx, yy = np.meshgrid(xs, ys)
@@ -66,9 +102,26 @@ def _fit_gaussian(crop: np.ndarray):
             bounds=([0, 0, 0, 0.5, 0.5, -np.inf], [np.inf, W, H, H, W, np.inf]),
             maxfev=2000,
         )
-        sx, sy = abs(popt[3]), abs(popt[4])
+        A, sx, sy = popt[0], abs(popt[3]), abs(popt[4])
+        # curve_fit's lower bound on A is 0, not a meaningful noise floor -- on
+        # some crops (candidate detection false positives, or a genuine
+        # particle too large for this fixed-size window) it converges to a
+        # numerically-near-zero amplitude that still satisfies the sigma
+        # bounds below. That's a degenerate "flat" fit, not a real peak, and
+        # left unfiltered it corrupts the population-level lognormal fit in
+        # calibrate_from_frames (a handful of ~1e-10 amplitudes alongside
+        # genuine hundreds-to-thousands-ADU peaks spans ~13 orders of
+        # magnitude in log-space, blowing up the fitted shape parameter).
+        # Scaled to the crop's own dynamic range rather than an absolute ADU
+        # constant, since that range varies by dataset/exposure. The 1e-9
+        # absolute floor backstops the relative check on an (near-)perfectly
+        # flat crop, where crop_range itself is ~0 and "A < 0.01 * crop_range"
+        # degenerates to "A < ~0", which a tiny positive A would pass.
+        crop_range = float(crop.max() - crop.min())
+        if A < 1e-9 or A < 0.01 * crop_range:
+            return None
         if 0.5 < sx < _CROP_HALF and 0.5 < sy < _CROP_HALF:
-            return float(sx), float(sy)
+            return float(sx), float(sy), float(A)
     except (RuntimeError, ValueError):
         pass
     return None
@@ -99,9 +152,19 @@ def _heterogeneity_scale(residual: np.ndarray) -> float:
 
 
 def calibrate_from_frames(
-    frames: list[np.ndarray], dark_frames: list[np.ndarray] | None = None
+    frames: list[np.ndarray],
+    dark_frames: list[np.ndarray] | None = None,
+    min_area: float = 4.0,
+    max_area: float | None = None,
+    percentile: float = 90.0,
 ) -> dict:
     """Fit PSF and imaging parameters from a list of microscopy frames.
+
+    min_area, max_area, percentile: tune _detect_particle_centers' connected-
+    component candidate detection. Defaults suit small, isolated point-like
+    data; real saturated bright-field data needs a higher percentile and an
+    explicit max_area (see verification/config.yaml's crop_template section
+    for values tuned to a real dataset).
 
     Returns dict with keys: psf, particle, background, noise, _meta.
     """
@@ -112,7 +175,7 @@ def calibrate_from_frames(
     sigma_ests, peak_vals, all_bg, bg_residuals = [], [], [], []
 
     for frame in frames:
-        spots = _detect_spots(frame, 3 * psf_sigma)
+        spots = _detect_particle_centers(frame, min_area, max_area, percentile)
         if not len(spots):
             continue
 
@@ -122,7 +185,7 @@ def calibrate_from_frames(
         H, W = frame.shape
         mask = np.zeros((H, W), dtype=bool)
 
-        for row, col in spots.astype(int):
+        for row, col in np.round(spots).astype(int):
             # Fit crop
             r0, r1 = row - _CROP_HALF, row + _CROP_HALF
             c0, c1 = col - _CROP_HALF, col + _CROP_HALF
@@ -130,7 +193,12 @@ def calibrate_from_frames(
                 fit = _fit_gaussian(frame[r0:r1, c0:c1])
                 if fit is not None:
                     sigma_ests.append((fit[0] + fit[1]) / 2)
-                    peak_vals.append(float(frame[r0:r1, c0:c1].max()))
+                    # fit[2] is the fitted amplitude A, background-subtracted --
+                    # matches what render_deeptrack.py treats peak_mean as (the
+                    # particle's own contribution, separate from background).
+                    # The raw crop max used previously included the local
+                    # background baseline, inflating peak_mean.
+                    peak_vals.append(fit[2])
                     psf_sigma = float(np.mean(sigma_ests))
 
             # Mask particle for background
@@ -228,11 +296,173 @@ def _format_yaml_fragment(params: dict) -> str:
     )
 
 
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _is_key_line(line: str, indent: int, key: str) -> bool:
+    """True if `line` is an active (non-comment) 'key:' line at exactly `indent`."""
+    stripped = line.strip()
+    if stripped == "" or stripped.startswith("#"):
+        return False
+    if _line_indent(line) != indent:
+        return False
+    rest = line[indent:]
+    return rest == f"{key}:" or rest.startswith(f"{key}: ") or rest.startswith(f"{key}:\n")
+
+
+def _find_key_line(lines: list[str], start: int, end: int, indent: int, key: str) -> int | None:
+    """Find the first ACTIVE 'key:' line within lines[start:end] at `indent`.
+
+    Deliberately skips commented-out lines (e.g. '# sigma_px: 4.2') so a
+    commented-out placeholder is never mistaken for a live key.
+    """
+    for i in range(start, end):
+        if _is_key_line(lines[i], indent, key):
+            return i
+    return None
+
+
+def _block_end(lines: list[str], header_idx: int, header_indent: int) -> int:
+    """Index one past the last line belonging to the block headed by lines[header_idx].
+
+    Blank lines don't end the block; the first non-blank line at indent <=
+    header_indent does.
+    """
+    i = header_idx + 1
+    last_in_block = header_idx
+    while i < len(lines):
+        if lines[i].strip() == "":
+            i += 1
+            continue
+        if _line_indent(lines[i]) > header_indent:
+            last_in_block = i
+            i += 1
+            continue
+        break
+    return last_in_block + 1
+
+
+def _render_value(value) -> str:
+    return str(value)
+
+
+def _replace_value_preserving_comment(line: str, key: str, indent: int, rendered_value: str) -> str:
+    """Replace just the value portion of an existing 'key: value  # comment' line,
+    keeping the trailing comment (if any) and the line's own indentation intact."""
+    newline = "\n" if line.endswith("\n") else ""
+    content = line[indent:].rstrip("\n")
+    rest = content[len(f"{key}:") :]
+    if "#" in rest:
+        comment = rest[rest.index("#") :]
+        return f"{' ' * indent}{key}: {rendered_value}  {comment}{newline}"
+    return f"{' ' * indent}{key}: {rendered_value}{newline}"
+
+
+def _normalize_flow_empty_mappings(lines: list[str]) -> list[str]:
+    """Rewrite 'key: {}' lines to a bare 'key:' block header.
+
+    yaml.dump renders an empty dict as flow-style '{}' even with
+    default_flow_style=False (there's nothing to put in block style). Normalizing
+    this away up front means the rest of this module only has to reason about one
+    shape — a block header, possibly with zero children yet — instead of two.
+    """
+    pattern = re.compile(r"^(\s*)(\w[\w-]*):\s*\{\}\s*$")
+    out = []
+    for line in lines:
+        m = pattern.match(line.rstrip("\n"))
+        out.append(f"{m.group(1)}{m.group(2)}:\n" if m else line)
+    return out
+
+
+def _merge_params_into_config(config_path: Path, params: dict) -> None:
+    """Merge calibrated params into an existing config.yaml file under synthetic:.
+
+    Preserves all existing keys not in `params`'s own top-level sections (e.g.
+    psf, particle, background, noise -- or procedural_shape for
+    fit_procedural_ring.py's ring parameters), including comments and
+    formatting — this patches only the specific lines being updated (or
+    appends new ones) rather than re-dumping the whole file, since a full
+    yaml.safe_load -> yaml.dump round-trip silently drops every comment in
+    the file. Strips _gain_sigma_note from noise and drops _meta entirely
+    (both are internal-only fields, never written).
+
+    Iterates over whatever sections `params` actually contains rather than a
+    fixed tuple, so any caller-defined section (not just the four
+    calibrate_psf.py itself always calibrates) can be merged without changes
+    here.
+
+    Raises FileNotFoundError if config_path does not exist.
+    """
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    lines = _normalize_flow_empty_mappings(config_path.read_text().splitlines(keepends=True))
+
+    synthetic_idx = _find_key_line(lines, 0, len(lines), indent=0, key="synthetic")
+    if synthetic_idx is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append("synthetic:\n")
+        synthetic_idx = len(lines) - 1
+
+    for section in params:
+        if section.startswith("_"):
+            continue  # internal-only, e.g. calibrate_from_frames' _meta -- never written
+        calibrated = dict(params[section])
+        if section == "noise":
+            calibrated.pop("_gain_sigma_note", None)
+
+        synthetic_end = _block_end(lines, synthetic_idx, header_indent=0)
+        section_idx = _find_key_line(lines, synthetic_idx + 1, synthetic_end, indent=2, key=section)
+        if section_idx is None:
+            lines.insert(synthetic_end, f"  {section}:\n")
+            section_idx = synthetic_end
+
+        section_end = _block_end(lines, section_idx, header_indent=2)
+        for key, value in calibrated.items():
+            rendered = _render_value(value)
+            key_idx = _find_key_line(lines, section_idx + 1, section_end, indent=4, key=key)
+            if key_idx is not None:
+                lines[key_idx] = _replace_value_preserving_comment(
+                    lines[key_idx], key, indent=4, rendered_value=rendered
+                )
+            else:
+                lines.insert(section_end, f"    {key}: {rendered}\n")
+                section_end += 1
+
+    config_path.write_text("".join(lines))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Calibrate PSF and noise from real .tif frames")
     parser.add_argument("--real-frames", required=True)
     parser.add_argument("--output-config", default=None)
+    parser.add_argument("--merge-config", default=None, metavar="PATH")
     parser.add_argument("--dark-frames", default=None)
+    parser.add_argument(
+        "--min-area",
+        type=float,
+        default=4.0,
+        help="min connected-component pixel area to count as a detection candidate "
+        "(default: 4.0, suited to small isolated point-like data)",
+    )
+    parser.add_argument(
+        "--max-area",
+        type=float,
+        default=None,
+        help="max connected-component pixel area, excludes merged/oversized blobs "
+        "(default: unbounded)",
+    )
+    parser.add_argument(
+        "--percentile",
+        type=float,
+        default=90.0,
+        help="candidate-detection brightness percentile (default: 90.0). Real "
+        "saturated bright-field data should start from this repo's config.yaml "
+        "crop_template values (--min-area 100 --max-area 4000 --percentile 95.0), "
+        "retuned per dataset",
+    )
     args = parser.parse_args()
 
     real_dir = Path(args.real_frames)
@@ -252,14 +482,25 @@ def main():
         if not dark_frames:
             print(f"WARNING: No dark frames found in {args.dark_frames}", file=sys.stderr)
 
-    params = calibrate_from_frames(frames, dark_frames=dark_frames)
+    params = calibrate_from_frames(
+        frames,
+        dark_frames=dark_frames,
+        min_area=args.min_area,
+        max_area=args.max_area,
+        percentile=args.percentile,
+    )
     fragment = _format_yaml_fragment(params)
     yaml.safe_load(fragment)  # verify valid YAML before output
 
     if args.output_config:
         Path(args.output_config).write_text(fragment + "\n")
         print(f"Calibrated config written to: {args.output_config}")
-    else:
+
+    if args.merge_config:
+        _merge_params_into_config(Path(args.merge_config), params)
+        print(f"Calibrated parameters merged into: {args.merge_config}")
+
+    if not args.output_config and not args.merge_config:
         print(fragment)
 
 

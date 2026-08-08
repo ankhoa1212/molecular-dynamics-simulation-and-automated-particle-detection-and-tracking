@@ -9,24 +9,44 @@ input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-
 model:
   type: rf-detr  # rf-detr | yolo | lodestar
 
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_ema.pth  # model checkpoint
+  checkpoint: ../rf-detr/checkpoints/checkpoint_best_regular.pth  # model checkpoint
+                     # checkpoint_best_ema.pth is from a training run that crashed at epoch 0 (only 449
+                     # steps logged, val metrics never ran) and produces ZERO detections on real frames —
+                     # do not use it. checkpoint_best_regular.pth is from the May 6 run that completed 20
+                     # epochs with val/mAP_50=0.91, recall=0.87, precision=0.94 (see
+                     # rf-detr/checkpoints/events.out.tfevents.1778071247.*) and correctly detects all 70/70
+                     # particles on a held-out test frame.
 
   # Only used when model.type is rf-detr
   variant: large  # nano | small | medium | large
   num_classes: 2  # number of classes in the checkpoint (2 = particle/background)
-  num_queries: 300  # max detections per frame; must match the trained checkpoint (checkpoint_best_ema was trained with default 300)
+  num_queries: 300  # max detections per frame; must match the trained checkpoint. checkpoint_best_regular
+                     # was trained with num_queries=300 (refpoint_embed/query_feat are 300*group_detr=3900
+                     # rows) — rfdetr's loader (rfdetr/detr.py:_load_pretrain_weights_into) silently
+                     # truncates these to num_queries*group_detr before load_state_dict if this is wrong,
+                     # discarding trained queries with no error or warning.
 
   device: "0"  # "0" for first GPU, "cpu" for CPU-only
 
-# Crop: restrict detection to a region of interest (useful when particle count exceeds the
-# model's per-frame detection limit, e.g. RF-DETR's 300-query ceiling).
+# Crop: restrict detection to a region of interest.
 # width/height: fraction of frame (0.0–1.0) or absolute pixels (> 1).
 # center: true  → crop is centred on the frame; x/y are ignored.
 # center: false → x/y set the top-left corner in pixels.
+# Set to null (or omit) to process the full frame (use tiling instead for dense scenes).
 crop:
-  center: true  # centre the crop on the frame
-  width: 0.5
-  height: 0.5
+
+# Tiling: split each frame into overlapping tiles and merge detections with NMS.
+# Enables the 300-query RF-DETR model to handle frames with >300 particles by
+# processing each tile independently (adapts to any input frame size at runtime).
+# tile_size: tile edge length in original frame pixels (each tile is resized to model
+#            resolution internally); tune so avg particles/tile stays under 300.
+# overlap:   pixel overlap between adjacent tiles so boundary particles aren't missed.
+# nms_threshold: IoU threshold for deduplicating detections in overlap regions.
+tiling:
+  enabled: true
+  tile_size: 1024
+  overlap: 100
+  nms_threshold: 0.3
 
 # Detection:
 detection:
@@ -49,6 +69,11 @@ tracking:
   adaptive_stop: 12  # minimum search_range before giving up (set to null to disable)
   adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
 
+  # Trackpy: reconnect track fragments separated by at most this many frames (disabled if null)
+  bridge_gap: null
+  # Trackpy: spatial search radius in pixels for gap-closing (default: 2 × search_range)
+  bridge_radius: null
+
   # ByteTrack: frames to keep a lost track alive before discarding it
   lost_track_buffer: 60
 
@@ -60,9 +85,13 @@ tracking:
 
 # Output:
 output:
-  dir: /mnt/d/Particle Tracking Data/2um/2 um Lower Concentration/rf-detr-trial/
+  dir: /mnt/d/Particle Tracking Data/2um/rf-detr-trial/
 
-  save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
+  save_video: true  # Save an annotated MP4 with bounding boxes drawn
+
+  # Draw the "#<track_id>" label next to each bounding box in the output video.
+  # Off by default since the labels tend to clutter dense scenes.
+  video_labels: false
 
   fps: 30
 

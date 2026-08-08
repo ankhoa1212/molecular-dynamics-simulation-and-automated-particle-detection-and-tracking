@@ -20,6 +20,9 @@ detection:
   alpha: 0.9        # weight score exponent (autolabel default)
   nms_distance: 30  # suppress detections within 30px of a higher-scoring one
   fp16: true        # run model in float16
+  # box_size: 40    # detection box side length (px), manual estimate until real PSF
+                     # calibration exists for this dataset (see box_size KTD in
+                     # docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md)
 
 # Tracking:
 tracking:
@@ -51,7 +54,11 @@ tracking:
 output:
   dir: /mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/lodestar/
 
-  save_video: true  # Save an annotated MP4 with bounding boxes and track IDs drawn
+  save_video: true  # Save an annotated MP4 with bounding boxes drawn
+
+  # Draw the "#<track_id>" label next to each bounding box in the output video.
+  # Off by default since the labels tend to clutter dense scenes.
+  video_labels: false
 
   fps: 30
 

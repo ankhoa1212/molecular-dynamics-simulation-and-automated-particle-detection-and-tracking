@@ -17,9 +17,38 @@ __pycache__/
 # rf-detr
 rf-detr/mlruns/
 rf-detr/checkpoints/
+rf-detr/checkpoints-a40/
 rf-detr/*.pth
+rf-detr/*.pt
 rf-detr/split/
+rf-detr/.env
 
 # data-setup
 data-setup/mlruns/
 data-setup/lightning_logs/
+data-setup/*.db-shm
+data-setup/*.db-wal
+data-setup/*.bak
+
+# yolov12
+yolov12/*.pt
+
+# yolov5 (vendored, not a submodule)
+yolov5/
+
+# generated verification output
+verification/verification_output/
+
+# cached crop-template library (regeneratable via
+# render_crop_templates.build_template_library() / fit_procedural_ring.py)
+verification/crop_templates.npz
+
+# generated lint reports
+lint-reports/
+
+# Claude Code settings
+.claude/
+CLAUDE.md
+
+# planning/brainstorm docs (local working notes, not shared repo content)
+docs/
