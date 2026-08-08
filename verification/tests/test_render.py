@@ -2782,9 +2782,7 @@ class TestFixedStretchReference:
             return original(img, cfg)
 
         with mock.patch.object(render_module, "_stretch_to_uint8", side_effect=spy):
-            _run_main_with_blocks(
-                render_module, tmp_path, blocks, extra_synthetic=extra_synthetic
-            )
+            _run_main_with_blocks(render_module, tmp_path, blocks, extra_synthetic=extra_synthetic)
 
         assert len(captured) == 1
         assert captured[0]["peak_intensity"] == peak_range[1]
