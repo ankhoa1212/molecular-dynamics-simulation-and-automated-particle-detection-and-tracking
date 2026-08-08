@@ -199,6 +199,78 @@ class TestDetectLodestarBeta:
         assert kwargs["beta"] == pytest.approx(0.1)
 
 
+class TestLodestarBoxSizeThreading:
+    """box_size must reach detect_lodestar through every lodestar entry point
+    (_run_detector, run_density_probe, probe_threshold) — mirrors the existing
+    lodestar_nms_distance threading these functions already do."""
+
+    def _mock_lodestar_model(self):
+        import torch
+
+        model = MagicMock()
+        model.parameters.return_value = iter([torch.zeros(1, dtype=torch.float32)])
+        model.detect.return_value = [[]]  # empty -> early-returns Detections.empty()
+        return model
+
+    def test_run_detector_passes_box_size_through(self):
+        model = self._mock_lodestar_model()
+        frame = np.zeros((20, 20), dtype=np.uint16)
+        captured = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured.append(kwargs.get("box_size"))
+            return sv.Detections.empty()
+
+        with patch.object(track, "detect_lodestar", fake_detect_lodestar):
+            track._run_detector(
+                model, frame, "lodestar", threshold=0.1, device="cpu", lodestar_box_size=17
+            )
+
+        assert captured == [17]
+
+    def test_run_detector_defaults_box_size_to_40_when_unspecified(self):
+        model = self._mock_lodestar_model()
+        frame = np.zeros((20, 20), dtype=np.uint16)
+        captured = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured.append(kwargs.get("box_size"))
+            return sv.Detections.empty()
+
+        with patch.object(track, "detect_lodestar", fake_detect_lodestar):
+            track._run_detector(model, frame, "lodestar", threshold=0.1, device="cpu")
+
+        assert captured == [40]
+
+    def test_run_density_probe_threads_lodestar_box_size(self):
+        model = self._mock_lodestar_model()
+        frames = [np.zeros((20, 20), dtype=np.uint16) for _ in range(3)]
+        captured = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured.append(kwargs.get("box_size"))
+            return sv.Detections.empty()
+
+        with patch.object(track, "detect_lodestar", fake_detect_lodestar):
+            track.run_density_probe(frames, model, "lodestar", threshold=0.1, lodestar_box_size=17)
+
+        assert captured and all(b == 17 for b in captured)
+
+    def test_probe_threshold_threads_lodestar_box_size(self):
+        model = self._mock_lodestar_model()
+        frames = [np.zeros((20, 20), dtype=np.uint16) for _ in range(3)]
+        captured = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured.append(kwargs.get("box_size"))
+            return sv.Detections.empty()
+
+        with patch.object(track, "detect_lodestar", fake_detect_lodestar):
+            track.probe_threshold(frames, model, "lodestar", lodestar_box_size=17)
+
+        assert captured and all(b == 17 for b in captured)
+
+
 class TestRunDetectorYoloDevice:
     def test_yolo_dispatch_passes_configured_device(self, monkeypatch):
         model = MagicMock()
@@ -281,6 +353,71 @@ def run_main(monkeypatch):
         track.main()
 
     return _run
+
+
+def _write_lodestar_config(tmp_path, box_size=None):
+    detection = {"threshold": 0.1}
+    if box_size is not None:
+        detection["box_size"] = box_size
+    cfg = {
+        "input": "dummy_input.tif",
+        "model": {"type": "lodestar", "checkpoint": "dummy.pt", "device": "cpu"},
+        "detection": detection,
+        "tracking": {"tracker": "trackpy", "search_range": 10.0, "memory": 3, "stub_filter": 0},
+        "output": {"dir": str(tmp_path / "out"), "save_video": False},
+    }
+    cfg_path = tmp_path / "lodestar_config.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    return cfg_path
+
+
+@pytest.fixture
+def run_main_lodestar(monkeypatch):
+    """Run track.main() against a lodestar config, capturing every box_size that
+    reaches detect_lodestar (main detection loop and/or probe helpers)."""
+
+    def _run(argv, frames):
+        captured = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured.append(kwargs.get("box_size"))
+            return sv.Detections.empty()
+
+        monkeypatch.setattr(sys, "argv", ["track.py"] + argv)
+        monkeypatch.setattr(track, "get_lodestar_model", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: frames)
+        monkeypatch.setattr(track, "detect_lodestar", fake_detect_lodestar)
+        track.main()
+        return captured
+
+    return _run
+
+
+class TestLodestarBoxSizeResolution:
+    """CLI-arg-then-config-then-default precedence for --lodestar-box-size,
+    mirroring the existing --lodestar-nms-distance precedence tests' shape."""
+
+    def test_config_box_size_reaches_detect_lodestar(self, tmp_path, run_main_lodestar):
+        cfg_path = _write_lodestar_config(tmp_path, box_size=25)
+        captured = run_main_lodestar(["--config", str(cfg_path)], _fake_frames(3))
+        assert captured and all(b == 25 for b in captured)
+
+    def test_omitted_config_key_falls_back_to_default_40(self, tmp_path, run_main_lodestar):
+        cfg_path = _write_lodestar_config(tmp_path)
+        captured = run_main_lodestar(["--config", str(cfg_path)], _fake_frames(3))
+        assert captured and all(b == 40 for b in captured)
+
+    def test_cli_flag_overrides_config_value(self, tmp_path, run_main_lodestar):
+        cfg_path = _write_lodestar_config(tmp_path, box_size=25)
+        captured = run_main_lodestar(
+            ["--config", str(cfg_path), "--lodestar-box-size", "15"], _fake_frames(3)
+        )
+        assert captured and all(b == 15 for b in captured)
+
+    def test_probe_mode_also_receives_resolved_box_size(self, tmp_path, run_main_lodestar):
+        cfg_path = _write_lodestar_config(tmp_path, box_size=22)
+        captured = run_main_lodestar(["--config", str(cfg_path), "--probe"], _fake_frames(3))
+        assert captured and all(b == 22 for b in captured)
 
 
 class TestPreviewIntegration:

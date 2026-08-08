@@ -27,6 +27,7 @@ from detectors_common.defaults import load_detector_config
 _LODESTAR_KEY_MAP = {
     "nms_distance": "detection.nms_distance",
     "alpha": "detection.alpha",
+    "box_size": "detection.box_size",
 }
 
 SCRIPT_DIR = Path(__file__).parent
@@ -263,6 +264,7 @@ def _run_detector(
     device="cpu",
     lodestar_alpha=0.5,
     lodestar_nms_distance=None,
+    lodestar_box_size=40,
 ):
     """Run the active detector on a single frame and return a detections object."""
     if model_type == "rf-detr":
@@ -280,6 +282,7 @@ def _run_detector(
             device,
             alpha=lodestar_alpha,
             nms_distance=lodestar_nms_distance,
+            box_size=lodestar_box_size,
         )
     return []
 
@@ -292,6 +295,7 @@ def run_density_probe(
     n_samples=10,
     lodestar_alpha=0.5,
     lodestar_nms_distance=None,
+    lodestar_box_size=40,
     device="cpu",
 ):
     """Sample N frames, run detector, return (p95_count, frame_w, frame_h)."""
@@ -302,7 +306,14 @@ def run_density_probe(
     counts = [
         len(
             _run_detector(
-                model, f, model_type, threshold, device, lodestar_alpha, lodestar_nms_distance
+                model,
+                f,
+                model_type,
+                threshold,
+                device,
+                lodestar_alpha,
+                lodestar_nms_distance,
+                lodestar_box_size,
             )
         )
         for f in sample
@@ -328,6 +339,7 @@ def probe_threshold(
     n_samples=10,
     lodestar_alpha=0.5,
     lodestar_nms_distance=None,
+    lodestar_box_size=40,
     device="cpu",
 ):
     """Run detector at threshold=0 on sampled frames; suggest a threshold from the score distribution.
@@ -338,7 +350,14 @@ def probe_threshold(
     all_scores = []
     for frame in sample:
         dets = _run_detector(
-            model, frame, model_type, 0.0, device, lodestar_alpha, lodestar_nms_distance
+            model,
+            frame,
+            model_type,
+            0.0,
+            device,
+            lodestar_alpha,
+            lodestar_nms_distance,
+            lodestar_box_size,
         )
         if hasattr(dets, "confidence") and dets.confidence is not None and len(dets) > 0:
             all_scores.extend(dets.confidence.tolist())
@@ -665,6 +684,12 @@ def main():
         help="LodeSTAR: suppress detections within this pixel distance",
     )
     parser.add_argument(
+        "--lodestar-box-size",
+        type=float,
+        help="LodeSTAR: detection box side length in pixels (default 40) — manual estimate "
+        "until real PSF calibration exists for this dataset",
+    )
+    parser.add_argument(
         "--lodestar-fp16", action="store_true", help="LodeSTAR: run model in float16"
     )
     # Video output
@@ -858,6 +883,11 @@ def main():
         if args.lodestar_nms_distance is not None
         else _lodestar_defaults.get("nms_distance")
     )
+    lodestar_box_size = (
+        args.lodestar_box_size
+        if args.lodestar_box_size is not None
+        else _lodestar_defaults.get("box_size", 40)
+    )
     lodestar_fp16 = args.lodestar_fp16 or cfg_get(cfg, "detection", "fp16", default=False)
     save_trajectory_image = args.save_trajectory_image or cfg_get(
         cfg, "output", "save_trajectory_image", default=False
@@ -1011,6 +1041,7 @@ def main():
                 n_samples=probe_n_samples,
                 lodestar_alpha=lodestar_alpha,
                 lodestar_nms_distance=lodestar_nms_distance,
+                lodestar_box_size=lodestar_box_size,
                 device=device,
             )
             crop_w, crop_h = suggest_crop_size(p95, fw, fh)
@@ -1025,6 +1056,7 @@ def main():
                     n_samples=probe_n_samples,
                     lodestar_alpha=lodestar_alpha,
                     lodestar_nms_distance=lodestar_nms_distance,
+                    lodestar_box_size=lodestar_box_size,
                     device=device,
                 )
                 print(f"PROBE_THRESHOLD suggested={suggested:.4f} method={method}")
@@ -1091,6 +1123,7 @@ def main():
                     device,
                     alpha=lodestar_alpha,
                     nms_distance=lodestar_nms_distance,
+                    box_size=lodestar_box_size,
                 )
 
             # Shift bounding boxes back to full-frame coordinates
