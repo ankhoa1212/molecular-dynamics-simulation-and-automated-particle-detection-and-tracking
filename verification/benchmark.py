@@ -254,6 +254,17 @@ def _cfg_get(cfg, *keys, default=None):
     return node
 
 
+def _resolve_psf_sigma_px(cfg):
+    """psf_sigma_px can be under synthetic.psf_sigma (procedural) or
+    synthetic.psf.sigma_px (deeptrack). Single source of truth for both the
+    tracking-metrics match-threshold and the lodestar box_size derivation --
+    keeping one copy so the two can't silently desync."""
+    psf_sigma_px = _cfg_get(cfg, "synthetic", "psf_sigma", default=None)
+    if psf_sigma_px is None:
+        psf_sigma_px = _cfg_get(cfg, "synthetic", "psf", "sigma_px", default=5.0)
+    return psf_sigma_px
+
+
 # ---------------------------------------------------------------------------
 # Detection matching
 # ---------------------------------------------------------------------------
@@ -350,10 +361,7 @@ def _run_tracking_metrics(all_detections_by_frame, gt_tracks_path, cfg):
     search_range = _cfg_get(cfg, "tracking", "search_range", default=15)
     memory = _cfg_get(cfg, "tracking", "memory", default=3)
     threshold_radii = _cfg_get(cfg, "tracking", "matching_threshold_radii", default=0.5)
-    # psf_sigma_px can be under synthetic.psf_sigma (procedural) or synthetic.psf.sigma_px (deeptrack)
-    psf_sigma_px = _cfg_get(cfg, "synthetic", "psf_sigma", default=None)
-    if psf_sigma_px is None:
-        psf_sigma_px = _cfg_get(cfg, "synthetic", "psf", "sigma_px", default=5.0)
+    psf_sigma_px = _resolve_psf_sigma_px(cfg)
     match_threshold = threshold_radii * psf_sigma_px
 
     # Build trackpy DataFrame from accumulated detections
@@ -495,12 +503,9 @@ def main():
         box_size = _cfg_get(cfg, "lodestar", "box_size", default=None)
         if box_size is None:
             sys.path.insert(0, str(SCRIPT_DIR))
-            from render import _FWHM_TO_SIGMA
+            from render import FWHM_TO_SIGMA
 
-            psf_sigma_px = _cfg_get(full_cfg, "synthetic", "psf_sigma", default=None)
-            if psf_sigma_px is None:
-                psf_sigma_px = _cfg_get(full_cfg, "synthetic", "psf", "sigma_px", default=5.0)
-            box_size = psf_sigma_px * _FWHM_TO_SIGMA
+            box_size = _resolve_psf_sigma_px(full_cfg) * FWHM_TO_SIGMA
         fp16 = _cfg_get(cfg, "lodestar", "fp16", default=False)
         device_raw = args.device or _cfg_get(cfg, "lodestar", "device", default=None)
         # variant/num_queries/tiling_* are RF-DETR-only — the branches below that

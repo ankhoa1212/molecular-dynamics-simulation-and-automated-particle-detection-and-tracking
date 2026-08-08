@@ -205,7 +205,9 @@ def _load_model(spec: ModelSpec, rfdetr_variant: str, device: str):
         raise ValueError(f"Unknown model type {spec.model_type!r}")
 
 
-def run_detection(model, model_type: str, frame, threshold: float, device: str):
+def run_detection(
+    model, model_type: str, frame, threshold: float, device: str, lodestar_box_size: int = 40
+):
     import supervision as sv
 
     if model_type == "yolo":
@@ -213,7 +215,7 @@ def run_detection(model, model_type: str, frame, threshold: float, device: str):
         return sv.Detections.from_ultralytics(results)
     elif model_type == "lodestar":
         helpers = _load_track_helpers()
-        return helpers.detect_lodestar(model, frame, threshold, device)
+        return helpers.detect_lodestar(model, frame, threshold, device, box_size=lodestar_box_size)
     return sv.Detections.empty()
 
 
@@ -522,6 +524,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Inference device (e.g. cuda:0 or cpu; --image mode only)",
     )
     parser.add_argument(
+        "--lodestar-box-size",
+        type=int,
+        default=40,
+        help="LodeSTAR detection box side length in pixels (--image mode only; matches "
+        "track.py's --lodestar-box-size / detection.box_size default)",
+    )
+    parser.add_argument(
         "--output", default="comparison.png", help="Output image path (--image mode only)"
     )
     parser.add_argument(
@@ -591,7 +600,14 @@ def main() -> None:
         else:
             model = _load_model(spec, args.rfdetr_variant, args.device)
             print("Running inference...")
-            detections = run_detection(model, spec.model_type, frame, args.threshold, args.device)
+            detections = run_detection(
+                model,
+                spec.model_type,
+                frame,
+                args.threshold,
+                args.device,
+                lodestar_box_size=args.lodestar_box_size,
+            )
         n_dets = len(detections) if detections is not None else 0
         title = f"{spec.model_type} — {n_dets} detections"
         print(f"  {title}")

@@ -137,6 +137,36 @@ class TestBuildComparisonFigure:
         plt.close(fig)
 
 
+class TestRunDetectionLodestarBoxSize:
+    """run_detection's lodestar branch must thread box_size through to
+    detect_lodestar -- otherwise --image mode silently ignores
+    --lodestar-box-size and always draws detectors_common's hardcoded
+    40px default, inconsistent with track.py's configured value."""
+
+    def test_lodestar_box_size_passed_through(self):
+        fake_helpers = MagicMock()
+        fake_helpers.detect_lodestar.return_value = MagicMock()
+        model = MagicMock()
+        frame = np.zeros((50, 50, 3), dtype=np.uint8)
+
+        with patch.object(model_comparison, "_load_track_helpers", return_value=fake_helpers):
+            model_comparison.run_detection(
+                model, "lodestar", frame, 0.1, "cpu", lodestar_box_size=17
+            )
+
+        fake_helpers.detect_lodestar.assert_called_once_with(model, frame, 0.1, "cpu", box_size=17)
+
+    def test_lodestar_box_size_defaults_to_40(self):
+        fake_helpers = MagicMock()
+        fake_helpers.detect_lodestar.return_value = MagicMock()
+        frame = np.zeros((50, 50, 3), dtype=np.uint8)
+
+        with patch.object(model_comparison, "_load_track_helpers", return_value=fake_helpers):
+            model_comparison.run_detection(MagicMock(), "lodestar", frame, 0.1, "cpu")
+
+        assert fake_helpers.detect_lodestar.call_args.kwargs["box_size"] == 40
+
+
 class TestBuildRfdetrScript:
     def test_build_rfdetr_script_includes_num_queries_when_set(self):
         script = _build_rfdetr_script("RFDETRLarge", Path("ckpt.pth"), "/tmp/frame.npy", 0.5, 6000)

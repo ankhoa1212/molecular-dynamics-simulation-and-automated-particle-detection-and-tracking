@@ -310,10 +310,10 @@ def run_density_probe(
                 f,
                 model_type,
                 threshold,
-                device,
-                lodestar_alpha,
-                lodestar_nms_distance,
-                lodestar_box_size,
+                device=device,
+                lodestar_alpha=lodestar_alpha,
+                lodestar_nms_distance=lodestar_nms_distance,
+                lodestar_box_size=lodestar_box_size,
             )
         )
         for f in sample
@@ -354,10 +354,10 @@ def probe_threshold(
             frame,
             model_type,
             0.0,
-            device,
-            lodestar_alpha,
-            lodestar_nms_distance,
-            lodestar_box_size,
+            device=device,
+            lodestar_alpha=lodestar_alpha,
+            lodestar_nms_distance=lodestar_nms_distance,
+            lodestar_box_size=lodestar_box_size,
         )
         if hasattr(dets, "confidence") and dets.confidence is not None and len(dets) > 0:
             all_scores.extend(dets.confidence.tolist())

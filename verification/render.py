@@ -295,7 +295,9 @@ def _lj_to_pixels(positions_lj, box, H, W):
     return np.stack([px, py], axis=1)
 
 
-_FWHM_TO_SIGMA = 2.355  # FWHM = 2*sqrt(2*ln2)*sigma ~= 2.355*sigma
+# Public (no leading underscore): imported by benchmark.py's lodestar box_size
+# derivation, not just used internally here.
+FWHM_TO_SIGMA = 2.355  # FWHM = 2*sqrt(2*ln2)*sigma ~= 2.355*sigma
 
 
 def _parse_particle_diameter_lj(lammps_in_path):
@@ -380,7 +382,7 @@ def _derive_psf_sigma_from_lammps_in(lammps_in_path, box, image_width):
     x_lo, x_hi, _y_lo, _y_hi = box
     scale = image_width / (x_hi - x_lo)
     diameter_px = diameter_lj * scale
-    return diameter_px / _FWHM_TO_SIGMA
+    return diameter_px / FWHM_TO_SIGMA
 
 
 def _dispatch_render(

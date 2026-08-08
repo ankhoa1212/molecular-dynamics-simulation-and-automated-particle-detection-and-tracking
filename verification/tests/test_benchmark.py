@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # guard regresses, this import itself hangs/crashes rather than any
 # individual assertion failing below.
 import benchmark
+from render import FWHM_TO_SIGMA
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -853,9 +854,6 @@ class TestLodestarBoxSizeDerivation:
     """box_size (for main()'s lodestar accuracy loop) derives from psf_sigma_px --
     an explicit benchmark.lodestar.box_size config value always wins."""
 
-    _FWHM_TO_SIGMA = 2.355  # render.py's own constant; kept local so these tests don't
-    # depend on render.py's private name surviving unchanged.
-
     def _run(self, tmp_path, monkeypatch, config_yaml_extra=""):
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
@@ -897,17 +895,17 @@ class TestLodestarBoxSizeDerivation:
 
     def test_derives_from_synthetic_psf_sigma(self, tmp_path, monkeypatch):
         box_size = self._run(tmp_path, monkeypatch, "synthetic:\n  psf_sigma: 6.0\n")
-        assert box_size == pytest.approx(6.0 * self._FWHM_TO_SIGMA)
+        assert box_size == pytest.approx(6.0 * FWHM_TO_SIGMA)
 
     def test_falls_back_to_synthetic_psf_sigma_px_when_psf_sigma_absent(
         self, tmp_path, monkeypatch
     ):
         box_size = self._run(tmp_path, monkeypatch, "synthetic:\n  psf:\n    sigma_px: 8.21\n")
-        assert box_size == pytest.approx(8.21 * self._FWHM_TO_SIGMA)
+        assert box_size == pytest.approx(8.21 * FWHM_TO_SIGMA)
 
     def test_falls_back_to_default_5_0_when_neither_present(self, tmp_path, monkeypatch):
         box_size = self._run(tmp_path, monkeypatch)
-        assert box_size == pytest.approx(5.0 * self._FWHM_TO_SIGMA)
+        assert box_size == pytest.approx(5.0 * FWHM_TO_SIGMA)
 
     def test_explicit_box_size_overrides_derivation(self, tmp_path, monkeypatch):
         box_size = self._run(
