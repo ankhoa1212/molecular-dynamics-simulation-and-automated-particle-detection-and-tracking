@@ -46,6 +46,24 @@ def load_config(config_path):
         return yaml.safe_load(f) or {}
 
 
+def merge_config(base, override):
+    """Recursively merge override onto base; override wins at any nesting depth.
+
+    Used to layer a scenario override (e.g. lodestar_config.yaml) onto the
+    shared base (config.yaml) without either file needing to restate the
+    other's keys. Distinct from detectors_common.defaults.load_detector_config,
+    which does a flat per-key dotted-path lookup against an explicit map —
+    this merges two full nested config trees instead.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def cfg_get(cfg, *keys, default=None):
     """Walk a nested dict by keys, returning default if any key is missing."""
     node = cfg
@@ -635,7 +653,15 @@ def main():
     parser.add_argument(
         "--config",
         default=str(SCRIPT_DIR / "config.yaml"),
-        help="Path to YAML config file",
+        help="Path to YAML config file (the base -- a complete, standalone config on its own)",
+    )
+    parser.add_argument(
+        "--override",
+        default=None,
+        help=(
+            "Path to a scenario override YAML merged onto --config (override wins at any "
+            "nesting depth). E.g. --config config.yaml --override lodestar_config.yaml."
+        ),
     )
     # Model
     parser.add_argument("--model-type", choices=["rf-detr", "yolo", "lodestar"])
@@ -780,6 +806,8 @@ def main():
 
     args = parser.parse_args()
     cfg = load_config(args.config)
+    if args.override:
+        cfg = merge_config(cfg, load_config(args.override))
 
     # --test wins over --preview (mirrors --test's existing precedence over --max-frames)
     preview_active = args.preview is not None and not args.test

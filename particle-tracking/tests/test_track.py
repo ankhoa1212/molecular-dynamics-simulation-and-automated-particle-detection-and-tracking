@@ -752,3 +752,166 @@ class TestComputeAndSaveMetrics:
         saved = json.loads((tmp_path / "metrics.json").read_text())
         assert saved["n_tracks"] == 0
         assert saved["mean_confidence"] is None
+
+
+# ---------------------------------------------------------------------------
+# U5: base + override config consolidation. merge_config's own semantics,
+# plus a regression suite over the real on-disk base/override files so a
+# future edit to any of the six particle-tracking/*.yaml files can't
+# silently drift a scenario away from its documented behavior.
+# ---------------------------------------------------------------------------
+
+PARTICLE_TRACKING_DIR = Path(__file__).parent.parent
+
+
+class TestMergeConfig:
+    def test_override_wins_at_top_level(self):
+        base = {"a": 1, "b": 2}
+        override = {"b": 3}
+        assert track.merge_config(base, override) == {"a": 1, "b": 3}
+
+    def test_override_wins_at_nested_depth(self):
+        base = {"tracking": {"search_range": 25.0, "memory": 5}}
+        override = {"tracking": {"search_range": 10.0}}
+        merged = track.merge_config(base, override)
+        assert merged["tracking"] == {"search_range": 10.0, "memory": 5}
+
+    def test_key_absent_from_override_falls_through_to_base(self):
+        base = {"output": {"fps": 30, "trace_length": 60}}
+        override = {}
+        assert track.merge_config(base, override) == {"output": {"fps": 30, "trace_length": 60}}
+
+    def test_override_key_nested_differently_than_base_does_not_merge_wrong_level(self):
+        # Mirrors the real nms_distance bug shape: a scalar in base becomes a
+        # dict in override (or vice versa) -- override must win outright, not
+        # attempt to merge a dict into a scalar or silently coerce/ignore it.
+        base = {"detection": {"threshold": 0.3}}
+        override = {"detection": {"threshold": {"ratio": 0.1}}}
+        merged = track.merge_config(base, override)
+        assert merged["detection"]["threshold"] == {"ratio": 0.1}
+
+    def test_base_is_not_mutated(self):
+        base = {"tracking": {"search_range": 25.0}}
+        override = {"tracking": {"search_range": 10.0}}
+        track.merge_config(base, override)
+        assert base == {"tracking": {"search_range": 25.0}}
+
+
+class TestBaseOverrideConfigFiles:
+    """Regression coverage over the real on-disk configs (not synthetic dicts)."""
+
+    def test_base_config_loads_standalone_with_expected_defaults(self):
+        cfg = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        assert cfg["model"]["type"] == "rf-detr"
+        assert cfg["tiling"]["enabled"] is True
+        assert cfg["detection"]["threshold"] == 0.3
+        assert cfg["tracking"]["search_range"] == 25.0
+        assert cfg["output"]["fps"] == 30
+
+    @pytest.mark.parametrize(
+        "override_file,expected",
+        [
+            (
+                "lodestar_config.yaml",
+                {
+                    "model.type": "lodestar",
+                    "detection.nms_distance": 30,  # this repo's default; verification/config.yaml tunes its own copy separately
+                    "detection.alpha": 0.9,
+                    "tracking.search_range": 20.0,
+                    "tracking.memory": 10,
+                    "tracking.stub_filter": 6,
+                    "tiling.enabled": False,
+                    "analysis.hexatic_order": False,
+                },
+            ),
+            (
+                "basic_lodestar_config.yaml",
+                {
+                    "model.type": "lodestar",
+                    "detection.alpha": 0.3,
+                    "tracking.search_range": 10.0,
+                    "tracking.memory": 20,
+                    "tracking.bridge_gap": 15,
+                    "tracking.bridge_radius": 20,
+                    "tiling.enabled": False,
+                },
+            ),
+            (
+                "multi_lodestar_config.yaml",
+                {
+                    "model.type": "lodestar",
+                    "detection.threshold": 0.01,
+                    "detection.alpha": 0.9,
+                    "tracking.search_range": 20.0,
+                    "tiling.enabled": False,
+                },
+            ),
+            (
+                "basic_config.yaml",
+                {
+                    "model.type": "rf-detr",
+                    "crop.width": 0.5,
+                    "tiling.enabled": False,
+                    "detection.threshold": 0.01,
+                    "tracking.search_range": 10.0,
+                    "analysis.hexatic_order": False,
+                    "output.save_trajectory_image": False,
+                },
+            ),
+            (
+                "multi_config.yaml",
+                {
+                    "model.type": "rf-detr",
+                    "tiling.enabled": True,  # inherited from base, not overridden
+                    "detection.threshold": 0.3,  # inherited from base
+                },
+            ),
+        ],
+    )
+    def test_override_merged_onto_base_produces_expected_effective_values(
+        self, override_file, expected
+    ):
+        base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        override = track.load_config(PARTICLE_TRACKING_DIR / override_file)
+        merged = track.merge_config(base, override)
+
+        for dotted_key, expected_value in expected.items():
+            node = merged
+            for part in dotted_key.split("."):
+                node = node[part]
+            assert node == expected_value, f"{override_file}: {dotted_key}"
+
+    @pytest.mark.parametrize(
+        "override_file",
+        [
+            "lodestar_config.yaml",
+            "basic_lodestar_config.yaml",
+            "multi_lodestar_config.yaml",
+            "basic_config.yaml",
+            "multi_config.yaml",
+        ],
+    )
+    def test_multi_input_configs_have_list_input_others_have_string(self, override_file):
+        base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        override = track.load_config(PARTICLE_TRACKING_DIR / override_file)
+        merged = track.merge_config(base, override)
+
+        if "multi" in override_file:
+            assert isinstance(merged["input"], list)
+            assert len(merged["input"]) == 4
+        else:
+            assert isinstance(merged["input"], str)
+
+    def test_lodestar_scenarios_never_inherit_rfdetr_only_tiling(self):
+        # Regression guard for the exact class of bug R7 exists to prevent:
+        # a LodeSTAR override must explicitly disable tiling.enabled, since
+        # the base has it on and tiling is an RF-DETR-specific technique.
+        base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        for override_file in [
+            "lodestar_config.yaml",
+            "basic_lodestar_config.yaml",
+            "multi_lodestar_config.yaml",
+        ]:
+            override = track.load_config(PARTICLE_TRACKING_DIR / override_file)
+            merged = track.merge_config(base, override)
+            assert merged["tiling"]["enabled"] is False, override_file

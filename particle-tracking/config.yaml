@@ -1,6 +1,12 @@
-# Particle Tracking Configuration
+# Particle Tracking Configuration — base
 # All paths are relative to the particle-tracking/ directory unless absolute.
 # CLI arguments always override values set here.
+#
+# This is a complete, standalone config on its own (uv run track.py --config
+# config.yaml). The other *_config.yaml files in this directory are overrides
+# that merge onto this one for a different scenario:
+#   uv run track.py --config config.yaml --override lodestar_config.yaml
+# Override files only list keys that differ from this file.
 
 # Input: path to video, TIFF stack, or folder of images 
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"

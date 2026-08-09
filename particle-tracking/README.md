@@ -142,8 +142,9 @@ uv run python track.py \
   --input ../lammps-scripts/results/central_pair_interaction.in.lammpstrj \
   --output-dir evaluation/results/simulation/
 
-# Use a different config file
-uv run python track.py --config lodestar_config.yaml
+# Use a scenario override -- merges onto config.yaml (the base); only the
+# keys that differ from config.yaml need to be listed in the override file
+uv run python track.py --config config.yaml --override lodestar_config.yaml
 ```
 
 ---
@@ -152,7 +153,8 @@ uv run python track.py --config lodestar_config.yaml
 
 | Argument | Config key | Default | Description |
 |---|---|---|---|
-| `--config` | — | `config.yaml` | Path to YAML config file |
+| `--config` | — | `config.yaml` | Path to the base YAML config file (complete and standalone on its own) |
+| `--override` | — | none | Path to a scenario override YAML merged onto `--config` (override wins at any nesting depth) |
 | `--model-type` | `model.type` | `rf-detr` | `rf-detr`, `yolo`, or `lodestar` |
 | `--checkpoint` | `model.checkpoint` | best EMA checkpoint | Path to model weights |
 | `--variant` | `model.variant` | `large` | RF-DETR size: `nano`, `small`, `medium`, `large` |
