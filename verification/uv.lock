@@ -256,6 +256,26 @@ wheels = [
 ]
 
 [[package]]
+name = "detectors-common"
+version = "0.1.0"
+source = { editable = "../detectors-common" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pyyaml" },
+    { name = "supervision" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.26.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "supervision", specifier = ">=0.21.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.3" }]
+
+[[package]]
 name = "filelock"
 version = "3.29.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1370,6 +1390,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deeptrack" },
+    { name = "detectors-common" },
     { name = "matplotlib" },
     { name = "motmetrics" },
     { name = "numpy" },
@@ -1392,6 +1413,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deeptrack", specifier = "==2.0.1" },
+    { name = "detectors-common", editable = "../detectors-common" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "motmetrics", specifier = ">=1.4.0" },
     { name = "numpy", specifier = ">=1.26" },

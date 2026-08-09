@@ -79,3 +79,8 @@ uv run python dataset_profile_builder.py \
   `spacing_px` built from `continuous_force_1500_5.0.lammpstrj` as shown
   above. Matches the `~10.9px` median-spacing reference already documented
   in `AGENTS.md` and `verification/config.yaml`.
+- `synthetic-stress-dense.yaml` / `synthetic-stress-sparse.yaml` — U7's
+  stress-test profiles (R12/AE8), deliberately denser and sparser than
+  `synthetic-default.yaml`, used to validate `tile_size`'s floor-clamp and
+  frame-dimensions-ceiling regimes respectively with no accuracy collapse.
+  See `stress-test-results.md` for the full comparison against baseline.
