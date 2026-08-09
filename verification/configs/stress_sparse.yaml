@@ -1,0 +1,127 @@
+# U7 (particle-scale-calibration plan) SPARSE stress-test config.
+# Auto-generated (yaml round-trip) from ../config.yaml with only
+# dataset_profile / synthetic.output_dir / benchmark.model_type changed --
+# see ../config.yaml for full key documentation. Renders a subsampled
+# LAMMPS trajectory (60 of continuous_force_1500_5.0.lammpstrj's 1446
+# particles, same box/512x512 image, psf_sigma unchanged at 5.0) so
+# particles sit farther apart in pixel space. Exercises tile_size's
+# frame-dimensions-ceiling clamp regime -- see
+# dataset-profiles/synthetic-stress-sparse.yaml.
+
+benchmark:
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
+  lodestar:
+    alpha: 0.9
+    checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+    device: null
+    fp16: false
+    threshold: 0.01
+  match_distance: 10
+  model_type: trackpy
+  num_queries: 300
+  threshold: 0.2
+  tiling:
+    enabled: true
+    nms_threshold: 0.3
+    overlap: 50
+  trackpy:
+    minmass: null
+    separation: null
+  variant: large
+compare:
+  lammps_file: null
+  lj_to_um: 2.0
+  max_lag_frames: 50
+  output_dir: verification_output/
+  pixel_scale: 0.108
+  tracks_file: null
+synthetic:
+  background:
+    amplitude: 705.0
+    heterogeneity_scale: 203.1
+  background_fraction: 0.25
+  crop_source: physics
+  crop_template:
+    cache_path: crop_templates.npz
+    core_radius: 20.0
+    crop_half: 90
+    fit_half: 20
+    max_area: 4000
+    max_crops: 500
+    max_sigma: 20.0
+    min_area: 100
+    min_sep: 40
+    min_sigma: 3.0
+    n_clusters: 5
+    percentile: 95.0
+    ring_method: empirical
+    target_half: 65
+    transition_width: 10.0
+    video_paths:
+    - ../particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
+  image_height: 512
+  image_width: 512
+  noise:
+    gain_sigma: 0.02
+    read_noise: 62.42
+  output_dir: verification_output/stress_sparse/synthetic_frames/
+  particle:
+    intensity_distribution: lognormal
+    intensity_sigma: 1.015
+    peak_mean: 987.4
+  peak_intensity: 40000
+  procedural_shape:
+    ring_A0: 0.9407
+    ring_A1: 0.8997
+    ring_B: 0.0288
+    ring_r1: 47.56
+    ring_s0: 9.5
+    ring_s1: 11.05
+    sigma: 5.0
+    size: 41
+  psf:
+    defocus: 0.0
+    na: 1.4
+    resolution: 6.5e-08
+    sigma_px: 8.21
+    spherical_aberration: 0.0
+    wavelength: 520e-9
+  psf_sigma: 5.0
+  randomization:
+    peak_range:
+    - 20000
+    - 60000
+    psf_sigma_range:
+    - 3.0
+    - 7.0
+    readout_noise_range:
+    - 150.0
+    - 300.0
+    smoothing:
+      step_std_fraction: 0.15
+  readout_noise: 200.0
+  render_strategy: procedural
+  ring:
+    depth: 0.65
+    radius_factor: 1.0
+    width_factor: 0.3
+  shot_noise: true
+tracking:
+  adaptive_step: 0.95
+  adaptive_stop: null
+  enabled: true
+  matching_threshold_radii: 0.5
+  # Explicit override (unrelated to the profile/scale-derivation mechanism --
+  # this is trackers_common's canonical per-model stub_filter, a track-length
+  # minimum, not derived from size_px/spacing_px at all). The canonical
+  # trackpy/rf-detr-fallback value is 90 frames, tuned for the ~151-frame
+  # production trajectory; this stress test intentionally renders only 15
+  # frames for tractability (see docs/plans/2026-08-08-002-feat-particle-
+  # scale-calibration-plan.md U7), so no track could ever reach length 90 and
+  # every track gets stub-filtered away, producing a degenerate all-zero
+  # MOTA/IDF1/num_misses=N result that looks like a collapse but isn't one --
+  # confirmed directly by re-running the same detections through
+  # trackers_common.linking.link_and_filter_tracks with stub_filter=None.
+  # Set low enough to keep tracks spanning most of this run's 15 frames.
+  stub_filter: 5
+dataset_profile: ../dataset-profiles/synthetic-stress-sparse.yaml

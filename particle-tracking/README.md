@@ -104,6 +104,14 @@ output:
 
 CLI arguments always override config values.
 
+**Dataset scale profile:** `dataset_profile` (top-level key, unset by default) points to a scale
+profile YAML (`size_px`/`spacing_px` — see `../dataset-profiles/README.md`). When set, it derives
+`tiling.tile_size`, `detection.nms_distance` (LodeSTAR only), and `tracking.search_range` for any
+of those left unset above; an explicit value here always wins over the derived one, and today's
+hardcoded defaults still apply when no profile is referenced. `tracking.memory` never derives from
+the profile — it falls back to `trackers-common`'s per-model canonical tuning instead (see
+`../trackers-common/README.md`).
+
 ---
 
 ## Usage
@@ -161,8 +169,8 @@ uv run python track.py --config lodestar_config.yaml
 | `--input` | `input` | — | Video, image folder, TIFF stack, or `.lammpstrj` |
 | `--output-dir` | `output.dir` | `evaluation/results/tracking_output` | Where to write results |
 | `--tracker` | `tracking.tracker` | `trackpy` | `trackpy` (offline) or `bytetrack` (online) |
-| `--search-range` | `tracking.search_range` | `10.0` | Trackpy: max pixel distance per frame |
-| `--memory` | `tracking.memory` | `3` | Trackpy: frames a particle may be missing |
+| `--search-range` | `tracking.search_range` | derived from `dataset_profile`, else per-model canonical | Trackpy: max pixel distance per frame |
+| `--memory` | `tracking.memory` | per-model canonical (`trackers-common/trackers_common/tracker_defaults.yaml`) | Trackpy: frames a particle may be missing |
 | `--stub-filter` | `tracking.stub_filter` | `5` | Trackpy: min track length to keep |
 | `--save-video` | `output.save_video` | off | Save annotated `.mp4` |
 | `--fps` | `output.fps` | `30` | FPS for output video |

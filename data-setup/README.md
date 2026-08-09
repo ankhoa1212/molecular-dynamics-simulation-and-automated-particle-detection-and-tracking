@@ -45,8 +45,13 @@ python name_of_script.py --help
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
+
+This creates a `.venv/` with all dependencies (including an editable install of
+`../detectors-common`, used by `lodestar_autolabeler.py`'s `--dataset-profile`
+scale derivation). Run scripts with `uv run python <script>.py ...`, or
+activate the venv directly (`source .venv/bin/activate`).
 
 ---
 
@@ -222,9 +227,17 @@ Either `--input` (TIFF search) or `--png-frames` must be provided.
 | `--detect-batch-size` | `4` | Frames per GPU batch |
 | `--plot` | off | Save `*_overlay.png` with detections drawn |
 | `--config` | — | Path to a JSON configuration file |
+| `--dataset-profile` | — | Path to a dataset scale profile YAML (`size_px`/`spacing_px`). When set, `--box-size`/`--nms-distance` derive from it unless explicitly passed (directly or via `--config`) |
 | `--num-workers` | `4` | DataLoader workers for prefetching |
 | `--fp16` | off | Use 16-bit mixed precision (faster on GPU) |
 | `--compile` | off | Use torch.compile for kernel optimization (PyTorch 2.0+) |
+
+`--box-size`/`--nms-distance` resolve via the same precedence chain as
+`particle-tracking`'s LodeSTAR detection: an explicit CLI value wins, then a
+`--config` JSON value, then `--dataset-profile`-derived values
+(`box_size = size_px * 2.355`, `nms_distance = min(size_px, spacing_px * 0.5)`),
+then today's existing hardcoded defaults (`40` / `0.0`) when none of the above
+apply.
 
 **Label TIFF stacks:**
 

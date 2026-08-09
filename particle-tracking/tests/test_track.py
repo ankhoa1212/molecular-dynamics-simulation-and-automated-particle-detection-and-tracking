@@ -14,6 +14,7 @@ import track
 import detectors_common.rfdetr_loader
 import detectors_common.lodestar_loader
 import detectors_common.tiling
+import trackers_common.linking
 
 # ---------------------------------------------------------------------------
 # detectors_common re-exports — U8: guards against the re-export convention
@@ -80,6 +81,29 @@ class TestDetectorsCommonReExports:
         assert qualified_calls == []
 
 
+class TestTrackersCommonReExports:
+    def test_bridge_track_gaps_is_the_shared_implementation(self):
+        assert track.bridge_track_gaps is trackers_common.linking.bridge_track_gaps
+
+    def test_link_and_filter_tracks_is_the_shared_implementation(self):
+        assert track.link_and_filter_tracks is trackers_common.linking.link_and_filter_tracks
+
+    def test_no_call_site_uses_the_qualified_trackers_common_path(self):
+        """Static guard mirroring TestDetectorsCommonReExports' — every call in
+        track.py must go through the local re-exported name, never
+        `trackers_common.<module>.<name>(` directly."""
+        source = Path(track.__file__).read_text()
+        tree = ast.parse(source)
+        qualified_calls = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                value = node.func.value
+                if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                    if value.value.id == "trackers_common":
+                        qualified_calls.append(f"trackers_common.{value.attr}.{node.func.attr}")
+        assert qualified_calls == []
+
+
 # ---------------------------------------------------------------------------
 # Pure-function tests: --test/--preview/--max-frames precedence
 # ---------------------------------------------------------------------------
@@ -139,14 +163,14 @@ class TestResolvePreviewStubFilter:
 
 class TestCountTracksAtStubFilter:
     def _linked_df(self):
-        # Mimics trackpy.link_df output: one 5-frame track (particle 0),
-        # one 2-frame track (particle 1).
+        # Mimics trackers_common.linking.link_and_filter_tracks output: one
+        # 5-frame track (track_id 0), one 2-frame track (track_id 1).
         return pd.DataFrame(
             {
                 "frame": [0, 1, 2, 3, 4, 0, 1],
                 "x": [0, 0, 0, 0, 0, 10, 10],
                 "y": [0, 0, 0, 0, 0, 10, 10],
-                "particle": [0, 0, 0, 0, 0, 1, 1],
+                "track_id": [0, 0, 0, 0, 0, 1, 1],
             }
         )
 
@@ -295,7 +319,22 @@ class TestRunDetectorYoloDevice:
 # ---------------------------------------------------------------------------
 
 
-def _write_config(tmp_path, stub_filter=90, search_range=25.0, memory=5):
+def _write_config(
+    tmp_path,
+    stub_filter=90,
+    search_range=25.0,
+    memory=5,
+    dataset_profile=None,
+    tiling=None,
+):
+    """search_range/memory: pass None to omit the key entirely from the
+    written config (so dataset-profile/hardcoded-default derivation is
+    actually exercised instead of an explicit override always winning)."""
+    tracking = {"tracker": "trackpy", "stub_filter": stub_filter}
+    if search_range is not None:
+        tracking["search_range"] = search_range
+    if memory is not None:
+        tracking["memory"] = memory
     cfg = {
         "input": "dummy_input.tif",
         "model": {
@@ -306,19 +345,22 @@ def _write_config(tmp_path, stub_filter=90, search_range=25.0, memory=5):
             "num_queries": 300,
             "device": "cpu",
         },
-        "tiling": {"enabled": False},
+        "tiling": tiling if tiling is not None else {"enabled": False},
         "detection": {"threshold": 0.3},
-        "tracking": {
-            "tracker": "trackpy",
-            "search_range": search_range,
-            "memory": memory,
-            "stub_filter": stub_filter,
-        },
+        "tracking": tracking,
         "output": {"dir": str(tmp_path / "out"), "save_video": False},
     }
+    if dataset_profile is not None:
+        cfg["dataset_profile"] = str(dataset_profile)
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg))
     return cfg_path
+
+
+def _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0, name="profile.yaml"):
+    profile_path = tmp_path / name
+    profile_path.write_text(f"size_px: {size_px}\nspacing_px: {spacing_px}\n")
+    return profile_path
 
 
 def _constant_detection_model():
@@ -355,20 +397,126 @@ def run_main(monkeypatch):
     return _run
 
 
-def _write_lodestar_config(tmp_path, box_size=None):
+@pytest.fixture
+def run_main_capture_link_kwargs(monkeypatch):
+    """Run track.main() with trackers_common.linking.link_and_filter_tracks
+    replaced by a fake that records every kwarg it was called with (search_range/
+    memory/etc.) instead of actually linking -- lets tests inspect the resolved
+    values track.py's tracking-parameter derivation produces."""
+
+    def _run(argv, model, frames):
+        captured = {}
+
+        def fake_link(df, **kwargs):
+            captured.update(kwargs)
+            return pd.DataFrame(columns=["frame", "x", "y", "w", "h", "conf", "track_id"])
+
+        monkeypatch.setattr(sys, "argv", ["track.py"] + argv)
+        monkeypatch.setattr(track, "get_rfdetr_model", lambda *a, **kw: model)
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: frames)
+        monkeypatch.setattr(track, "link_and_filter_tracks", fake_link)
+        track.main()
+        return captured
+
+    return _run
+
+
+@pytest.fixture
+def run_main_lodestar_capture_link_kwargs(monkeypatch):
+    """Like run_main_capture_link_kwargs, but for a lodestar config -- mocks
+    LodeSTAR detection instead of RF-DETR so the tracking-parameter
+    derivation (which depends on model_type) can be exercised against
+    lodestar's own per-model canonical values, not rf-detr's."""
+
+    def _run(argv, frames):
+        captured = {}
+
+        def fake_link(df, **kwargs):
+            captured.update(kwargs)
+            return pd.DataFrame(columns=["frame", "x", "y", "w", "h", "conf", "track_id"])
+
+        monkeypatch.setattr(sys, "argv", ["track.py"] + argv)
+        constant_detections = sv.Detections(
+            xyxy=np.array([[10.0, 10.0, 20.0, 20.0]], dtype=np.float64),
+            confidence=np.array([0.9], dtype=np.float64),
+        )
+        monkeypatch.setattr(track, "get_lodestar_model", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: frames)
+        monkeypatch.setattr(track, "detect_lodestar", lambda *a, **kw: constant_detections)
+        monkeypatch.setattr(track, "link_and_filter_tracks", fake_link)
+        track.main()
+        return captured
+
+    return _run
+
+
+@pytest.fixture
+def run_main_capture_tiling(monkeypatch):
+    """Run track.main() with detect_with_tiling replaced by a fake that
+    records every tile_size it was called with."""
+
+    def _run(argv, model, frames):
+        captured = []
+
+        def fake_detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
+            captured.append(tile_size)
+            return sv.Detections.empty()
+
+        monkeypatch.setattr(sys, "argv", ["track.py"] + argv)
+        monkeypatch.setattr(track, "get_rfdetr_model", lambda *a, **kw: model)
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: frames)
+        monkeypatch.setattr(track, "detect_with_tiling", fake_detect_with_tiling)
+        track.main()
+        return captured
+
+    return _run
+
+
+def _write_lodestar_config(
+    tmp_path, box_size=None, nms_distance=None, dataset_profile=None, search_range=10.0
+):
     detection = {"threshold": 0.1}
     if box_size is not None:
         detection["box_size"] = box_size
+    if nms_distance is not None:
+        detection["nms_distance"] = nms_distance
+    tracking = {"tracker": "trackpy", "memory": 3, "stub_filter": 0}
+    if search_range is not None:
+        tracking["search_range"] = search_range
     cfg = {
         "input": "dummy_input.tif",
         "model": {"type": "lodestar", "checkpoint": "dummy.pt", "device": "cpu"},
         "detection": detection,
-        "tracking": {"tracker": "trackpy", "search_range": 10.0, "memory": 3, "stub_filter": 0},
+        "tracking": tracking,
         "output": {"dir": str(tmp_path / "out"), "save_video": False},
     }
+    if dataset_profile is not None:
+        cfg["dataset_profile"] = str(dataset_profile)
     cfg_path = tmp_path / "lodestar_config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg))
     return cfg_path
+
+
+@pytest.fixture
+def run_main_lodestar_capture_kwargs(monkeypatch):
+    """Like run_main_lodestar, but records every kwarg detect_lodestar was
+    called with (not just box_size) -- used for nms_distance derivation tests."""
+
+    def _run(argv, frames):
+        captured = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured.append(kwargs)
+            return sv.Detections.empty()
+
+        monkeypatch.setattr(sys, "argv", ["track.py"] + argv)
+        monkeypatch.setattr(track, "get_lodestar_model", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: frames)
+        monkeypatch.setattr(track, "detect_lodestar", fake_detect_lodestar)
+        track.main()
+        return captured
+
+    return _run
 
 
 @pytest.fixture
@@ -670,53 +818,12 @@ class TestProbeThreshold:
         assert method == "percentile"
 
 
-class TestBridgeTrackGaps:
-    def test_fragments_within_gap_and_radius_are_merged(self):
-        # track 0: frames 0-2 near (0,0); track 1: frames 4-6 near (0,0) --
-        # gap of 2 frames, 0 pixel distance -> should merge into one track_id.
-        df = pd.DataFrame(
-            {
-                "frame": [0, 1, 2, 4, 5, 6],
-                "x": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "track_id": [0, 0, 0, 1, 1, 1],
-            }
-        )
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged["track_id"].nunique() == 1
-
-    def test_fragments_beyond_max_gap_remain_unmerged(self):
-        df = pd.DataFrame(
-            {
-                "frame": [0, 1, 2, 20, 21, 22],
-                "x": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "track_id": [0, 0, 0, 1, 1, 1],
-            }
-        )
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged["track_id"].nunique() == 2
-
-    def test_fragments_beyond_search_radius_remain_unmerged(self):
-        df = pd.DataFrame(
-            {
-                "frame": [0, 1, 2, 4, 5, 6],
-                "x": [0.0, 0.0, 0.0, 500.0, 500.0, 500.0],
-                "y": [0.0, 0.0, 0.0, 500.0, 500.0, 500.0],
-                "track_id": [0, 0, 0, 1, 1, 1],
-            }
-        )
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged["track_id"].nunique() == 2
-
-    def test_empty_df_is_a_no_op(self):
-        df = pd.DataFrame(columns=["frame", "x", "y", "track_id"])
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged.empty
+# bridge_track_gaps/link_and_filter_tracks behavior coverage (gap-merging,
+# search-range linking, memory, stub_filter, adaptive linking, bridging) now
+# lives in trackers-common/tests/test_linking.py, alongside the shared
+# implementation. This class only guards the re-export convention -- see
+# TestTrackersCommonReExports below and TestDetectorsCommonReExports above
+# for the identical pattern applied to detectors_common.
 
 
 class TestComputeAndSaveMetrics:
@@ -752,3 +859,193 @@ class TestComputeAndSaveMetrics:
         saved = json.loads((tmp_path / "metrics.json").read_text())
         assert saved["n_tracks"] == 0
         assert saved["mean_confidence"] is None
+
+
+# ---------------------------------------------------------------------------
+# U5: dataset_profile-driven scale derivation (particle-tracking/config.yaml,
+# lodestar_config.yaml) -- box_size/nms_distance/tile_size/search_range/memory
+# each route through detectors_common/trackers_common's scale_derivation
+# modules when dataset_profile is referenced, sitting between an explicit
+# config value and today's hardcoded defaults.
+# ---------------------------------------------------------------------------
+
+
+class TestDatasetProfileTrackingDerivation:
+    """search_range/memory resolution via trackers_common.scale_derivation,
+    exercised through track.main()'s real trackpy linking call site."""
+
+    def test_search_range_derives_from_profile_when_no_override(
+        self, tmp_path, run_main_capture_link_kwargs
+    ):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_config(tmp_path, search_range=None, dataset_profile=profile_path)
+
+        captured = run_main_capture_link_kwargs(
+            ["--config", str(cfg_path)], _constant_detection_model(), _fake_frames(3)
+        )
+
+        assert captured["search_range"] == pytest.approx(5.0)  # spacing_px * 0.5
+
+    def test_explicit_search_range_overrides_profile(self, tmp_path, run_main_capture_link_kwargs):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_config(tmp_path, search_range=7.5, dataset_profile=profile_path)
+
+        captured = run_main_capture_link_kwargs(
+            ["--config", str(cfg_path)], _constant_detection_model(), _fake_frames(3)
+        )
+
+        assert captured["search_range"] == pytest.approx(7.5)
+
+    def test_search_range_falls_back_to_hardcoded_default_without_profile(
+        self, tmp_path, run_main_capture_link_kwargs
+    ):
+        """R7/AE2 regression: no dataset_profile referenced at all -> today's
+        hardcoded default (25.0, trackers_common's own DEFAULT_SEARCH_RANGE,
+        matching this file's long-standing config.yaml literal)."""
+        cfg_path = _write_config(tmp_path, search_range=None, dataset_profile=None)
+
+        captured = run_main_capture_link_kwargs(
+            ["--config", str(cfg_path)], _constant_detection_model(), _fake_frames(3)
+        )
+
+        assert captured["search_range"] == pytest.approx(25.0)
+
+    def test_lodestar_search_range_falls_back_to_its_own_canonical_default(
+        self, tmp_path, run_main_lodestar_capture_link_kwargs
+    ):
+        """Regression guard: lodestar_config.yaml's own long-standing search_range
+        was 20.0 (lodestar's per-model canonical value, not rf-detr's 25.0) --
+        a single shared hardcoded_default at track.py's resolution call site
+        would silently regress this the moment the live literal is commented
+        out, which is exactly what happened once during implementation of this
+        unit before being caught and fixed."""
+        cfg_path = _write_lodestar_config(tmp_path, search_range=None, dataset_profile=None)
+
+        captured = run_main_lodestar_capture_link_kwargs(
+            ["--config", str(cfg_path)], _fake_frames(3)
+        )
+
+        assert captured["search_range"] == pytest.approx(20.0)
+
+    def test_memory_unaffected_by_profile(self, tmp_path, run_main_capture_link_kwargs):
+        """R9: memory never derives from size_px/spacing_px -- resolves to the
+        per-model canonical value (rf-detr: 5, from tracker_defaults.yaml)
+        regardless of the profile."""
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_config(tmp_path, memory=None, dataset_profile=profile_path)
+
+        captured = run_main_capture_link_kwargs(
+            ["--config", str(cfg_path)], _constant_detection_model(), _fake_frames(3)
+        )
+
+        assert captured["memory"] == 5
+
+    def test_memory_explicit_override_still_wins(self, tmp_path, run_main_capture_link_kwargs):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_config(tmp_path, memory=9, dataset_profile=profile_path)
+
+        captured = run_main_capture_link_kwargs(
+            ["--config", str(cfg_path)], _constant_detection_model(), _fake_frames(3)
+        )
+
+        assert captured["memory"] == 9
+
+
+class TestDatasetProfileLodestarDetectionDerivation:
+    """nms_distance/box_size resolution via detectors_common.scale_derivation,
+    exercised through track.main()'s lodestar detection call site."""
+
+    def test_nms_distance_and_box_size_derive_from_profile(
+        self, tmp_path, run_main_lodestar_capture_kwargs
+    ):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_lodestar_config(tmp_path, dataset_profile=profile_path)
+
+        captured = run_main_lodestar_capture_kwargs(["--config", str(cfg_path)], _fake_frames(3))
+
+        assert captured
+        assert captured[0]["nms_distance"] == pytest.approx(min(5.0 * 1.0, 10.0 * 0.5))
+        assert captured[0]["box_size"] == pytest.approx(5.0 * 2.355)
+
+    def test_explicit_nms_distance_overrides_profile(
+        self, tmp_path, run_main_lodestar_capture_kwargs
+    ):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_lodestar_config(tmp_path, nms_distance=12, dataset_profile=profile_path)
+
+        captured = run_main_lodestar_capture_kwargs(["--config", str(cfg_path)], _fake_frames(3))
+
+        assert captured and all(c["nms_distance"] == 12 for c in captured)
+
+    def test_nms_distance_falls_back_to_hardcoded_default_without_profile(
+        self, tmp_path, run_main_lodestar_capture_kwargs
+    ):
+        """R7/AE2 regression: no dataset_profile referenced -> detector_defaults.yaml's
+        canonical lodestar nms_distance (30), unchanged from before this plan."""
+        cfg_path = _write_lodestar_config(tmp_path, dataset_profile=None)
+
+        captured = run_main_lodestar_capture_kwargs(["--config", str(cfg_path)], _fake_frames(3))
+
+        assert captured and all(c["nms_distance"] == 30 for c in captured)
+
+
+class TestDatasetProfileTilingDerivation:
+    """tile_size resolution via detectors_common.scale_derivation, exercised
+    through track.main()'s RF-DETR tiling call site (detect_with_tiling)."""
+
+    def test_tile_size_derives_from_profile_and_frame_dimensions(
+        self, tmp_path, run_main_capture_tiling
+    ):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_config(
+            tmp_path,
+            dataset_profile=profile_path,
+            tiling={"enabled": True, "overlap": 20, "nms_threshold": 0.3},
+        )
+        big_frames = [np.zeros((300, 300, 3), dtype=np.uint8) for _ in range(2)]
+
+        captured = run_main_capture_tiling(
+            ["--config", str(cfg_path)], _constant_detection_model(), big_frames
+        )
+
+        # clamp(spacing_px * 20, 128, min(300, 300)) = clamp(200, 128, 300) = 200
+        assert captured and all(t == pytest.approx(200.0) for t in captured)
+
+    def test_tile_size_falls_back_to_1024_without_profile(self, tmp_path, run_main_capture_tiling):
+        """R7/AE2 regression: no dataset_profile referenced -> this file's own
+        long-standing 1024 default, not detectors_common's own 512 module default."""
+        cfg_path = _write_config(
+            tmp_path,
+            dataset_profile=None,
+            tiling={"enabled": True, "overlap": 20, "nms_threshold": 0.3},
+        )
+        big_frames = [np.zeros((2000, 2000, 3), dtype=np.uint8) for _ in range(2)]
+
+        captured = run_main_capture_tiling(
+            ["--config", str(cfg_path)], _constant_detection_model(), big_frames
+        )
+
+        assert captured and all(t == 1024 for t in captured)
+
+
+class TestShippedConfigsNoLongerShortCircuitDerivation:
+    """Regression guard for R11/AE7: the shipped config.yaml/lodestar_config.yaml
+    must not carry live literal values for the parameters this plan derives --
+    a live value would permanently shadow dataset_profile-driven derivation,
+    reproducing the exact trap the box_size fix already hit once."""
+
+    def test_config_yaml_tile_size_is_commented_out(self):
+        cfg = track.load_config(track.SCRIPT_DIR / "config.yaml")
+        assert track.cfg_get(cfg, "tiling", "tile_size") is None
+
+    def test_config_yaml_search_range_is_commented_out(self):
+        cfg = track.load_config(track.SCRIPT_DIR / "config.yaml")
+        assert track.cfg_get(cfg, "tracking", "search_range") is None
+
+    def test_lodestar_config_yaml_nms_distance_is_commented_out(self):
+        cfg = track.load_config(track.SCRIPT_DIR / "lodestar_config.yaml")
+        assert track.cfg_get(cfg, "detection", "nms_distance") is None
+
+    def test_lodestar_config_yaml_search_range_is_commented_out(self):
+        cfg = track.load_config(track.SCRIPT_DIR / "lodestar_config.yaml")
+        assert track.cfg_get(cfg, "tracking", "search_range") is None

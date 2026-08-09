@@ -16,6 +16,19 @@ dependencies = [
     # deeptrack==2.0.1 provides scalar-diffraction PSF for render_strategy: deeptrack
     # May require build tools; tests mock the import so CI passes without it
     "deeptrack==2.0.1",
+    "trackers-common",
+    # detectors_common is needed even for --model-type trackpy: benchmark.py's
+    # dataset_profile handling unconditionally lazy-imports
+    # detectors_common.dataset_profile/scale_derivation to build the
+    # detection-side profile (box_size/nms_distance/tile_size), regardless of
+    # which model_type ultimately consumes it. Its own dependencies (numpy,
+    # supervision, pyyaml) are already all present here, so this doesn't pull
+    # in rf-detr's/particle-tracking's heavier torch-based deps. Found via
+    # U7 (docs/plans/2026-08-08-002-feat-particle-scale-calibration-plan.md):
+    # running benchmark.py --model-type trackpy with a dataset_profile set
+    # failed with ModuleNotFoundError before this was added, even though
+    # trackpy itself needs no sibling-project venv (see README.md).
+    "detectors-common",
 ]
 
 [build-system]
@@ -24,6 +37,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
+
+[tool.uv.sources]
+trackers-common = { path = "../trackers-common", editable = true }
+detectors-common = { path = "../detectors-common", editable = true }
 
 [dependency-groups]
 dev = [

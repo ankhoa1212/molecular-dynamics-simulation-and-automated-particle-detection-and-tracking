@@ -1,0 +1,113 @@
+# U7 (particle-scale-calibration plan) stress-test BASELINE config.
+# Auto-generated (yaml round-trip) from ../config.yaml with only
+# dataset_profile / synthetic.output_dir / benchmark.model_type changed --
+# see ../config.yaml for full key documentation. Uses today's default
+# synthetic density (continuous_force_1500_5.0.lammpstrj, 512x512,
+# psf_sigma=5.0) but routes through the dataset_profile mechanism (R12/
+# AE8) via dataset-profiles/synthetic-default.yaml, so baseline vs.
+# stress-dense/sparse differs ONLY in which profile is referenced.
+
+benchmark:
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
+  lodestar:
+    alpha: 0.9
+    checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+    device: null
+    fp16: false
+    threshold: 0.01
+  match_distance: 10
+  model_type: trackpy
+  num_queries: 300
+  threshold: 0.2
+  tiling:
+    enabled: true
+    nms_threshold: 0.3
+    overlap: 50
+  trackpy:
+    minmass: null
+    separation: null
+  variant: large
+compare:
+  lammps_file: null
+  lj_to_um: 2.0
+  max_lag_frames: 50
+  output_dir: verification_output/
+  pixel_scale: 0.108
+  tracks_file: null
+synthetic:
+  background:
+    amplitude: 705.0
+    heterogeneity_scale: 203.1
+  background_fraction: 0.25
+  crop_source: physics
+  crop_template:
+    cache_path: crop_templates.npz
+    core_radius: 20.0
+    crop_half: 90
+    fit_half: 20
+    max_area: 4000
+    max_crops: 500
+    max_sigma: 20.0
+    min_area: 100
+    min_sep: 40
+    min_sigma: 3.0
+    n_clusters: 5
+    percentile: 95.0
+    ring_method: empirical
+    target_half: 65
+    transition_width: 10.0
+    video_paths:
+    - ../particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
+  image_height: 512
+  image_width: 512
+  noise:
+    gain_sigma: 0.02
+    read_noise: 62.42
+  output_dir: verification_output/stress_baseline/synthetic_frames/
+  particle:
+    intensity_distribution: lognormal
+    intensity_sigma: 1.015
+    peak_mean: 987.4
+  peak_intensity: 40000
+  procedural_shape:
+    ring_A0: 0.9407
+    ring_A1: 0.8997
+    ring_B: 0.0288
+    ring_r1: 47.56
+    ring_s0: 9.5
+    ring_s1: 11.05
+    sigma: 5.0
+    size: 41
+  psf:
+    defocus: 0.0
+    na: 1.4
+    resolution: 6.5e-08
+    sigma_px: 8.21
+    spherical_aberration: 0.0
+    wavelength: 520e-9
+  psf_sigma: 5.0
+  randomization:
+    peak_range:
+    - 20000
+    - 60000
+    psf_sigma_range:
+    - 3.0
+    - 7.0
+    readout_noise_range:
+    - 150.0
+    - 300.0
+    smoothing:
+      step_std_fraction: 0.15
+  readout_noise: 200.0
+  render_strategy: procedural
+  ring:
+    depth: 0.65
+    radius_factor: 1.0
+    width_factor: 0.3
+  shot_noise: true
+tracking:
+  adaptive_step: 0.95
+  adaptive_stop: null
+  enabled: true
+  matching_threshold_radii: 0.5
+dataset_profile: ../dataset-profiles/synthetic-default.yaml

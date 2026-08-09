@@ -28,6 +28,9 @@ molecular-dynamics-simulation/
 ├── yolov12/                 # YOLOv12 training, evaluation, and weights
 │   ├── runs/detect/train/weights/best.pt
 │   └── processed_data/      # Train/validation image splits
+├── detectors-common/        # Shared detector-loading/tiling/config-merge package (rf-detr/, particle-tracking/)
+├── trackers-common/         # Shared trackpy-linking/tracking-tuning package (particle-tracking/, verification/, rf-detr/)
+├── dataset-profiles/        # Per-dataset scale profiles (size_px/spacing_px) detection/tracking params derive from
 ├── particle-tracking/       # Particle tracking pipeline
 │   ├── track.py             # Unified tracker (RF-DETR, YOLOv12, or LodeSTAR)
 │   ├── config.yaml          # Tracking configuration
@@ -40,6 +43,7 @@ molecular-dynamics-simulation/
     ├── compare.py           # Physics observable comparison (MSD, hexatic order)
     ├── calibrate_psf.py     # Fit PSF/noise parameters from real microscopy frames
     ├── compare_renders.py   # Side-by-side SNR/PSD comparison of rendering strategies
+    ├── dataset_profile_builder.py  # Builds a dataset-profiles/ YAML from a LAMMPS trajectory
     └── config.yaml          # Rendering, benchmarking, and tracking metric settings
 ```
 

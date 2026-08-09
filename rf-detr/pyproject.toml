@@ -16,6 +16,7 @@ dependencies = [
     "tifffile>=2026.3.3",
     "scipy>=1.17.1",
     "detectors-common",
+    "trackers-common",
 ]
 
 [[tool.uv.index]]
@@ -31,6 +32,7 @@ torchvision = [
     { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 detectors-common = { path = "../detectors-common", editable = true }
+trackers-common = { path = "../trackers-common", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,8 @@
+size_px: 2.34
+spacing_px: 5.0904
+description: 'Denser stress-test profile (U7, R12): same continuous_force_1500_5.0.lammpstrj
+  trajectory as synthetic-default (1446 particles), self-similarly scaled down to
+  a 240x240 render (psf_sigma scaled from 5.0 to 2.34 by the same 240/512 factor)
+  instead of 512x512, so particles keep the same relative size but pack closer together
+  in pixel space. Exercises detectors_common.scale_derivation.resolve_tile_size''s
+  TILE_SIZE_FLOOR_PX floor-clamp regime (spacing_px*20 < floor).'

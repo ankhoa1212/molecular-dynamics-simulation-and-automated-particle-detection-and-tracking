@@ -1,0 +1,33 @@
+# Canonical per-model tracking-linkage tuning values, extracted from
+# particle-tracking/tracker_configs.py's write_rfdetr_config/write_lodestar_config
+# (the values actually used for real per-model production comparison runs via
+# run_tracking.py/model_comparison.py). Single source of truth for both
+# tracker_configs.py and verification/benchmark.py -- see this package's README.
+#
+# trackpy (verification's classical blob detector) has no track.py-side model_type
+# of its own, so it has no tuned entry here -- callers fall back to the rf-detr
+# values as a documented default, not a claim of measured trackpy-detector parity.
+#
+# adaptive_stop/adaptive_step are NOT per-model-tuned in tracker_configs.py's
+# writers (a pre-existing gap -- direct track.py runs against
+# particle-tracking/config.yaml's own static tracking: block already set these,
+# but the per-model configs tracker_configs.py generates for
+# run_tracking.py/model_comparison.py never did). Both models carry the same
+# values here, matching particle-tracking/config.yaml's established defaults --
+# without them, trackpy's exact linker raises SubnetOversizeException on dense
+# scenes (confirmed on the ~1446-particle/frame continuous-force benchmark
+# dataset) instead of falling back to a smaller search_range.
+
+rf-detr:
+  search_range: 25
+  memory: 5
+  stub_filter: 90
+  adaptive_stop: 12
+  adaptive_step: 0.95
+
+lodestar:
+  search_range: 20
+  memory: 10
+  stub_filter: 6
+  adaptive_stop: 12
+  adaptive_step: 0.95

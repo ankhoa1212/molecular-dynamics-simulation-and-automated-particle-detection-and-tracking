@@ -20,6 +20,22 @@ from detectors_common.rfdetr_loader import (
 from detectors_common.lodestar_loader import get_lodestar_model, detect_lodestar
 from detectors_common.tiling import detect_with_tiling
 from detectors_common.defaults import load_detector_config
+from detectors_common.scale_derivation import (
+    resolve_box_size,
+    resolve_nms_distance,
+    resolve_tile_size,
+)
+from detectors_common.dataset_profile import load_dataset_profile as load_detection_profile
+
+# Re-exported from trackers_common — edit there, not here. particle-tracking/.venv
+# has trackers-common installed natively (module-scope import, same as
+# detectors_common above — trackers-common has no CUDA-sensitive deps, so unlike
+# detectors_common, verification/benchmark.py imports it the same way, no lazy
+# wrapper needed there either — see that package's README).
+from trackers_common.linking import bridge_track_gaps, link_and_filter_tracks
+from trackers_common.defaults import load_tracking_config, DEFAULT_KEY_PATH_MAP
+from trackers_common.scale_derivation import resolve_search_range, resolve_memory
+from trackers_common.dataset_profile import load_dataset_profile as load_tracking_profile
 
 # Maps canonical detector_defaults.yaml keys to this config's own dotted path.
 # particle-tracking nests detector params by pipeline concern (detection.*),
@@ -400,62 +416,11 @@ def probe_threshold(
 # ---------------------------------------------------------------------------
 # Track post-processing
 # ---------------------------------------------------------------------------
-
-
-def bridge_track_gaps(df, max_gap, search_radius):
-    """Reconnect track fragments separated by ≤ max_gap frames and ≤ search_radius pixels.
-
-    Iterates until no more merges are possible (handles chained fragments).
-    Only meaningful for trackpy output where tracks may be fragmented.
-    """
-    if df.empty or "track_id" not in df.columns:
-        return df
-    df = df.copy()
-    # tp.link_df sets 'frame' as an index level; reset to avoid sort_values ambiguity.
-    if "frame" in df.index.names:
-        df = df.reset_index(drop=True)
-    for _ in range(200):  # bounded to avoid infinite loops
-        by_frame = df.sort_values("frame")
-        endpoints = (
-            by_frame.groupby("track_id").last().reset_index()[["track_id", "frame", "x", "y"]]
-        )
-        startpoints = (
-            by_frame.groupby("track_id").first().reset_index()[["track_id", "frame", "x", "y"]]
-        )
-
-        merges = {}
-        used_ep, used_sp = set(), set()
-
-        for _, ep in endpoints.sort_values("frame").iterrows():
-            ep_tid = int(ep.track_id)
-            if ep_tid in used_ep:
-                continue
-            cands = startpoints[
-                (startpoints.track_id != ep.track_id)
-                & (~startpoints.track_id.isin(used_sp))
-                & (startpoints.frame > ep.frame)
-                & (startpoints.frame - ep.frame <= max_gap)
-            ].copy()
-            if cands.empty:
-                continue
-            cands["dist"] = np.sqrt((cands.x - ep.x) ** 2 + (cands.y - ep.y) ** 2)
-            cands = cands[cands.dist <= search_radius]
-            if cands.empty:
-                continue
-            frame_gap = cands.frame - ep.frame
-            cands = cands.copy()
-            cands["score"] = np.sqrt((cands.dist / search_radius) ** 2 + (frame_gap / max_gap) ** 2)
-            best = cands.loc[cands.score.idxmin()]
-            best_tid = int(best.track_id)
-            merges[best_tid] = ep_tid
-            used_ep.add(ep_tid)
-            used_sp.add(best_tid)
-
-        if not merges:
-            break
-        df["track_id"] = df["track_id"].map(lambda tid: merges.get(int(tid), int(tid)))
-
-    return df
+#
+# bridge_track_gaps and the core trackpy link+filter sequence now live in
+# trackers_common.linking (re-exported above) — shared with
+# verification/benchmark.py's tracking-metrics computation so the two can't
+# drift on linking behavior. See trackers-common/README.md.
 
 
 # ---------------------------------------------------------------------------
@@ -612,14 +577,18 @@ def count_tracks_at_stub_filter(df, stub_filter):
     Log-only helper: used by preview mode to report what the full run's
     un-relaxed stub_filter would have produced on the same frames, without
     affecting the tracks actually reported by the current run.
+
+    Expects an already-linked df with a 'track_id' column (trackers_common.
+    linking.link_and_filter_tracks's output shape) -- implemented with plain
+    pandas rather than tp.filter_stubs (which requires a column literally
+    named 'particle') so it doesn't need to know about trackpy's own naming.
     """
     if df is None or df.empty:
         return 0
     if stub_filter is None or stub_filter <= 0:
-        return df["particle"].nunique()
-    import trackpy as tp
-
-    return tp.filter_stubs(df, stub_filter)["particle"].nunique()
+        return df["track_id"].nunique()
+    counts = df.groupby("track_id").size()
+    return int((counts >= stub_filter).sum())
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +750,21 @@ def main():
     args = parser.parse_args()
     cfg = load_config(args.config)
 
+    # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
+    # nms_distance/tile_size/search_range/memory each derive from it via
+    # detectors_common/trackers_common's shared scale_derivation modules,
+    # sitting between an explicit config value (still always wins) and
+    # today's hardcoded defaults (still applied unchanged when no profile is
+    # referenced at all). Loaded once per run, via each package's own loader
+    # (duplicated by design — see dataset-profiles/README.md).
+    dataset_profile_path = cfg_get(cfg, "dataset_profile", default=None)
+    detection_profile = None
+    tracking_profile = None
+    if dataset_profile_path is not None:
+        profile_path = resolve_path(dataset_profile_path)
+        detection_profile = load_detection_profile(profile_path)
+        tracking_profile = load_tracking_profile(profile_path)
+
     # --test wins over --preview (mirrors --test's existing precedence over --max-frames)
     preview_active = args.preview is not None and not args.test
 
@@ -818,13 +802,36 @@ def main():
         or cfg_get(cfg, "output", "dir", default="evaluation/results/tracking_output")
     )
     tracker = args.tracker or cfg_get(cfg, "tracking", "tracker", default="trackpy")
+    # search_range: explicit config value -> dataset-profile-derived (spacing_px * 0.5)
+    # -> the per-model canonical tuning (unchanged fallback behavior when no
+    # profile is referenced) -- config.yaml's own prior default was 25.0
+    # (rf-detr's canonical value) but lodestar_config.yaml's was 20.0
+    # (lodestar's canonical value); a single shared literal here would
+    # silently regress whichever config's default didn't match, so this
+    # mirrors verification/benchmark.py's own per-model canonical_search_range
+    # resolution rather than baking in one fixed number.
+    canonical_search_range = load_tracking_config(model_type, {}, DEFAULT_KEY_PATH_MAP).get(
+        "search_range", 25.0
+    )
     search_range = (
         args.search_range
         if args.search_range is not None
-        else cfg_get(cfg, "tracking", "search_range", default=10.0)
+        else resolve_search_range(
+            cfg_get(cfg, "tracking", "search_range", default=None),
+            tracking_profile,
+            hardcoded_default=canonical_search_range,
+        )
     )
+    # memory: explicit config value -> trackers_common's per-model canonical
+    # tuning (tracker_defaults.yaml) -- never derived from the profile itself
+    # (R9: occlusion/blinking tolerance has no spatial grounding), but still
+    # resolved through the same profile-aware call shape for consistency.
     memory = (
-        args.memory if args.memory is not None else cfg_get(cfg, "tracking", "memory", default=3)
+        args.memory
+        if args.memory is not None
+        else resolve_memory(
+            cfg_get(cfg, "tracking", "memory", default=None), tracking_profile, model_type
+        )
     )
     stub_filter = (
         args.stub_filter
@@ -869,24 +876,32 @@ def main():
         if args.track_activation_threshold is not None
         else cfg_get(cfg, "tracking", "track_activation_threshold", default=0.25)
     )
-    # nms_distance/alpha fall back through detector_defaults.yaml's canonical
-    # values (via the shared key-path-mapped merge) before this file's own
-    # None default — CLI arg still wins over everything.
+    # alpha falls back through detector_defaults.yaml's canonical value (via
+    # the shared key-path-mapped merge) before this file's own None default —
+    # CLI arg still wins over everything. alpha is not part of scale
+    # derivation (R6 only covers box_size/nms_distance/tile_size).
     _lodestar_defaults = load_detector_config("lodestar", cfg, _LODESTAR_KEY_MAP)
     lodestar_alpha = (
         args.lodestar_alpha
         if args.lodestar_alpha is not None
         else _lodestar_defaults.get("alpha", 0.5)
     )
+    # nms_distance/box_size: explicit config value -> dataset-profile-derived
+    # -> detectors_common's own hardcoded default (30/40, matching
+    # detector_defaults.yaml's canonical lodestar values) when neither applies.
     lodestar_nms_distance = (
         args.lodestar_nms_distance
         if args.lodestar_nms_distance is not None
-        else _lodestar_defaults.get("nms_distance")
+        else resolve_nms_distance(
+            cfg_get(cfg, "detection", "nms_distance", default=None), detection_profile
+        )
     )
     lodestar_box_size = (
         args.lodestar_box_size
         if args.lodestar_box_size is not None
-        else _lodestar_defaults.get("box_size", 40)
+        else resolve_box_size(
+            cfg_get(cfg, "detection", "box_size", default=None), detection_profile
+        )
     )
     lodestar_fp16 = args.lodestar_fp16 or cfg_get(cfg, "detection", "fp16", default=False)
     save_trajectory_image = args.save_trajectory_image or cfg_get(
@@ -906,7 +921,11 @@ def main():
         if not args.hexatic_order:
             save_hexatic_order = False
     tiling_enabled = cfg_get(cfg, "tiling", "enabled", default=False)
-    tiling_tile_size = cfg_get(cfg, "tiling", "tile_size", default=1024)
+    # tile_size's final value needs the source frame's own dimensions (the
+    # profile-derived tier's clamp ceiling), so only the explicit config value
+    # is captured here — full resolution happens per-input, once frame
+    # dimensions are known (see resolve_tile_size call below).
+    tiling_explicit_tile_size = cfg_get(cfg, "tiling", "tile_size", default=None)
     tiling_overlap = cfg_get(cfg, "tiling", "overlap", default=100)
     tiling_nms_threshold = cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
     max_frames = resolve_preview_max_frames(args.test, args.preview, args.max_frames)
@@ -950,8 +969,11 @@ def main():
             sys.exit(1)
 
         if tracker == "trackpy":
+            # Fail fast with a friendly message before model loading, even though
+            # link_and_filter_tracks (trackers_common.linking) does its own
+            # trackpy import when actually called.
             try:
-                import trackpy as tp
+                import trackpy  # noqa: F401
             except ImportError:
                 print("Error: 'trackpy' not found. Run 'pip install trackpy'.")
                 sys.exit(1)
@@ -1080,6 +1102,15 @@ def main():
             print(f"Crop:      x={crop_x} y={crop_y} w={crop_w} h={crop_h} (frame {fw}×{fh})")
         if tiling_enabled:
             fh, fw = frames[0].shape[:2]
+            # tile_size: explicit config value -> dataset-profile-derived
+            # (clamped to this input's own frame dimensions) -> this file's
+            # own hardcoded default (1024, matching config.yaml's long-
+            # standing literal) when neither applies.
+            tiling_tile_size = int(
+                resolve_tile_size(
+                    tiling_explicit_tile_size, detection_profile, fw, fh, hardcoded_default=1024
+                )
+            )
             stride = tiling_tile_size - tiling_overlap
             nx = len(list(range(0, fw - tiling_tile_size, stride))) + 1
             ny = len(list(range(0, fh - tiling_tile_size, stride))) + 1
@@ -1184,15 +1215,22 @@ def main():
         if tracker == "trackpy":
             print("Applying Trackpy (offline)...")
             if not df.empty:
-                link_kwargs = {"search_range": search_range, "memory": memory}
-                if adaptive_stop is not None:
-                    link_kwargs["adaptive_stop"] = adaptive_stop
-                    link_kwargs["adaptive_step"] = adaptive_step
-                df = tp.link_df(df, **link_kwargs)
                 effective_stub_filter = stub_filter
                 if preview_active and stub_filter is not None and stub_filter > 0:
+                    # Preview-only informational count: link once here (separately
+                    # from the real linking pass below, via the same shared
+                    # implementation) purely to report what the full-run
+                    # stub_filter would produce on these same preview frames.
+                    # Does not affect this run's reported tracks.
+                    preview_linked = link_and_filter_tracks(
+                        df,
+                        search_range=search_range,
+                        memory=memory,
+                        adaptive_stop=adaptive_stop,
+                        adaptive_step=adaptive_step,
+                    )
                     effective_stub_filter = resolve_preview_stub_filter(stub_filter, len(frames))
-                    full_run_track_count = count_tracks_at_stub_filter(df, stub_filter)
+                    full_run_track_count = count_tracks_at_stub_filter(preview_linked, stub_filter)
                     if effective_stub_filter < stub_filter:
                         print(
                             f"Preview mode: relaxed stub_filter {stub_filter} -> "
@@ -1205,17 +1243,21 @@ def main():
                         f"preview frames — informational only, does not affect this run's "
                         f"reported tracks."
                     )
-                if effective_stub_filter is not None and effective_stub_filter > 0:
-                    df = tp.filter_stubs(df, effective_stub_filter)
-                df = df.rename(columns={"particle": "track_id"})
-                if bridge_gap is not None and not df.empty:
+
+                if bridge_gap is not None:
                     radius = bridge_radius if bridge_radius is not None else 2.0 * search_range
-                    pre_count = df["track_id"].nunique()
                     print(f"Bridging track gaps (max_gap={bridge_gap}, radius={radius:.1f}px)...")
-                    df = bridge_track_gaps(df, max_gap=bridge_gap, search_radius=radius)
-                    post_count = df["track_id"].nunique()
-                    print(f"  Tracks: {pre_count} → {post_count} (merged {pre_count - post_count})")
-                tracking_data = df.to_dict("records")
+                linked = link_and_filter_tracks(
+                    df,
+                    search_range=search_range,
+                    memory=memory,
+                    stub_filter=effective_stub_filter,
+                    adaptive_stop=adaptive_stop,
+                    adaptive_step=adaptive_step,
+                    bridge_gap=bridge_gap,
+                    bridge_radius=bridge_radius,
+                )
+                tracking_data = linked.to_dict("records")
             else:
                 print("No detections to track.")
 
