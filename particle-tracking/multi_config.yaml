@@ -1,7 +1,8 @@
 # Particle Tracking Configuration — RF-DETR, multi-input (override)
-# Merges onto config.yaml (the base): uv run track.py --config config.yaml --override multi_config.yaml
-# Only keys that differ from config.yaml are listed here. CLI arguments still
-# override both files.
+# Complete on its own: uv run track.py --config multi_config.yaml
+# `extends` auto-merges config.yaml (the base) underneath; only keys that
+# differ from it need to be listed here. CLI arguments still override both.
+extends: config.yaml
 
 # Input: list of TIFF stacks to process; each produces a named subdirectory under output.dir
 input:

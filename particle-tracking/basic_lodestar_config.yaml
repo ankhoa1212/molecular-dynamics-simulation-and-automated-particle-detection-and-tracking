@@ -1,7 +1,8 @@
 # Particle Tracking Configuration — LodeSTAR detector, dim-early-frames scenario (override)
-# Merges onto config.yaml (the base): uv run track.py --config config.yaml --override basic_lodestar_config.yaml
-# Only keys that differ from config.yaml are listed here. CLI arguments still
-# override both files.
+# Complete on its own: uv run track.py --config basic_lodestar_config.yaml
+# `extends` auto-merges config.yaml (the base) underneath; only keys that
+# differ from it need to be listed here. CLI arguments still override both.
+extends: config.yaml
 
 # Input: path to video, TIFF stack, or folder of images
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
