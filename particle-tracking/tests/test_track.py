@@ -14,6 +14,7 @@ import track
 import detectors_common.rfdetr_loader
 import detectors_common.lodestar_loader
 import detectors_common.tiling
+import trackers_common.linking
 
 # ---------------------------------------------------------------------------
 # detectors_common re-exports — U8: guards against the re-export convention
@@ -80,6 +81,29 @@ class TestDetectorsCommonReExports:
         assert qualified_calls == []
 
 
+class TestTrackersCommonReExports:
+    def test_bridge_track_gaps_is_the_shared_implementation(self):
+        assert track.bridge_track_gaps is trackers_common.linking.bridge_track_gaps
+
+    def test_link_and_filter_tracks_is_the_shared_implementation(self):
+        assert track.link_and_filter_tracks is trackers_common.linking.link_and_filter_tracks
+
+    def test_no_call_site_uses_the_qualified_trackers_common_path(self):
+        """Static guard mirroring TestDetectorsCommonReExports' — every call in
+        track.py must go through the local re-exported name, never
+        `trackers_common.<module>.<name>(` directly."""
+        source = Path(track.__file__).read_text()
+        tree = ast.parse(source)
+        qualified_calls = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                value = node.func.value
+                if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                    if value.value.id == "trackers_common":
+                        qualified_calls.append(f"trackers_common.{value.attr}.{node.func.attr}")
+        assert qualified_calls == []
+
+
 # ---------------------------------------------------------------------------
 # Pure-function tests: --test/--preview/--max-frames precedence
 # ---------------------------------------------------------------------------
@@ -139,14 +163,14 @@ class TestResolvePreviewStubFilter:
 
 class TestCountTracksAtStubFilter:
     def _linked_df(self):
-        # Mimics trackpy.link_df output: one 5-frame track (particle 0),
-        # one 2-frame track (particle 1).
+        # Mimics trackers_common.linking.link_and_filter_tracks output: one
+        # 5-frame track (track_id 0), one 2-frame track (track_id 1).
         return pd.DataFrame(
             {
                 "frame": [0, 1, 2, 3, 4, 0, 1],
                 "x": [0, 0, 0, 0, 0, 10, 10],
                 "y": [0, 0, 0, 0, 0, 10, 10],
-                "particle": [0, 0, 0, 0, 0, 1, 1],
+                "track_id": [0, 0, 0, 0, 0, 1, 1],
             }
         )
 
@@ -670,53 +694,12 @@ class TestProbeThreshold:
         assert method == "percentile"
 
 
-class TestBridgeTrackGaps:
-    def test_fragments_within_gap_and_radius_are_merged(self):
-        # track 0: frames 0-2 near (0,0); track 1: frames 4-6 near (0,0) --
-        # gap of 2 frames, 0 pixel distance -> should merge into one track_id.
-        df = pd.DataFrame(
-            {
-                "frame": [0, 1, 2, 4, 5, 6],
-                "x": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "track_id": [0, 0, 0, 1, 1, 1],
-            }
-        )
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged["track_id"].nunique() == 1
-
-    def test_fragments_beyond_max_gap_remain_unmerged(self):
-        df = pd.DataFrame(
-            {
-                "frame": [0, 1, 2, 20, 21, 22],
-                "x": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "track_id": [0, 0, 0, 1, 1, 1],
-            }
-        )
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged["track_id"].nunique() == 2
-
-    def test_fragments_beyond_search_radius_remain_unmerged(self):
-        df = pd.DataFrame(
-            {
-                "frame": [0, 1, 2, 4, 5, 6],
-                "x": [0.0, 0.0, 0.0, 500.0, 500.0, 500.0],
-                "y": [0.0, 0.0, 0.0, 500.0, 500.0, 500.0],
-                "track_id": [0, 0, 0, 1, 1, 1],
-            }
-        )
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged["track_id"].nunique() == 2
-
-    def test_empty_df_is_a_no_op(self):
-        df = pd.DataFrame(columns=["frame", "x", "y", "track_id"])
-        merged = track.bridge_track_gaps(df, max_gap=5, search_radius=10)
-
-        assert merged.empty
+# bridge_track_gaps/link_and_filter_tracks behavior coverage (gap-merging,
+# search-range linking, memory, stub_filter, adaptive linking, bridging) now
+# lives in trackers-common/tests/test_linking.py, alongside the shared
+# implementation. This class only guards the re-export convention -- see
+# TestTrackersCommonReExports below and TestDetectorsCommonReExports above
+# for the identical pattern applied to detectors_common.
 
 
 class TestComputeAndSaveMetrics:

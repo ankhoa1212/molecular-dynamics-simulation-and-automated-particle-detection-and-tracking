@@ -16,6 +16,7 @@ dependencies = [
     # deeptrack==2.0.1 provides scalar-diffraction PSF for render_strategy: deeptrack
     # May require build tools; tests mock the import so CI passes without it
     "deeptrack==2.0.1",
+    "trackers-common",
 ]
 
 [build-system]
@@ -24,6 +25,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
+
+[tool.uv.sources]
+trackers-common = { path = "../trackers-common", editable = true }
 
 [dependency-groups]
 dev = [

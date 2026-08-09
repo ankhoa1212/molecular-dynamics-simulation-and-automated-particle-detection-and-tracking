@@ -42,13 +42,22 @@ def _write_gt_tracks(path, rows):
         writer.writerows(rows)
 
 
-def _make_cfg(psf_sigma=5.0, search_range=15, memory=3, threshold_radii=0.5, enabled=True):
+def _make_cfg(
+    psf_sigma=5.0, search_range=15, memory=3, stub_filter=0, threshold_radii=0.5, enabled=True
+):
+    """Explicitly overrides search_range/memory/stub_filter so tests stay isolated
+    from trackers_common's canonical per-model tuning (which would otherwise apply
+    stub_filter=90/6 by default and discard these tests' short fixture tracks) --
+    matching the pre-parity-fix behavior where these tests never exercised stub
+    filtering at all. Tests that want to exercise per-model defaults omit these
+    args from tool_config entirely instead (see TestPerModelTrackingDefaults)."""
     return {
         "synthetic": {"psf_sigma": psf_sigma},
         "tracking": {
             "enabled": enabled,
             "search_range": search_range,
             "memory": memory,
+            "stub_filter": stub_filter,
             "matching_threshold_radii": threshold_radii,
         },
     }
@@ -77,7 +86,7 @@ class TestRunTrackingMetrics:
             for frame in range(5)
         }
         cfg = _make_cfg()
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
         assert result["mota"] == pytest.approx(1.0, abs=1e-4)
@@ -104,7 +113,7 @@ class TestRunTrackingMetrics:
                 detections[frame] = np.array([[float(pid * 100), 50.0] for pid in [1, 2]])
 
         cfg = _make_cfg()
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
         assert result["num_fragmentations"] > 0
@@ -122,23 +131,56 @@ class TestRunTrackingMetrics:
             frame: np.array([[100.0, 50.0], [300.0, 50.0]]) for frame in range(4)  # second is FP
         }
         cfg = _make_cfg()
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
         assert result["mota"] < 1.0
         assert result["num_false_positives"] > 0
 
+    def test_detection_beyond_match_threshold_counts_as_miss_and_false_positive(self, tmp_path):
+        """A single detection far outside match_threshold_px must NOT be force-
+        matched to the only available GT particle just because it's the sole
+        candidate -- motmetrics' assignment solver needs dist_matrix entries
+        beyond threshold set to NaN (its documented "impossible pairing"
+        sentinel) to exclude them, or it treats every finite distance as a
+        valid candidate match regardless of magnitude. Before this gate existed,
+        this scenario incorrectly produced 0 misses and 0 false positives (a
+        "free" match) instead of one of each -- and at real particle densities,
+        the resulting dense (ungated) assignment problem made motmetrics'
+        mh.compute() computationally intractable (confirmed: did not return
+        within 90s at ~1446 ground-truth x ~250-2000 predicted points/frame;
+        with the gate, the same computation takes ~10s)."""
+        gt_rows = [{"frame": 0, "particle_id": 1, "x": 100.0, "y": 100.0}]
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+
+        # psf_sigma=5.0, threshold_radii=0.5 -> match_threshold_px = 2.5px.
+        # Single detection 50px away -- far beyond threshold, and the only
+        # candidate available, which is exactly the case the old (bugged)
+        # dense-matrix behavior force-matched.
+        cfg = _make_cfg(psf_sigma=5.0, threshold_radii=0.5)
+        detections = {0: np.array([[150.0, 100.0]])}
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert result["num_misses"] == 1
+        assert result["num_false_positives"] == 1
+        assert result["mota"] < 0  # one miss + one FP against a single GT frame
+
     def test_tracking_disabled_returns_none(self, tmp_path):
         gt_path = tmp_path / "gt.csv"
         _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 50.0, "y": 50.0}])
         cfg = _make_cfg(enabled=False)
-        result = benchmark._run_tracking_metrics({0: np.array([[50.0, 50.0]])}, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(
+            {0: np.array([[50.0, 50.0]])}, str(gt_path), cfg, "rf-detr"
+        )
         assert result is None
 
     def test_missing_gt_tracks_file_returns_none(self, tmp_path):
         absent = str(tmp_path / "nonexistent.csv")
         cfg = _make_cfg()
-        result = benchmark._run_tracking_metrics({}, absent, cfg)
+        result = benchmark._run_tracking_metrics({}, absent, cfg, "rf-detr")
         assert result is None
 
     def test_missing_motmetrics_returns_none(self, tmp_path):
@@ -149,7 +191,7 @@ class TestRunTrackingMetrics:
 
         with mock.patch.dict(sys.modules, {"motmetrics": None}):
             result = benchmark._run_tracking_metrics(
-                {0: np.array([[50.0, 50.0]])}, str(gt_path), cfg
+                {0: np.array([[50.0, 50.0]])}, str(gt_path), cfg, "rf-detr"
             )
         # Either None (because import failed) or a real result; the test just confirms no crash
         # The actual behavior depends on whether motmetrics is installed in the test env
@@ -163,7 +205,7 @@ class TestRunTrackingMetrics:
 
         cfg = _make_cfg(threshold_radii=0.75)
         detections = {0: np.array([[100.0, 100.0]])}
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
         assert "matching_threshold_radii" in result
@@ -173,8 +215,122 @@ class TestRunTrackingMetrics:
         gt_path = tmp_path / "gt.csv"
         _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 50.0, "y": 50.0}])
         cfg = _make_cfg()
-        result = benchmark._run_tracking_metrics({}, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics({}, str(gt_path), cfg, "rf-detr")
         assert result is None
+
+    def test_derived_psf_sigma_px_overrides_config_value(self, tmp_path):
+        """--lammps-in's derived width must win over config.yaml's synthetic.psf_sigma,
+        since it reflects the width the frames were actually rendered at."""
+        gt_rows = [{"frame": 0, "particle_id": 1, "x": 100.0, "y": 100.0}]
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+
+        cfg = _make_cfg(psf_sigma=5.0, threshold_radii=0.5)
+        detections = {0: np.array([[100.0, 100.0]])}
+        result = benchmark._run_tracking_metrics(
+            detections, str(gt_path), cfg, "rf-detr", derived_psf_sigma_px=9.25
+        )
+
+        assert result is not None
+        assert result["psf_sigma_px"] == pytest.approx(9.25)
+        assert result["match_threshold_px"] == pytest.approx(0.5 * 9.25)
+
+
+# ---------------------------------------------------------------------------
+# _run_tracking_metrics — per-model canonical tracking-tuning resolution
+# (2026-08-05 tracking-linker-parity plan: R3/R5/R6)
+# ---------------------------------------------------------------------------
+
+
+def _cfg_no_tracking_overrides(psf_sigma=5.0, threshold_radii=0.5):
+    """A cfg whose tracking: block omits search_range/memory/stub_filter
+    entirely, so _run_tracking_metrics resolves them from trackers_common's
+    canonical per-model defaults instead of a test-pinned override."""
+    return {
+        "synthetic": {"psf_sigma": psf_sigma},
+        "tracking": {"enabled": True, "matching_threshold_radii": threshold_radii},
+    }
+
+
+def _single_stationary_particle_gt_and_detections(n_frames, x=100.0, y=100.0):
+    gt_rows = [{"frame": f, "particle_id": 1, "x": x, "y": y} for f in range(n_frames)]
+    detections = {f: np.array([[x, y]]) for f in range(n_frames)}
+    return gt_rows, detections
+
+
+class TestPerModelTrackingDefaults:
+    def test_rf_detr_resolves_canonical_search_range_memory(self, tmp_path):
+        # 3 frames is far short of rf-detr's canonical stub_filter=90, so a
+        # perfectly-tracked-but-short trajectory should be entirely filtered
+        # out -- proving the canonical rf-detr tuning (not the old generic
+        # 15/3-with-no-filtering) is what's actually applied by default.
+        gt_rows, detections = _single_stationary_particle_gt_and_detections(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert result["num_misses"] > 0  # the 3-frame track got stub-filtered away
+        assert result["mota"] < 1.0
+
+    def test_lodestar_resolves_canonical_stub_filter_shorter_than_rf_detr(self, tmp_path):
+        # lodestar's canonical stub_filter=6 is short enough that a 6-frame
+        # track survives -- unlike rf-detr's 90, proving per-model (not
+        # uniform) resolution.
+        gt_rows, detections = _single_stationary_particle_gt_and_detections(6)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "lodestar")
+
+        assert result is not None
+        assert result["mota"] == pytest.approx(1.0, abs=1e-4)
+
+    def test_trackpy_model_type_falls_back_to_rf_detr_tuning(self, tmp_path):
+        # trackpy has no track.py-side model_type of its own -- a short track
+        # should be stub-filtered away exactly like the rf-detr case, proving
+        # the documented fallback (not a bare/uniform default) is applied.
+        gt_rows, detections = _single_stationary_particle_gt_and_detections(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "trackpy")
+
+        assert result is not None
+        assert result["num_misses"] > 0
+        assert result["mota"] < 1.0
+
+    def test_config_yaml_override_still_wins_over_canonical_default(self, tmp_path):
+        # An explicit tracking.stub_filter in cfg (operator override) must
+        # still take precedence over rf-detr's canonical 90 -- same override
+        # capability operators had before this change (R5).
+        gt_rows, detections = _single_stationary_particle_gt_and_detections(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+        cfg["tracking"]["stub_filter"] = 0
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert result["mota"] == pytest.approx(1.0, abs=1e-4)
+
+    def test_matching_threshold_radii_unaffected_by_model_type(self, tmp_path):
+        # matching_threshold_radii has no track.py counterpart and must keep
+        # coming from cfg regardless of which model_type is active.
+        gt_rows, detections = _single_stationary_particle_gt_and_detections(6)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides(threshold_radii=0.9)
+
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "lodestar")
+
+        assert result is not None
+        assert result["matching_threshold_radii"] == pytest.approx(0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -941,6 +1097,130 @@ class TestLodestarBoxSizeDerivation:
 # ---------------------------------------------------------------------------
 
 
+class TestLammpsInWiring:
+    def test_lammps_in_without_lammps_exits_with_error(self, tmp_path, monkeypatch, capsys):
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--lammps-in",
+            "fake.in",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        with pytest.raises(SystemExit) as exc_info:
+            benchmark.main()
+
+        assert exc_info.value.code == 1
+        assert "--lammps-in requires --lammps" in capsys.readouterr().out
+
+    def test_lammps_in_without_ground_truth_tracks_warns_and_continues(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+            "--lammps",
+            "fake.lammpstrj",
+            "--lammps-in",
+            "fake.in",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        with mock.patch.object(
+            benchmark, "detect_trackpy", return_value=_sv_preload.Detections.empty()
+        ):
+            benchmark.main()  # must not raise
+
+        assert "--lammps-in has no effect without --ground-truth-tracks" in capsys.readouterr().out
+
+    def test_lammps_in_derives_and_passes_override_to_tracking_metrics(self, tmp_path, monkeypatch):
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        gt_tracks_path = tmp_path / "ground_truth_tracks.csv"
+        gt_tracks_path.write_text("frame,particle_id,x,y\n0,1,10.0,10.0\n")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "synthetic:\n  image_width: 512\nbenchmark:\n  trackpy:\n    diameter: 11\n"
+        )
+        lammps_path = tmp_path / "sim.lammpstrj"
+        lammps_path.write_text("fake trajectory")  # never really parsed; parse_lammps_dump mocked
+        lammps_in_path = tmp_path / "sim.in"
+        lammps_in_path.write_text("fake script")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--ground-truth-tracks",
+            str(gt_tracks_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+            "--lammps",
+            str(lammps_path),
+            "--lammps-in",
+            str(lammps_in_path),
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        # benchmark.py's --lammps-in branch lazily imports render (which in turn
+        # sys.path-inserts lammps-scripts/) and lammps_parser -- patch the real
+        # module attributes rather than benchmark's own namespace, since the
+        # `from X import Y` happens inside main() at call time.
+        import render as real_render
+        import lammps_parser as real_lammps_parser
+
+        monkeypatch.setattr(
+            real_lammps_parser,
+            "parse_lammps_dump",
+            lambda path: iter([{"box_bounds": ["0.0 10.0\n", "0.0 10.0\n", "0.0 1.0\n"]}]),
+        )
+        monkeypatch.setattr(real_render, "_derive_psf_sigma_from_lammps_in", lambda *a, **kw: 9.25)
+
+        with mock.patch.object(
+            benchmark, "detect_trackpy", return_value=_sv_preload.Detections.empty()
+        ), mock.patch.object(
+            benchmark, "_run_tracking_metrics", return_value=None
+        ) as mock_tracking_metrics:
+            benchmark.main()
+
+        mock_tracking_metrics.assert_called_once()
+        assert mock_tracking_metrics.call_args.kwargs["derived_psf_sigma_px"] == 9.25
+
+
 class TestLinkDetectionsForVideo:
     """--save-video's linking helper: unlike _run_tracking_metrics (which only
     needs (x, y) centers), this must hand each linked track_id back its own
@@ -1042,7 +1322,7 @@ class TestLinkDfWithFallback:
         det_df = _cluster_det_df(n_particles=5, n_frames=3, box_size=200, jitter=1)
 
         linked, used_range = benchmark._link_df_with_fallback(
-            det_df, cfg={"tracking": {}}, search_range=15, memory=3
+            det_df, {"search_range": 15, "memory": 3}
         )
 
         assert linked is not None
@@ -1058,7 +1338,7 @@ class TestLinkDfWithFallback:
         det_df = _cluster_det_df(n_particles=60, n_frames=3, box_size=30, jitter=1)
 
         linked, used_range = benchmark._link_df_with_fallback(
-            det_df, cfg={"tracking": {}}, search_range=15, memory=3
+            det_df, {"search_range": 15, "memory": 3}
         )
 
         assert linked is not None
@@ -1073,7 +1353,7 @@ class TestLinkDfWithFallback:
         det_df = _cluster_det_df(n_particles=60, n_frames=3, box_size=0.5, jitter=0.1)
 
         linked, used_range = benchmark._link_df_with_fallback(
-            det_df, cfg={"tracking": {}}, search_range=15, memory=3
+            det_df, {"search_range": 15, "memory": 3}
         )
 
         assert linked is None
@@ -1195,7 +1475,7 @@ class TestTrackingMetricsDensityGuard:
         )
         cfg = _make_cfg(search_range=1.0)
 
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is None
 
@@ -1210,7 +1490,7 @@ class TestTrackingMetricsDensityGuard:
         )
         cfg = _make_cfg(search_range=1.0)
 
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is None
 
@@ -1220,7 +1500,7 @@ class TestTrackingMetricsDensityGuard:
         )
         cfg = _make_cfg(search_range=1.0)
 
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
         assert "mota" in result and "idf1" in result
@@ -1251,7 +1531,7 @@ class TestSubnetOversizeGuard:
         detections, gt_path = _dense_cluster_detections_and_gt(tmp_path)
         cfg = _make_cfg(search_range=15)  # adaptive_stop absent -- default/unsafe-off state
 
-        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg)
+        result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
         assert "mota" in result and "idf1" in result

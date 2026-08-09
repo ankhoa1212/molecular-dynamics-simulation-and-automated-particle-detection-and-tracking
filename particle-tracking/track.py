@@ -21,6 +21,14 @@ from detectors_common.lodestar_loader import get_lodestar_model, detect_lodestar
 from detectors_common.tiling import detect_with_tiling
 from detectors_common.defaults import load_detector_config
 
+# Re-exported from trackers_common — edit there, not here. particle-tracking/.venv
+# has trackers-common installed natively (module-scope import, same as
+# detectors_common above — trackers-common has no CUDA-sensitive deps, so unlike
+# detectors_common, verification/benchmark.py imports it the same way, no lazy
+# wrapper needed there either — see that package's README).
+from trackers_common.linking import bridge_track_gaps, link_and_filter_tracks
+from trackers_common.defaults import load_tracking_config
+
 # Maps canonical detector_defaults.yaml keys to this config's own dotted path.
 # particle-tracking nests detector params by pipeline concern (detection.*),
 # unlike verification's benchmark.lodestar.* — see defaults.py.
@@ -400,62 +408,11 @@ def probe_threshold(
 # ---------------------------------------------------------------------------
 # Track post-processing
 # ---------------------------------------------------------------------------
-
-
-def bridge_track_gaps(df, max_gap, search_radius):
-    """Reconnect track fragments separated by ≤ max_gap frames and ≤ search_radius pixels.
-
-    Iterates until no more merges are possible (handles chained fragments).
-    Only meaningful for trackpy output where tracks may be fragmented.
-    """
-    if df.empty or "track_id" not in df.columns:
-        return df
-    df = df.copy()
-    # tp.link_df sets 'frame' as an index level; reset to avoid sort_values ambiguity.
-    if "frame" in df.index.names:
-        df = df.reset_index(drop=True)
-    for _ in range(200):  # bounded to avoid infinite loops
-        by_frame = df.sort_values("frame")
-        endpoints = (
-            by_frame.groupby("track_id").last().reset_index()[["track_id", "frame", "x", "y"]]
-        )
-        startpoints = (
-            by_frame.groupby("track_id").first().reset_index()[["track_id", "frame", "x", "y"]]
-        )
-
-        merges = {}
-        used_ep, used_sp = set(), set()
-
-        for _, ep in endpoints.sort_values("frame").iterrows():
-            ep_tid = int(ep.track_id)
-            if ep_tid in used_ep:
-                continue
-            cands = startpoints[
-                (startpoints.track_id != ep.track_id)
-                & (~startpoints.track_id.isin(used_sp))
-                & (startpoints.frame > ep.frame)
-                & (startpoints.frame - ep.frame <= max_gap)
-            ].copy()
-            if cands.empty:
-                continue
-            cands["dist"] = np.sqrt((cands.x - ep.x) ** 2 + (cands.y - ep.y) ** 2)
-            cands = cands[cands.dist <= search_radius]
-            if cands.empty:
-                continue
-            frame_gap = cands.frame - ep.frame
-            cands = cands.copy()
-            cands["score"] = np.sqrt((cands.dist / search_radius) ** 2 + (frame_gap / max_gap) ** 2)
-            best = cands.loc[cands.score.idxmin()]
-            best_tid = int(best.track_id)
-            merges[best_tid] = ep_tid
-            used_ep.add(ep_tid)
-            used_sp.add(best_tid)
-
-        if not merges:
-            break
-        df["track_id"] = df["track_id"].map(lambda tid: merges.get(int(tid), int(tid)))
-
-    return df
+#
+# bridge_track_gaps and the core trackpy link+filter sequence now live in
+# trackers_common.linking (re-exported above) — shared with
+# verification/benchmark.py's tracking-metrics computation so the two can't
+# drift on linking behavior. See trackers-common/README.md.
 
 
 # ---------------------------------------------------------------------------
@@ -612,14 +569,18 @@ def count_tracks_at_stub_filter(df, stub_filter):
     Log-only helper: used by preview mode to report what the full run's
     un-relaxed stub_filter would have produced on the same frames, without
     affecting the tracks actually reported by the current run.
+
+    Expects an already-linked df with a 'track_id' column (trackers_common.
+    linking.link_and_filter_tracks's output shape) -- implemented with plain
+    pandas rather than tp.filter_stubs (which requires a column literally
+    named 'particle') so it doesn't need to know about trackpy's own naming.
     """
     if df is None or df.empty:
         return 0
     if stub_filter is None or stub_filter <= 0:
-        return df["particle"].nunique()
-    import trackpy as tp
-
-    return tp.filter_stubs(df, stub_filter)["particle"].nunique()
+        return df["track_id"].nunique()
+    counts = df.groupby("track_id").size()
+    return int((counts >= stub_filter).sum())
 
 
 # ---------------------------------------------------------------------------
@@ -950,8 +911,11 @@ def main():
             sys.exit(1)
 
         if tracker == "trackpy":
+            # Fail fast with a friendly message before model loading, even though
+            # link_and_filter_tracks (trackers_common.linking) does its own
+            # trackpy import when actually called.
             try:
-                import trackpy as tp
+                import trackpy  # noqa: F401
             except ImportError:
                 print("Error: 'trackpy' not found. Run 'pip install trackpy'.")
                 sys.exit(1)
@@ -1184,15 +1148,22 @@ def main():
         if tracker == "trackpy":
             print("Applying Trackpy (offline)...")
             if not df.empty:
-                link_kwargs = {"search_range": search_range, "memory": memory}
-                if adaptive_stop is not None:
-                    link_kwargs["adaptive_stop"] = adaptive_stop
-                    link_kwargs["adaptive_step"] = adaptive_step
-                df = tp.link_df(df, **link_kwargs)
                 effective_stub_filter = stub_filter
                 if preview_active and stub_filter is not None and stub_filter > 0:
+                    # Preview-only informational count: link once here (separately
+                    # from the real linking pass below, via the same shared
+                    # implementation) purely to report what the full-run
+                    # stub_filter would produce on these same preview frames.
+                    # Does not affect this run's reported tracks.
+                    preview_linked = link_and_filter_tracks(
+                        df,
+                        search_range=search_range,
+                        memory=memory,
+                        adaptive_stop=adaptive_stop,
+                        adaptive_step=adaptive_step,
+                    )
                     effective_stub_filter = resolve_preview_stub_filter(stub_filter, len(frames))
-                    full_run_track_count = count_tracks_at_stub_filter(df, stub_filter)
+                    full_run_track_count = count_tracks_at_stub_filter(preview_linked, stub_filter)
                     if effective_stub_filter < stub_filter:
                         print(
                             f"Preview mode: relaxed stub_filter {stub_filter} -> "
@@ -1205,17 +1176,21 @@ def main():
                         f"preview frames — informational only, does not affect this run's "
                         f"reported tracks."
                     )
-                if effective_stub_filter is not None and effective_stub_filter > 0:
-                    df = tp.filter_stubs(df, effective_stub_filter)
-                df = df.rename(columns={"particle": "track_id"})
-                if bridge_gap is not None and not df.empty:
+
+                if bridge_gap is not None:
                     radius = bridge_radius if bridge_radius is not None else 2.0 * search_range
-                    pre_count = df["track_id"].nunique()
                     print(f"Bridging track gaps (max_gap={bridge_gap}, radius={radius:.1f}px)...")
-                    df = bridge_track_gaps(df, max_gap=bridge_gap, search_radius=radius)
-                    post_count = df["track_id"].nunique()
-                    print(f"  Tracks: {pre_count} → {post_count} (merged {pre_count - post_count})")
-                tracking_data = df.to_dict("records")
+                linked = link_and_filter_tracks(
+                    df,
+                    search_range=search_range,
+                    memory=memory,
+                    stub_filter=effective_stub_filter,
+                    adaptive_stop=adaptive_stop,
+                    adaptive_step=adaptive_step,
+                    bridge_gap=bridge_gap,
+                    bridge_radius=bridge_radius,
+                )
+                tracking_data = linked.to_dict("records")
             else:
                 print("No detections to track.")
 

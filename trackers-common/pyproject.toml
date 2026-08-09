@@ -1,0 +1,26 @@
+[project]
+name = "trackers-common"
+version = "0.1.0"
+description = "Shared trackpy-linking and per-model tracking-tuning primitives for particle-tracking and verification, extracted to stop the two from drifting against each other on trackpy configuration and MOT-evaluation dependencies."
+requires-python = ">=3.11"
+dependencies = [
+    "trackpy>=0.6.0",
+    "motmetrics>=1.4.0",
+    "pandas>=2.0.0",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["trackers_common"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
