@@ -374,6 +374,16 @@ cd <subproject> && uv run pytest tests/ -v
 
 `data-setup/` and `yolov12/` have no test suite yet, and `lammps-scripts/` doesn't either despite having a `test/` directory (it currently holds only fixture data).
 
+### PR size
+
+Raw diff line counts can be misleading here — a repo-hygiene audit found one 18,700-line PR was only 31% behavior-changing source once `uv.lock` and other generated files, docs, and test code were split out separately. When judging whether a PR is reasonably scoped:
+
+- Exclude `uv.lock` and other generated files (see `.gitattributes`) — they're not meant to be reviewed line-by-line.
+- Look at the source-vs-test split, not just the total. A large diff that's mostly tests for a small behavior change is a different shape than a large diff of new source.
+- Prefer landing a feature branch's commits as one PR reasonably promptly over letting many commits accumulate across a long-lived branch before opening one.
+
+This is guidance, not an enforced threshold — a large PR with a good reason (a real feature, thorough test coverage) is fine; a large PR that's an accident of scope creep is worth splitting.
+
 ---
 
 ## Resources
