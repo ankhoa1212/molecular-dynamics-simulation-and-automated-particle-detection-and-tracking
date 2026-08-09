@@ -1,0 +1,28 @@
+size_px: 6.99
+spacing_px: 121.014
+description: >
+  Real 5um PS particle dataset (U8, R13): particle-tracking/data/raw/60% Intensity
+  PS 5um Video Trial 1.tif -- a genuinely different real particle size than
+  lodestar_model_15/detector_defaults.yaml's canonical tuning, which targets the
+  2um dataset referenced via /mnt/d/ paths. Both values measured directly from
+  frames 0-2 (the first 3 pages) of that TIFF via
+  verification/calibrate_psf.py's own detection/fitting functions, mirroring
+  this repo's sanctioned one-time-offline "calibrated PSF fit" workflow for real
+  data (not live auto-estimation at detection time -- see the plan's R3).
+  size_px is calibrate_from_frames()'s fitted PSF sigma (mean of 50 good 2D
+  Gaussian fits across the 3 frames, min_area=100/max_area=4000/percentile=95.0
+  -- the same connected-component candidate-detection tuning this dataset's
+  crop_template section in verification/config.yaml already established).
+  spacing_px is the median nearest-neighbor distance (scipy.spatial.cKDTree,
+  k=2, mirroring verification/dataset_profile_builder.py's synthetic-data
+  method) pooled across all 508 raw _detect_particle_centers candidates found
+  in those same 3 frames (169-170 particles/frame) -- a real, standalone
+  computation for real microscope data, not routed through the LAMMPS-specific
+  builder. Cross-check: an independent calibration already recorded in
+  verification/config.yaml (psf.sigma_px: 8.21, calibrated 2026-07-22 from
+  512x512 crops of this same video) is in the same order of magnitude as this
+  profile's size_px -- the ~15% difference is plausible given a global
+  percentile-95 threshold computed over the full 2200x3200 frame here vs. a
+  localized 512x512 sub-crop there, not a red flag. See
+  dataset-profiles/real-5um-validation-results.md for the full derivation and
+  the resulting validation run.

@@ -84,3 +84,9 @@ uv run python dataset_profile_builder.py \
   `synthetic-default.yaml`, used to validate `tile_size`'s floor-clamp and
   frame-dimensions-ceiling regimes respectively with no accuracy collapse.
   See `stress-test-results.md` for the full comparison against baseline.
+- `real-5um.yaml` -- U8's real-data validation (R13/AE5): a real 5um PS
+  particle video (`particle-tracking/data/raw/60% Intensity PS 5um Video
+  Trial 1.tif`), genuinely different from `lodestar_model_15`'s 2um-tuned
+  default. `size_px`/`spacing_px` measured directly from real frames via
+  `verification/calibrate_psf.py`, not hand-entered or LAMMPS-derived. See
+  `real-5um-validation-results.md` for the full derivation and run.
