@@ -33,7 +33,7 @@ from detectors_common.dataset_profile import load_dataset_profile as load_detect
 # detectors_common, verification/benchmark.py imports it the same way, no lazy
 # wrapper needed there either — see that package's README).
 from trackers_common.linking import bridge_track_gaps, link_and_filter_tracks
-from trackers_common.defaults import load_tracking_config
+from trackers_common.defaults import load_tracking_config, DEFAULT_KEY_PATH_MAP
 from trackers_common.scale_derivation import resolve_search_range, resolve_memory
 from trackers_common.dataset_profile import load_dataset_profile as load_tracking_profile
 
@@ -803,13 +803,23 @@ def main():
     )
     tracker = args.tracker or cfg_get(cfg, "tracking", "tracker", default="trackpy")
     # search_range: explicit config value -> dataset-profile-derived (spacing_px * 0.5)
-    # -> trackers_common's own hardcoded default (25.0, matching this file's
-    # long-standing config.yaml literal) when neither applies.
+    # -> the per-model canonical tuning (unchanged fallback behavior when no
+    # profile is referenced) -- config.yaml's own prior default was 25.0
+    # (rf-detr's canonical value) but lodestar_config.yaml's was 20.0
+    # (lodestar's canonical value); a single shared literal here would
+    # silently regress whichever config's default didn't match, so this
+    # mirrors verification/benchmark.py's own per-model canonical_search_range
+    # resolution rather than baking in one fixed number.
+    canonical_search_range = load_tracking_config(model_type, {}, DEFAULT_KEY_PATH_MAP).get(
+        "search_range", 25.0
+    )
     search_range = (
         args.search_range
         if args.search_range is not None
         else resolve_search_range(
-            cfg_get(cfg, "tracking", "search_range", default=None), tracking_profile
+            cfg_get(cfg, "tracking", "search_range", default=None),
+            tracking_profile,
+            hardcoded_default=canonical_search_range,
         )
     )
     # memory: explicit config value -> trackers_common's per-model canonical

@@ -422,6 +422,35 @@ def run_main_capture_link_kwargs(monkeypatch):
 
 
 @pytest.fixture
+def run_main_lodestar_capture_link_kwargs(monkeypatch):
+    """Like run_main_capture_link_kwargs, but for a lodestar config -- mocks
+    LodeSTAR detection instead of RF-DETR so the tracking-parameter
+    derivation (which depends on model_type) can be exercised against
+    lodestar's own per-model canonical values, not rf-detr's."""
+
+    def _run(argv, frames):
+        captured = {}
+
+        def fake_link(df, **kwargs):
+            captured.update(kwargs)
+            return pd.DataFrame(columns=["frame", "x", "y", "w", "h", "conf", "track_id"])
+
+        monkeypatch.setattr(sys, "argv", ["track.py"] + argv)
+        constant_detections = sv.Detections(
+            xyxy=np.array([[10.0, 10.0, 20.0, 20.0]], dtype=np.float64),
+            confidence=np.array([0.9], dtype=np.float64),
+        )
+        monkeypatch.setattr(track, "get_lodestar_model", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: frames)
+        monkeypatch.setattr(track, "detect_lodestar", lambda *a, **kw: constant_detections)
+        monkeypatch.setattr(track, "link_and_filter_tracks", fake_link)
+        track.main()
+        return captured
+
+    return _run
+
+
+@pytest.fixture
 def run_main_capture_tiling(monkeypatch):
     """Run track.main() with detect_with_tiling replaced by a fake that
     records every tile_size it was called with."""
@@ -880,6 +909,23 @@ class TestDatasetProfileTrackingDerivation:
         )
 
         assert captured["search_range"] == pytest.approx(25.0)
+
+    def test_lodestar_search_range_falls_back_to_its_own_canonical_default(
+        self, tmp_path, run_main_lodestar_capture_link_kwargs
+    ):
+        """Regression guard: lodestar_config.yaml's own long-standing search_range
+        was 20.0 (lodestar's per-model canonical value, not rf-detr's 25.0) --
+        a single shared hardcoded_default at track.py's resolution call site
+        would silently regress this the moment the live literal is commented
+        out, which is exactly what happened once during implementation of this
+        unit before being caught and fixed."""
+        cfg_path = _write_lodestar_config(tmp_path, search_range=None, dataset_profile=None)
+
+        captured = run_main_lodestar_capture_link_kwargs(
+            ["--config", str(cfg_path)], _fake_frames(3)
+        )
+
+        assert captured["search_range"] == pytest.approx(20.0)
 
     def test_memory_unaffected_by_profile(self, tmp_path, run_main_capture_link_kwargs):
         """R9: memory never derives from size_px/spacing_px -- resolves to the

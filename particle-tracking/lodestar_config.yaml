@@ -42,10 +42,10 @@ tracking:
 
   # search_range intentionally NOT set here -- leaving it unset lets track.py
   # derive it from dataset_profile's spacing_px (spacing_px * 0.5), falling
-  # back to today's 25.0 default (trackers_common's canonical value) if no
-  # profile is referenced. Set search_range here only to override that
-  # derived/default value for a specific investigation -- any value set here
-  # always wins.
+  # back to LodeSTAR's own canonical 20.0 (trackers_common's per-model tuning
+  # for lodestar) if no profile is referenced. Set search_range here only to
+  # override that derived/default value for a specific investigation -- any
+  # value set here always wins.
   # search_range: 20.0
 
   # Trackpy: number of consecutive frames a particle may be missing before its track ends
