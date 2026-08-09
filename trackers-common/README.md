@@ -27,6 +27,19 @@ scope.
    `verification/benchmark.py`'s tracking-metrics resolution. Add a new model's tuning here, not in
    either consumer.
 
+## Dataset scale profile derivation
+
+`dataset_profile.py` loads a per-dataset scale profile (`size_px`/`spacing_px` — see
+`dataset-profiles/README.md` for the file format; deliberately duplicated from
+`detectors-common`'s own loader rather than shared, to keep the two packages independent
+siblings). `scale_derivation.py` derives `search_range` and trackpy's `diameter` from that
+profile via the same three-tier chain as `detectors-common`'s `box_size`/`nms_distance`/
+`tile_size` (explicit config value > profile-derived value > today's hardcoded default).
+`memory` resolves through the same function shape for API consistency but is a deliberate
+exception — it's an occlusion/blinking-duration parameter with no spatial grounding, so it
+always resolves to `tracker_defaults.yaml`'s flat per-model canonical value regardless of
+the profile.
+
 ## Dependencies
 
 `trackpy`, `motmetrics`, `pandas`, `pyyaml`. All pure-Python/pandas — no CUDA sensitivity, unlike

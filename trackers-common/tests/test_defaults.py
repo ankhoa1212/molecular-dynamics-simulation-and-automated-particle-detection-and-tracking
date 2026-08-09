@@ -43,4 +43,4 @@ class TestLoadTrackingConfig:
 
         # bridge_gap has no canonical default in tracker_defaults.yaml, and
         # tool_config has nothing at tracking.bridge_gap -- omitted entirely.
-        assert result == {}
+        assert not result

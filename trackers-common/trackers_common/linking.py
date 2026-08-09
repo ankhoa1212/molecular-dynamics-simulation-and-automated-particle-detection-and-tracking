@@ -67,7 +67,9 @@ def bridge_track_gaps(df: pd.DataFrame, max_gap: int, search_radius: float) -> p
 
         if not merges:
             break
-        df["track_id"] = df["track_id"].map(lambda tid: merges.get(int(tid), int(tid)))
+        df["track_id"] = df["track_id"].map(
+            lambda tid: merges.get(int(tid), int(tid))  # pylint: disable=cell-var-from-loop
+        )
 
     return df
 

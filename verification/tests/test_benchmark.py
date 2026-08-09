@@ -1169,7 +1169,7 @@ def _fake_resolve_tile_size(
     if profile is None:
         return hardcoded_default
     raw = profile["spacing_px"] * 20
-    return max(128, min(raw, min(frame_width, frame_height)))
+    return max(128, min(raw, frame_width, frame_height))
 
 
 class TestLodestarNmsDistanceProfileDerivation:
@@ -1415,7 +1415,7 @@ class TestRunTrackingMetricsProfileDerivation:
 
         captured = {}
 
-        def fake_link_df_with_fallback(det_df, link_kwargs):
+        def fake_link_df_with_fallback(_det_df, link_kwargs):
             captured.update(link_kwargs)
             return None, None
 

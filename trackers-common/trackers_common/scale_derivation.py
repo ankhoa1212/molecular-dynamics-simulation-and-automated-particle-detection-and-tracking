@@ -123,7 +123,9 @@ def resolve_diameter(explicit_value, profile, hardcoded_default=DEFAULT_DIAMETER
     return hardcoded_default
 
 
-def resolve_memory(explicit_value, profile, model_type, hardcoded_default=DEFAULT_MEMORY):
+def resolve_memory(  # pylint: disable=unused-argument
+    explicit_value, profile, model_type, hardcoded_default=DEFAULT_MEMORY
+):
     """Resolve `memory` via the same three-tier *shape* as the other two
     resolve_* functions in this module -- but a deliberate exception to what
     the "derived" tier actually derives from.
