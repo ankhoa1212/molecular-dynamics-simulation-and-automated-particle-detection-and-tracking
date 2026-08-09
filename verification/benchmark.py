@@ -1162,10 +1162,14 @@ def main():
         alpha = _lodestar_defaults.get("alpha", 0.5)
         # nms_distance: explicit benchmark.lodestar.nms_distance config value
         # always wins; otherwise derive from dataset_profile (if referenced),
-        # else detectors_common's own hardcoded default (30, matching
-        # detector_defaults.yaml's canonical lodestar value).
+        # else this file's own long-standing literal (5, not detectors_common's
+        # generic canonical 30 -- at this dataset's ~10.9px median nearest-
+        # neighbor spacing, 30px suppressed almost every true detection,
+        # collapsing recall from ~0.51 to ~0.12; see verification/config.yaml).
         nms_distance = resolve_nms_distance(
-            _cfg_get(cfg, "lodestar", "nms_distance", default=None), detection_profile
+            _cfg_get(cfg, "lodestar", "nms_distance", default=None),
+            detection_profile,
+            hardcoded_default=5,
         )
         # box_size: an explicit benchmark.lodestar.box_size config value always wins;
         # otherwise derive it from dataset_profile if referenced, else from the same
@@ -1239,17 +1243,22 @@ def main():
     if model_type not in ("lodestar", "trackpy"):
         # tile_size: explicit benchmark.tiling.tile_size config value always
         # wins; otherwise derive from dataset_profile (clamped to this run's
-        # own frame dimensions), else detectors_common's own hardcoded
-        # default (512, matching this file's long-standing literal). Frame
-        # dimensions are only needed for the profile-derived tier -- skip
-        # loading a frame at all when an explicit value or no profile makes
-        # that unnecessary.
+        # own frame dimensions), else this file's own long-standing literal
+        # (160, deliberately smaller than the 512x512 frame so tiling
+        # actually engages in real RF-DETR benchmark runs -- not
+        # detectors_common's generic canonical 512). Frame dimensions are
+        # only needed for the profile-derived tier -- skip loading a frame
+        # at all when an explicit value or no profile makes that unnecessary.
         if _explicit_tile_size is None and detection_profile is not None:
             _first_frame = _load_frame_rgb(tiff_files[0])
             _fh, _fw = _first_frame.shape[:2]
         else:
             _fw = _fh = None
-        tile_size = int(resolve_tile_size(_explicit_tile_size, detection_profile, _fw, _fh))
+        tile_size = int(
+            resolve_tile_size(
+                _explicit_tile_size, detection_profile, _fw, _fh, hardcoded_default=160
+            )
+        )
 
     print(f"Model type: {model_type}")
     if model_type == "trackpy":

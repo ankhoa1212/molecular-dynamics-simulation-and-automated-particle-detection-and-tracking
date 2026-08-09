@@ -1237,11 +1237,23 @@ class TestLodestarNmsDistanceProfileDerivation:
         )
         assert nms_distance == 12
 
-    def test_falls_back_to_canonical_30_without_profile(self, tmp_path, monkeypatch):
-        """R7/AE2 regression: no dataset_profile referenced -> detector_defaults.yaml's
-        canonical lodestar nms_distance (30), unchanged from before this plan."""
+    def test_falls_back_to_canonical_5_without_profile(self, tmp_path, monkeypatch):
+        """R7/AE2 regression: no dataset_profile referenced -> this file's own
+        long-standing 5px lodestar nms_distance (not detectors_common's generic
+        canonical 30, which collapsed recall from ~0.51 to ~0.12 at this
+        dataset's ~10.9px spacing -- see verification/config.yaml)."""
         nms_distance = self._run(tmp_path, monkeypatch)
-        assert nms_distance == 30
+        assert nms_distance == 5
+
+    def test_shipped_config_yaml_falls_back_to_5(self):
+        """Regression guard: verification/config.yaml's own lodestar.nms_distance
+        and dataset_profile must stay unset (commented out) so the shipped
+        default resolves through main()'s hardcoded_default=5 call-site
+        argument, not detectors_common's generic canonical 30."""
+        real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
+        assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "nms_distance") is None
+        assert benchmark._cfg_get(real_cfg, "dataset_profile") is None
+        assert benchmark.resolve_nms_distance(None, None, hardcoded_default=5) == 5
 
 
 class TestTrackpyDiameterProfileDerivation:
@@ -1372,11 +1384,23 @@ class TestTileSizeProfileDerivation:
         )
         assert tile_size == 77
 
-    def test_falls_back_to_hardcoded_512_without_profile(self, tmp_path, monkeypatch):
+    def test_falls_back_to_hardcoded_160_without_profile(self, tmp_path, monkeypatch):
         """R7/AE2 regression: no dataset_profile referenced -> this file's own
-        long-standing 512 default."""
+        long-standing 160 default (not detectors_common's generic canonical
+        512, which equals the default 512x512 frame size and silently
+        disables tiling entirely -- see verification/config.yaml)."""
         tile_size = self._run(tmp_path, monkeypatch)
-        assert tile_size == 512
+        assert tile_size == 160
+
+    def test_shipped_config_yaml_falls_back_to_160(self):
+        """Regression guard: verification/config.yaml's own tiling.tile_size
+        and dataset_profile must stay unset (commented out) so the shipped
+        default resolves through main()'s hardcoded_default=160 call-site
+        argument, not detectors_common's generic canonical 512."""
+        real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
+        assert benchmark._cfg_get(real_cfg, "benchmark", "tiling", "tile_size") is None
+        assert benchmark._cfg_get(real_cfg, "dataset_profile") is None
+        assert benchmark.resolve_tile_size(None, None, None, None, hardcoded_default=160) == 160
 
 
 class TestRunTrackingMetricsProfileDerivation:
