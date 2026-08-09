@@ -294,17 +294,22 @@ class TestRunTrackingIntegration:
         assert run_tracking.write_rfdetr_config is write_rfdetr_config
         assert run_tracking.write_lodestar_config is write_lodestar_config
 
-    def test_batch_config_generation_matches_pre_refactor_shape_for_all_videos(self, tmp_path):
+    def test_batch_config_generation_matches_pre_refactor_shape_for_all_videos(
+        self, tmp_path, monkeypatch
+    ):
         """Mirrors the config-generation loop in run_tracking.main(): for every
         hardcoded VIDEOS entry, compute output_dir the same way main() does
         (f"{RESULTS_BASE}/<model>/<short_name>") and confirm the generated YAML
         is rooted there with the expected per-model tracker defaults intact."""
         import run_tracking
 
+        results_base = str(tmp_path / "results")
+        monkeypatch.setattr(run_tracking, "RESULTS_BASE", results_base)
+
         script_dir = tmp_path
 
         for short_name, input_path in run_tracking.VIDEOS.items():
-            rfdetr_output_dir = f"{run_tracking.RESULTS_BASE}/rf-detr/{short_name}"
+            rfdetr_output_dir = f"{results_base}/rf-detr/{short_name}"
             rfdetr_cfg = run_tracking.write_rfdetr_config(
                 short_name, input_path, rfdetr_output_dir, None, None, None, script_dir
             )
@@ -313,7 +318,7 @@ class TestRunTrackingIntegration:
             assert rfdetr_parsed["output"]["dir"] == rfdetr_output_dir
             assert rfdetr_parsed["tracking"]["stub_filter"] == 90
 
-            lodestar_output_dir = f"{run_tracking.RESULTS_BASE}/lodestar/{short_name}"
+            lodestar_output_dir = f"{results_base}/lodestar/{short_name}"
             lodestar_cfg = run_tracking.write_lodestar_config(
                 short_name, input_path, lodestar_output_dir, None, None, None, script_dir
             )

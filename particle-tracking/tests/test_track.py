@@ -922,6 +922,8 @@ class TestOverrideCliWiring:
                 str(PARTICLE_TRACKING_DIR / "lodestar_config.yaml"),
                 "--input",
                 "dummy.tif",
+                "--output-dir",
+                str(tmp_path / "out"),  # redirect away from /mnt/d in the real config
                 "--lodestar-box-size",
                 "99",
             ],
