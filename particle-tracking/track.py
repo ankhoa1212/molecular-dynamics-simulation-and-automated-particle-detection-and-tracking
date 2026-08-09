@@ -20,6 +20,12 @@ from detectors_common.rfdetr_loader import (
 from detectors_common.lodestar_loader import get_lodestar_model, detect_lodestar
 from detectors_common.tiling import detect_with_tiling
 from detectors_common.defaults import load_detector_config
+from detectors_common.scale_derivation import (
+    resolve_box_size,
+    resolve_nms_distance,
+    resolve_tile_size,
+)
+from detectors_common.dataset_profile import load_dataset_profile as load_detection_profile
 
 # Re-exported from trackers_common — edit there, not here. particle-tracking/.venv
 # has trackers-common installed natively (module-scope import, same as
@@ -28,6 +34,8 @@ from detectors_common.defaults import load_detector_config
 # wrapper needed there either — see that package's README).
 from trackers_common.linking import bridge_track_gaps, link_and_filter_tracks
 from trackers_common.defaults import load_tracking_config
+from trackers_common.scale_derivation import resolve_search_range, resolve_memory
+from trackers_common.dataset_profile import load_dataset_profile as load_tracking_profile
 
 # Maps canonical detector_defaults.yaml keys to this config's own dotted path.
 # particle-tracking nests detector params by pipeline concern (detection.*),
@@ -742,6 +750,21 @@ def main():
     args = parser.parse_args()
     cfg = load_config(args.config)
 
+    # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
+    # nms_distance/tile_size/search_range/memory each derive from it via
+    # detectors_common/trackers_common's shared scale_derivation modules,
+    # sitting between an explicit config value (still always wins) and
+    # today's hardcoded defaults (still applied unchanged when no profile is
+    # referenced at all). Loaded once per run, via each package's own loader
+    # (duplicated by design — see dataset-profiles/README.md).
+    dataset_profile_path = cfg_get(cfg, "dataset_profile", default=None)
+    detection_profile = None
+    tracking_profile = None
+    if dataset_profile_path is not None:
+        profile_path = resolve_path(dataset_profile_path)
+        detection_profile = load_detection_profile(profile_path)
+        tracking_profile = load_tracking_profile(profile_path)
+
     # --test wins over --preview (mirrors --test's existing precedence over --max-frames)
     preview_active = args.preview is not None and not args.test
 
@@ -779,13 +802,26 @@ def main():
         or cfg_get(cfg, "output", "dir", default="evaluation/results/tracking_output")
     )
     tracker = args.tracker or cfg_get(cfg, "tracking", "tracker", default="trackpy")
+    # search_range: explicit config value -> dataset-profile-derived (spacing_px * 0.5)
+    # -> trackers_common's own hardcoded default (25.0, matching this file's
+    # long-standing config.yaml literal) when neither applies.
     search_range = (
         args.search_range
         if args.search_range is not None
-        else cfg_get(cfg, "tracking", "search_range", default=10.0)
+        else resolve_search_range(
+            cfg_get(cfg, "tracking", "search_range", default=None), tracking_profile
+        )
     )
+    # memory: explicit config value -> trackers_common's per-model canonical
+    # tuning (tracker_defaults.yaml) -- never derived from the profile itself
+    # (R9: occlusion/blinking tolerance has no spatial grounding), but still
+    # resolved through the same profile-aware call shape for consistency.
     memory = (
-        args.memory if args.memory is not None else cfg_get(cfg, "tracking", "memory", default=3)
+        args.memory
+        if args.memory is not None
+        else resolve_memory(
+            cfg_get(cfg, "tracking", "memory", default=None), tracking_profile, model_type
+        )
     )
     stub_filter = (
         args.stub_filter
@@ -830,24 +866,32 @@ def main():
         if args.track_activation_threshold is not None
         else cfg_get(cfg, "tracking", "track_activation_threshold", default=0.25)
     )
-    # nms_distance/alpha fall back through detector_defaults.yaml's canonical
-    # values (via the shared key-path-mapped merge) before this file's own
-    # None default — CLI arg still wins over everything.
+    # alpha falls back through detector_defaults.yaml's canonical value (via
+    # the shared key-path-mapped merge) before this file's own None default —
+    # CLI arg still wins over everything. alpha is not part of scale
+    # derivation (R6 only covers box_size/nms_distance/tile_size).
     _lodestar_defaults = load_detector_config("lodestar", cfg, _LODESTAR_KEY_MAP)
     lodestar_alpha = (
         args.lodestar_alpha
         if args.lodestar_alpha is not None
         else _lodestar_defaults.get("alpha", 0.5)
     )
+    # nms_distance/box_size: explicit config value -> dataset-profile-derived
+    # -> detectors_common's own hardcoded default (30/40, matching
+    # detector_defaults.yaml's canonical lodestar values) when neither applies.
     lodestar_nms_distance = (
         args.lodestar_nms_distance
         if args.lodestar_nms_distance is not None
-        else _lodestar_defaults.get("nms_distance")
+        else resolve_nms_distance(
+            cfg_get(cfg, "detection", "nms_distance", default=None), detection_profile
+        )
     )
     lodestar_box_size = (
         args.lodestar_box_size
         if args.lodestar_box_size is not None
-        else _lodestar_defaults.get("box_size", 40)
+        else resolve_box_size(
+            cfg_get(cfg, "detection", "box_size", default=None), detection_profile
+        )
     )
     lodestar_fp16 = args.lodestar_fp16 or cfg_get(cfg, "detection", "fp16", default=False)
     save_trajectory_image = args.save_trajectory_image or cfg_get(
@@ -867,7 +911,11 @@ def main():
         if not args.hexatic_order:
             save_hexatic_order = False
     tiling_enabled = cfg_get(cfg, "tiling", "enabled", default=False)
-    tiling_tile_size = cfg_get(cfg, "tiling", "tile_size", default=1024)
+    # tile_size's final value needs the source frame's own dimensions (the
+    # profile-derived tier's clamp ceiling), so only the explicit config value
+    # is captured here — full resolution happens per-input, once frame
+    # dimensions are known (see resolve_tile_size call below).
+    tiling_explicit_tile_size = cfg_get(cfg, "tiling", "tile_size", default=None)
     tiling_overlap = cfg_get(cfg, "tiling", "overlap", default=100)
     tiling_nms_threshold = cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
     max_frames = resolve_preview_max_frames(args.test, args.preview, args.max_frames)
@@ -1044,6 +1092,15 @@ def main():
             print(f"Crop:      x={crop_x} y={crop_y} w={crop_w} h={crop_h} (frame {fw}×{fh})")
         if tiling_enabled:
             fh, fw = frames[0].shape[:2]
+            # tile_size: explicit config value -> dataset-profile-derived
+            # (clamped to this input's own frame dimensions) -> this file's
+            # own hardcoded default (1024, matching config.yaml's long-
+            # standing literal) when neither applies.
+            tiling_tile_size = int(
+                resolve_tile_size(
+                    tiling_explicit_tile_size, detection_profile, fw, fh, hardcoded_default=1024
+                )
+            )
             stride = tiling_tile_size - tiling_overlap
             nx = len(list(range(0, fw - tiling_tile_size, stride))) + 1
             ny = len(list(range(0, fh - tiling_tile_size, stride))) + 1

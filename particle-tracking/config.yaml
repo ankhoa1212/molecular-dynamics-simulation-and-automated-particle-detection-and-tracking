@@ -2,8 +2,14 @@
 # All paths are relative to the particle-tracking/ directory unless absolute.
 # CLI arguments always override values set here.
 
-# Input: path to video, TIFF stack, or folder of images 
+# Input: path to video, TIFF stack, or folder of images
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
+
+# Dataset scale profile: path to a YAML file with size_px/spacing_px (see
+# dataset-profiles/README.md). When set, drives box_size/nms_distance/
+# tile_size/search_range/memory derivation for any of those left unset below.
+# Unset by default -- no single profile is "live" for every user/dataset.
+# dataset_profile: ../dataset-profiles/<your-profile>.yaml
 
 # Model:
 model:
@@ -44,7 +50,12 @@ crop:
 # nms_threshold: IoU threshold for deduplicating detections in overlap regions.
 tiling:
   enabled: true
-  tile_size: 1024
+  # tile_size intentionally NOT set here -- leaving it unset lets track.py derive
+  # it from dataset_profile's spacing_px (clamped to this input's own frame
+  # dimensions), falling back to today's 1024 default if no profile is
+  # referenced. Set tile_size here only to override that derived/default value
+  # for a specific investigation -- any value set here always wins.
+  # tile_size: 1024
   overlap: 100
   nms_threshold: 0.3
 
@@ -56,8 +67,12 @@ detection:
 tracking:
   tracker: trackpy  # trackpy (default, offline) | bytetrack (online)
 
-  # Trackpy: maximum pixel distance a particle can move between frames
-  search_range: 25.0
+  # search_range intentionally NOT set here -- leaving it unset lets track.py
+  # derive it from dataset_profile's spacing_px (spacing_px * 0.5), falling
+  # back to today's 25.0 default if no profile is referenced. Set search_range
+  # here only to override that derived/default value for a specific
+  # investigation -- any value set here always wins.
+  # search_range: 25.0
 
   # Trackpy: number of consecutive frames a particle may be missing before its track ends
   memory: 5

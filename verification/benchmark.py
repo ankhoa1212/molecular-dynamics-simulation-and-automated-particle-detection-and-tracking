@@ -138,6 +138,8 @@ from scipy.spatial import cKDTree
 # all three venvs. See trackers-common/README.md.
 from trackers_common.linking import link_and_filter_tracks
 from trackers_common.defaults import DEFAULT_KEY_PATH_MAP, load_tracking_config
+from trackers_common.scale_derivation import resolve_search_range, resolve_diameter, resolve_memory
+from trackers_common.dataset_profile import load_dataset_profile as load_tracking_profile
 
 # ---------------------------------------------------------------------------
 # Re-exported from detectors_common — edit there, not here.
@@ -208,6 +210,56 @@ def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshol
     from detectors_common.tiling import detect_with_tiling as _impl
 
     return _impl(model, frame, threshold, tile_size, overlap, nms_threshold)
+
+
+def load_detection_profile(path):
+    from detectors_common.dataset_profile import load_dataset_profile as _impl
+
+    return _impl(path)
+
+
+# resolve_box_size/resolve_nms_distance/resolve_tile_size below each short-
+# circuit on the explicit-value and no-profile tiers *before* importing
+# detectors_common.scale_derivation -- unlike the other detectors_common
+# wrappers above, these three must stay import-safe even when no model venv
+# has been entered (this file's own test suite exercises them directly,
+# never re-execs, and verification/.venv never installs detectors_common).
+# The lazy import is only reached once a dataset profile is actually
+# referenced, at which point detectors_common is genuinely needed to derive
+# the value -- callers exercising profile derivation must be running under
+# (or mocking) a venv that has it, same as detect_lodestar/get_rfdetr_model.
+
+
+def resolve_box_size(explicit_value, profile, hardcoded_default=40):
+    if explicit_value is not None:
+        return explicit_value
+    if profile is None:
+        return hardcoded_default
+    from detectors_common.scale_derivation import resolve_box_size as _impl
+
+    return _impl(explicit_value, profile, hardcoded_default=hardcoded_default)
+
+
+def resolve_nms_distance(explicit_value, profile, hardcoded_default=30):
+    if explicit_value is not None:
+        return explicit_value
+    if profile is None:
+        return hardcoded_default
+    from detectors_common.scale_derivation import resolve_nms_distance as _impl
+
+    return _impl(explicit_value, profile, hardcoded_default=hardcoded_default)
+
+
+def resolve_tile_size(explicit_value, profile, frame_width, frame_height, hardcoded_default=512):
+    if explicit_value is not None:
+        return explicit_value
+    if profile is None:
+        return hardcoded_default
+    from detectors_common.scale_derivation import resolve_tile_size as _impl
+
+    return _impl(
+        explicit_value, profile, frame_width, frame_height, hardcoded_default=hardcoded_default
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +656,12 @@ def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=90):
 
 
 def _run_tracking_metrics(
-    all_detections_by_frame, gt_tracks_path, cfg, model_type, derived_psf_sigma_px=None
+    all_detections_by_frame,
+    gt_tracks_path,
+    cfg,
+    model_type,
+    derived_psf_sigma_px=None,
+    profile=None,
 ):
     """Link detections via trackers_common's shared production linker
     (through this module's own subprocess/timeout/memory-safety retry
@@ -627,6 +684,12 @@ def _run_tracking_metrics(
             synthetic.psf.sigma_px for the match-threshold calculation --
             e.g. a value derived from --lammps-in, matching whatever width
             render.py actually rendered the frames at.
+        profile: dataset profile dict (size_px/spacing_px), or None. When
+            given, an unset search_range derives from it (spacing_px * 0.5)
+            before falling back to the per-model canonical tuning below.
+            memory never derives from it (R9) -- still resolved through the
+            same profile-aware call shape, but always the per-model canonical
+            value regardless of profile.
 
     Returns:
         dict of tracking metric values, or None if prerequisites missing.
@@ -668,12 +731,24 @@ def _run_tracking_metrics(
     # a caller-supplied value at the mapped dotted path always wins) — same
     # override capability operators had before this change.
     tracking_defaults = load_tracking_config(model_type, cfg, DEFAULT_KEY_PATH_MAP)
-    # search_range/memory always resolve via load_tracking_config's own
-    # FALLBACK_MODEL_TYPE fallback (rf-detr's canonical values) -- these
-    # literal fallbacks are a defensive floor only, reachable in practice
-    # only if tracker_defaults.yaml itself were missing the rf-detr entry.
-    search_range = tracking_defaults.get("search_range", 15)
-    memory = tracking_defaults.get("memory", 3)
+    # search_range: explicit config value -> dataset-profile-derived
+    # (spacing_px * 0.5) -> the per-model canonical tuning above (unchanged
+    # fallback behavior when no profile is referenced). The canonical-only
+    # merge (empty tool_config) isolates the fallback tier from cfg's own
+    # override, which resolve_search_range's own explicit-value tier already
+    # covers via explicit_search_range below.
+    explicit_search_range = _cfg_get(cfg, "tracking", "search_range", default=None)
+    canonical_search_range = load_tracking_config(model_type, {}, DEFAULT_KEY_PATH_MAP).get(
+        "search_range", 15
+    )
+    search_range = resolve_search_range(
+        explicit_search_range, profile, hardcoded_default=canonical_search_range
+    )
+    # memory: explicit config value -> the per-model canonical tuning --
+    # never derived from the profile itself (R9), but still resolved through
+    # the same profile-aware call shape for consistency.
+    explicit_memory = _cfg_get(cfg, "tracking", "memory", default=None)
+    memory = resolve_memory(explicit_memory, profile, model_type, hardcoded_default=3)
     stub_filter = tracking_defaults.get("stub_filter")
     adaptive_stop = tracking_defaults.get("adaptive_stop")
     adaptive_step = tracking_defaults.get("adaptive_step", 0.95)
@@ -1046,6 +1121,24 @@ def main():
     model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
     match_distance = _cfg_get(cfg, "match_distance", default=10)
 
+    # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
+    # nms_distance/tile_size/diameter/search_range/memory each derive from it
+    # via detectors_common/trackers_common's shared scale_derivation modules,
+    # sitting between an explicit config value (still always wins) and
+    # today's hardcoded defaults (still applied unchanged when no profile is
+    # referenced at all). Loaded once per run, via each package's own loader
+    # (duplicated by design — see dataset-profiles/README.md). Top-level in
+    # config.yaml (a sibling of benchmark:), not nested under it.
+    dataset_profile_path = _cfg_get(full_cfg, "dataset_profile", default=None)
+    detection_profile = None
+    tracking_profile = None
+    if dataset_profile_path is not None:
+        profile_path = Path(dataset_profile_path)
+        if not profile_path.is_absolute():
+            profile_path = SCRIPT_DIR / profile_path
+        detection_profile = load_detection_profile(profile_path)
+        tracking_profile = load_tracking_profile(profile_path)
+
     # Shared defaults every branch below may override. `tiling_enabled = False`
     # for lodestar/trackpy is a defensive belt-and-suspenders default, not just
     # documentation — it means the detection dispatch's `elif tiling_enabled:`
@@ -1067,18 +1160,28 @@ def main():
         threshold = _cfg_get(cfg, "lodestar", "threshold", default=0.1)
         _lodestar_defaults = _load_lodestar_defaults(cfg)
         alpha = _lodestar_defaults.get("alpha", 0.5)
-        nms_distance = _lodestar_defaults.get("nms_distance")
+        # nms_distance: explicit benchmark.lodestar.nms_distance config value
+        # always wins; otherwise derive from dataset_profile (if referenced),
+        # else detectors_common's own hardcoded default (30, matching
+        # detector_defaults.yaml's canonical lodestar value).
+        nms_distance = resolve_nms_distance(
+            _cfg_get(cfg, "lodestar", "nms_distance", default=None), detection_profile
+        )
         # box_size: an explicit benchmark.lodestar.box_size config value always wins;
-        # otherwise derive it from the same psf_sigma_px this file's tracking-metrics
-        # match-threshold already uses (synthetic.psf_sigma -> synthetic.psf.sigma_px ->
-        # 5.0), converted to a pixel diameter via render.py's FWHM/sigma relationship --
-        # see docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
+        # otherwise derive it from dataset_profile if referenced, else from the same
+        # psf_sigma_px this file's tracking-metrics match-threshold already uses
+        # (synthetic.psf_sigma -> synthetic.psf.sigma_px -> 5.0), converted to a pixel
+        # diameter via render.py's FWHM/sigma relationship -- see
+        # docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
         box_size = _cfg_get(cfg, "lodestar", "box_size", default=None)
         if box_size is None:
-            sys.path.insert(0, str(SCRIPT_DIR))
-            from render import FWHM_TO_SIGMA
+            if detection_profile is not None:
+                box_size = resolve_box_size(None, detection_profile)
+            else:
+                sys.path.insert(0, str(SCRIPT_DIR))
+                from render import FWHM_TO_SIGMA
 
-            box_size = _resolve_psf_sigma_px(full_cfg) * FWHM_TO_SIGMA
+                box_size = _resolve_psf_sigma_px(full_cfg) * FWHM_TO_SIGMA
         fp16 = _cfg_get(cfg, "lodestar", "fp16", default=False)
         device_raw = args.device or _cfg_get(cfg, "lodestar", "device", default=None)
         # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
@@ -1089,7 +1192,13 @@ def main():
         # absence, not a placeholder path (see plan KTDs). device is computed
         # (shared default above) but unused — trackpy is CPU-only.
         checkpoint = None
-        diameter = _cfg_get(cfg, "trackpy", "diameter", default=15)
+        # diameter: explicit benchmark.trackpy.diameter config value always wins;
+        # otherwise derive from dataset_profile (if referenced), else
+        # trackers_common's own hardcoded default (15, matching this file's
+        # long-standing "not yet empirically tuned" literal).
+        diameter = resolve_diameter(
+            _cfg_get(cfg, "trackpy", "diameter", default=None), tracking_profile
+        )
         minmass = _cfg_get(cfg, "trackpy", "minmass", default=None)
         separation = _cfg_get(cfg, "trackpy", "separation", default=None)
     else:
@@ -1100,7 +1209,10 @@ def main():
         num_queries = _cfg_get(cfg, "num_queries", default=300)
         threshold = _cfg_get(cfg, "threshold", default=0.3)
         tiling_enabled = _cfg_get(cfg, "tiling", "enabled", default=True)
-        tile_size = _cfg_get(cfg, "tiling", "tile_size", default=512)
+        # tile_size's final value needs a frame's own dimensions (the
+        # profile-derived tier's clamp ceiling) -- resolved just below, once
+        # the first frame is available.
+        _explicit_tile_size = _cfg_get(cfg, "tiling", "tile_size", default=None)
         overlap = _cfg_get(cfg, "tiling", "overlap", default=50)
         nms_threshold = _cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
 
@@ -1123,6 +1235,21 @@ def main():
     if not tiff_files:
         print(f"Error: no frame_*.png files in {frames_dir}")
         sys.exit(1)
+
+    if model_type not in ("lodestar", "trackpy"):
+        # tile_size: explicit benchmark.tiling.tile_size config value always
+        # wins; otherwise derive from dataset_profile (clamped to this run's
+        # own frame dimensions), else detectors_common's own hardcoded
+        # default (512, matching this file's long-standing literal). Frame
+        # dimensions are only needed for the profile-derived tier -- skip
+        # loading a frame at all when an explicit value or no profile makes
+        # that unnecessary.
+        if _explicit_tile_size is None and detection_profile is not None:
+            _first_frame = _load_frame_rgb(tiff_files[0])
+            _fh, _fw = _first_frame.shape[:2]
+        else:
+            _fw = _fh = None
+        tile_size = int(resolve_tile_size(_explicit_tile_size, detection_profile, _fw, _fh))
 
     print(f"Model type: {model_type}")
     if model_type == "trackpy":
@@ -1285,6 +1412,7 @@ def main():
             full_cfg,
             model_type,
             derived_psf_sigma_px=derived_psf_sigma_px,
+            profile=tracking_profile,
         )
         if tracking_metrics:
             tracking_csv_path = output_dir / f"tracking_metrics_{model_type}.csv"
@@ -1307,8 +1435,23 @@ def main():
         print("\n(Tracking metrics skipped — pass --ground-truth-tracks to enable)")
 
     if args.save_video:
-        video_search_range = _cfg_get(full_cfg, "tracking", "search_range", default=15)
-        video_memory = _cfg_get(full_cfg, "tracking", "memory", default=3)
+        # search_range/memory: explicit config value -> dataset-profile-derived
+        # (search_range only -- memory never derives from the profile, R9) ->
+        # this call site's own hardcoded default (15/3, matching its
+        # long-standing literals) when neither applies. Independent of
+        # _run_tracking_metrics's per-model canonical tuning above (see
+        # _link_df_kwargs's own docstring).
+        video_search_range = resolve_search_range(
+            _cfg_get(full_cfg, "tracking", "search_range", default=None),
+            tracking_profile,
+            hardcoded_default=15,
+        )
+        video_memory = resolve_memory(
+            _cfg_get(full_cfg, "tracking", "memory", default=None),
+            tracking_profile,
+            model_type,
+            hardcoded_default=3,
+        )
         _write_tracking_video(
             tiff_files,
             all_boxes_by_frame,

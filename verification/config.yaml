@@ -1,6 +1,14 @@
 # Verification pipeline configuration
 # All paths are relative to the verification/ directory unless absolute.
 
+# Dataset scale profile: path to a YAML file with size_px/spacing_px (see
+# dataset-profiles/README.md). When set, drives box_size/nms_distance/
+# tile_size/diameter/search_range/memory derivation for any of those left
+# unset below. Unset by default -- no single profile is "live" for every
+# user/dataset. dataset-profiles/synthetic-default.yaml (from U2) is a
+# reasonable example value for this file's own synthetic default trajectory.
+# dataset_profile: ../dataset-profiles/synthetic-default.yaml
+
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
   render_strategy: procedural   # procedural | deeptrack | randomized
@@ -299,7 +307,12 @@ benchmark:
     # synthetic.image_width/image_height or particle density changes
     # significantly. See docs/superpowers/specs/2026-08-07-rf-detr-
     # tiling-fix-design.md.
-    tile_size: 160
+    # tile_size intentionally NOT set here -- leaving it unset lets benchmark.py
+    # derive it from dataset_profile's spacing_px (clamped to this run's own
+    # frame dimensions), falling back to today's 512 default if no profile is
+    # referenced. Set tile_size here only to override that derived/default
+    # value for a specific investigation -- any value set here always wins.
+    # tile_size: 160
     overlap: 50
     nms_threshold: 0.3
 
@@ -308,7 +321,12 @@ benchmark:
     checkpoint: ../data-setup/models/lodestar_model_15/model.pt
     threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
     alpha: 0.9                # weight score exponent
-    nms_distance: 5           # pixels. Was 30 (matching particle-tracking/{lodestar,multi_lodestar,
+    # nms_distance intentionally NOT set here -- leaving it unset lets benchmark.py
+    # derive it from dataset_profile's size_px/spacing_px, falling back to today's
+    # 30px default (detector_defaults.yaml's canonical lodestar value) if no profile
+    # is referenced. Set nms_distance here only to override that derived/default
+    # value for a specific investigation -- any value set here always wins.
+    # nms_distance: 5          # pixels. Was 30 (matching particle-tracking/{lodestar,multi_lodestar,
                               # basic_lodestar}_config.yaml, tuned for a much sparser real dataset) --
                               # at this dataset's ~10.9px median nearest-neighbor spacing (psf_sigma=5,
                               # image_width=512), 30px suppressed almost every true detection down to
@@ -334,7 +352,13 @@ benchmark:
   # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
   # runs natively in verification/.venv, trackpy is already a dependency here) ---
   trackpy:
-    diameter: 15               # must be odd — trackpy.locate raises otherwise. Documented starting
+    # diameter intentionally NOT set here -- leaving it unset lets benchmark.py
+    # derive it from dataset_profile's size_px (rounded to the nearest odd
+    # integer -- trackpy.locate requires one), falling back to today's 15px
+    # default if no profile is referenced. Set diameter here only to override
+    # that derived/default value for a specific investigation -- any value set
+    # here always wins.
+    # diameter: 15              # must be odd — trackpy.locate raises otherwise. Documented starting
                                 # value only, not yet empirically tuned against this repo's synthetic
                                 # frames (see docs/plans/2026-07-18-001-feat-trackpy-benchmark-comparison-plan.md);
                                 # should be somewhat larger than a particle's visible pixel diameter.
