@@ -318,6 +318,18 @@ tracks.csv  +  annotated video
                           Measure MOTA/IDF1/fragmentation; compare physics observables
 ```
 
+`run.sh` dispatches the labeling, tracking, and verification stages into their own subproject venvs, without needing to `cd` into each one manually:
+
+```bash
+./run.sh label ...       # -> data-setup/lodestar_autolabeler.py
+./run.sh track ...       # -> particle-tracking/track.py
+./run.sh render ...      # -> verification/render.py
+./run.sh benchmark ...   # -> verification/benchmark.py
+./run.sh compare ...     # -> verification/compare.py
+```
+
+RF-DETR training and LAMMPS simulation are separate workflows and aren't covered — run them directly from `rf-detr/` and `lammps-scripts/` as shown above.
+
 ---
 
 ## Contributing
