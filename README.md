@@ -364,6 +364,16 @@ After that, Black runs automatically on staged files. If it reformats anything, 
 
 Reports are written to `lint-reports/` (pylint text, JSON, and a summary). Fix any Black formatting issues with the command printed by the script, then re-run to confirm.
 
+### Testing
+
+CI runs the `rf-detr/`, `particle-tracking/`, `verification/`, and `detectors-common/` test suites on every push and PR, and blocks on failure — same as Black. Run them yourself before opening a PR:
+
+```bash
+cd <subproject> && uv run pytest tests/ -v
+```
+
+`data-setup/` and `yolov12/` have no test suite yet, and `lammps-scripts/` doesn't either despite having a `test/` directory (it currently holds only fixture data).
+
 ---
 
 ## Resources
