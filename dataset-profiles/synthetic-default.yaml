@@ -1,0 +1,5 @@
+size_px: 5.0
+spacing_px: 10.8658
+description: 'Baseline synthetic profile: today''s default psf_sigma=5.0 and the median
+  nearest-neighbor spacing of continuous_force_1500_5.0.lammpstrj at 512x512 (matches
+  AGENTS.md''s documented ~10.9px reference).'

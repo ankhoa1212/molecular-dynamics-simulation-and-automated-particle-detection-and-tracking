@@ -1,0 +1,79 @@
+# Particle Tracking Configuration -- U8 real-dataset validation (R13, AE5)
+#
+# Proves the scale-derivation mechanism (dataset-profiles/real-5um.yaml) on a
+# real particle size genuinely different from lodestar_model_15's tuned 2um
+# default, using ONLY a profile change -- no manual box_size/nms_distance/
+# search_range overrides anywhere below. See
+# dataset-profiles/real-5um-validation-results.md for the full writeup.
+#
+# All paths are relative to the particle-tracking/ directory unless absolute.
+# CLI arguments always override values set here.
+
+# Input: an 8-frame extracted subset (frames 0-7) of
+# particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif -- the
+# full file is ~4GB (300 pages of 2200x3200 uint16), too large to load in
+# one shot (load_frames() calls tifffile.imread() on the whole stack). The
+# subset was extracted safely via tifffile.imread(path, key=slice(0, 8)),
+# which reads only the requested pages. Not committed (data/ and *.tif are
+# both gitignored) -- regenerate via:
+#   uv run python -c "import tifffile; tifffile.imwrite(
+#       'data/raw/scratch/real_5um_subset/real_5um_frames_00-07.tif',
+#       tifffile.imread('data/raw/60% Intensity PS 5um Video Trial 1.tif', key=slice(0, 8)))"
+input: "data/raw/scratch/real_5um_subset/real_5um_frames_00-07.tif"
+
+# Dataset scale profile: the whole point of this config. size_px/spacing_px
+# were measured directly from this same video (see the profile's own
+# description) via verification/calibrate_psf.py -- box_size/nms_distance/
+# search_range below are all left unset so they derive from it.
+dataset_profile: ../dataset-profiles/real-5um.yaml
+
+# Model: lodestar_model_15, the same checkpoint/canonical tuning
+# (detector_defaults.yaml's alpha=0.9/nms_distance=30, autolabel's cutoff=0.1)
+# every other lodestar config in this repo uses -- unchanged here. It was
+# trained on the 2um dataset; this run deliberately does NOT retrain or swap
+# it (out of scope per the plan) -- only the profile-derived scale
+# parameters change.
+model:
+  type: lodestar
+  checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+  device: "0"  # "0" for first GPU, "cpu" for CPU-only
+
+# Detection:
+detection:
+  # threshold intentionally NOT set -- track.py falls back to the LodeSTAR
+  # autolabel prior cutoff (0.1, from data-setup/configs/
+  # autolabel_2um_lodestar_model_15.json) when no explicit/config threshold
+  # is given, same as every other lodestar config in this repo.
+  # alpha intentionally NOT set -- falls back to detector_defaults.yaml's
+  # canonical 0.9.
+  # box_size / nms_distance intentionally NOT set -- these are exactly what
+  # this validation is proving: they derive from dataset_profile above
+  # (box_size = size_px * 2.355 ~= 16.5px, nms_distance =
+  # min(size_px, spacing_px * 0.5) ~= 6.99px) instead of lodestar_model_15's
+  # usual 2um-tuned values.
+  fp16: true
+
+# Tracking:
+tracking:
+  tracker: trackpy
+
+  # search_range intentionally NOT set -- derives from dataset_profile's
+  # spacing_px * 0.5 (~60.5px) instead of the canonical 20.0 (lodestar's
+  # 2um-tuned value).
+  memory: 5           # generous relative to this run's own 8-frame clip
+  stub_filter: 2       # short tracks are expected and fine at only 8 frames
+  adaptive_stop: 1.0
+  adaptive_step: 0.95
+
+# Output:
+output:
+  dir: output/real_5um_validation
+
+  save_video: true          # tracking_visualization.mp4
+  video_labels: false
+  fps: 5                    # slow playback for an 8-frame clip
+
+  trace_length: 8
+
+  save_trajectory_image: true   # trajectories.png
+  trajectory_colormap: plasma

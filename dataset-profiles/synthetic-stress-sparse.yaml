@@ -1,0 +1,7 @@
+size_px: 5.0
+spacing_px: 31.8742
+description: 'Sparser stress-test profile (U7, R12): same psf_sigma=5.0 as synthetic-default,
+  but only 60 of continuous_force_1500_5.0.lammpstrj''s 1446 particles (random subsample,
+  seed 42, fixed IDs across frames), same 200x200 box mapped to the same 512x512 image.
+  Exercises detectors_common.scale_derivation.resolve_tile_size''s frame-dimensions-ceiling
+  clamp regime (spacing_px*20 > frame size).'

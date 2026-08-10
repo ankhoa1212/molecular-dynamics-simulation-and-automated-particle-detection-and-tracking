@@ -8,6 +8,7 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
 6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error across `benchmark.py`'s per-model-type outputs, for comparing detector performance side by side.
+7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
 
 ## Setup
 
@@ -149,6 +150,16 @@ Outputs (named per `--model-type` so a run of one model doesn't overwrite the ot
 **Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
 
 **Note:** MOTA/IDF1 are skipped (with a printed warning, not a crash) above a safe detection density or distinct-track-id count — building motmetrics' accumulator at this repo's default trajectory density (~1446 particles/frame) can grow memory into the double-digit-GB range even when the linking step itself succeeds. This is independent of `--save-video`'s own trajectory overlay, which uses a separate, always-attempted linking call and is unaffected by this guard (see `_run_tracking_metrics` in `benchmark.py`, and the multiprocessing/CUDA notes in `AGENTS.md`).
+
+### Dataset scale profile
+
+`dataset_profile` (top-level key in `config.yaml`, unset by default) points to a scale profile
+YAML (`size_px`/`spacing_px` — see `dataset-profiles/README.md`). When set, it drives
+`box_size`/`nms_distance`/`tile_size` (LodeSTAR/RF-DETR detection) and `diameter`/`search_range`
+(trackpy) for any of those left unset elsewhere in `config.yaml`; an explicit config value always
+wins over the derived one, and this file's own long-standing hardcoded defaults still apply when
+no profile is referenced. `dataset_profile_builder.py` builds a profile for a LAMMPS-derived
+synthetic dataset; a real dataset's `size_px`/`spacing_px` come from `calibrate_psf.py` instead.
 
 ### Model Selection
 

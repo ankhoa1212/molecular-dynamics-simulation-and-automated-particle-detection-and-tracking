@@ -1,0 +1,32 @@
+[project]
+name = "data-setup"
+version = "0.1.0"
+description = "LodeSTAR auto-labeling pipeline for RF-DETR/YOLO training data (crop tool, LodeSTAR training, TIFF/PNG autolabeler)"
+requires-python = ">=3.11"
+dependencies = [
+    "tifffile",
+    "opencv-python",
+    "numpy",
+    "pillow",
+    "pandas",
+    "trackpy",
+    "ultralytics",
+    "deeplay",
+    "deeptrack",
+    "lightning[extra]",
+    "mlflow",
+    "tqdm",
+    "matplotlib",
+    "detectors-common",
+]
+
+[tool.uv.sources]
+detectors-common = { path = "../detectors-common", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

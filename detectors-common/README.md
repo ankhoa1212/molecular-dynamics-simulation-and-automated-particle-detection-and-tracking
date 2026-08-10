@@ -34,9 +34,20 @@ document is long gone by the time you're reading this:
    stay lazy, function-local imports) is what makes it safe to install into
    any CUDA-sensitive venv — a heavier package would undermine that.
 
+## Dataset scale profile derivation
+
+`dataset_profile.py` loads a per-dataset scale profile (`size_px`/`spacing_px`
+pixel values — see `dataset-profiles/README.md` for the file format).
+`scale_derivation.py` derives `box_size`/`nms_distance`/`tile_size` from that
+profile via a three-tier chain (explicit config value > profile-derived value >
+today's hardcoded default), so behavior is unchanged for any caller that
+doesn't reference a profile. The tracking-side counterparts (`search_range`,
+`diameter`, `memory`) live in the sibling `trackers-common` package, not here.
+
 ## Dependencies
 
-`numpy` and `supervision` only. `torch`, `rfdetr`, and `deeplay` are never
-declared here — every function that needs them imports lazily inside its own
-body, assuming the caller's environment already has them importable (via its
-own dependencies, or via this package's site-packages-injection helpers).
+`numpy`, `supervision`, and `pyyaml` (for `dataset_profile.py`'s loader).
+`torch`, `rfdetr`, and `deeplay` are never declared here — every function
+that needs them imports lazily inside its own body, assuming the caller's
+environment already has them importable (via its own dependencies, or via
+this package's site-packages-injection helpers).

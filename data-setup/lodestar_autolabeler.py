@@ -17,6 +17,15 @@ import cv2  # pylint: disable=no-member
 import tifffile
 from tqdm import tqdm
 
+# box_size/nms_distance resolution mirrors particle-tracking/track.py's
+# equivalent LodeSTAR wiring: an explicit value (CLI, or JSON via the
+# --config merge below) always wins; otherwise, when --dataset-profile is
+# supplied, both derive from it; otherwise each falls back to today's
+# existing hardcoded default (40 / 0.0), applied in _resolve_scale_params
+# below rather than baked into argparse -- see that function's docstring.
+from detectors_common.scale_derivation import resolve_box_size, resolve_nms_distance
+from detectors_common.dataset_profile import load_dataset_profile
+
 # Reuse shared utilities from lodestar_utils
 from lodestar_utils import _nms, _load_model, _SaveConfig, _write_frame
 
@@ -50,9 +59,25 @@ def parse_args():
         default=None,
         help="Path to a JSON configuration file containing these arguments.",
     )
+    parser.add_argument(
+        "--dataset-profile",
+        type=str,
+        default=None,
+        help=(
+            "Path to a dataset scale profile YAML (size_px/spacing_px). When set, "
+            "--box-size/--nms-distance derive from it via detectors_common.scale_derivation "
+            "unless explicitly passed (directly, or via --config)."
+        ),
+    )
     parser.add_argument("--nth", type=int, default=5, help="Save every nth frame (default: 5).")
     parser.add_argument(
-        "--box-size", type=int, default=40, help="Fixed bounding box size in pixels."
+        "--box-size",
+        type=int,
+        default=None,
+        help=(
+            "Fixed bounding box size in pixels. Default (40) is applied after "
+            "--config/--dataset-profile resolution, not here -- see main()."
+        ),
     )
     parser.add_argument(
         "--detect-batch-size", type=int, default=4, help="Batch size for detection to prevent OOM."
@@ -72,8 +97,12 @@ def parse_args():
     parser.add_argument(
         "--nms-distance",
         type=float,
-        default=0.0,
-        help="Minimum pixel distance between detections (NMS). 0 disables NMS.",
+        default=None,
+        help=(
+            "Minimum pixel distance between detections (NMS). 0 disables NMS. "
+            "Default (0.0) is applied after --config/--dataset-profile resolution, "
+            "not here -- see main()."
+        ),
     )
     parser.add_argument(
         "--plot",
@@ -428,39 +457,83 @@ def process_png_frames(png_files, model, args, png_dir):
             _write_frame(img_out_path, frame_norm, frame_dets, cfg)
 
 
+def _resolve_scale_params(args):
+    """Resolve args.box_size/args.nms_distance in place via the shared precedence chain.
+
+    Chain (mirrors particle-tracking/track.py's LodeSTAR box_size/nms_distance
+    wiring, via detectors_common.scale_derivation):
+
+        1. CLI-explicit value -- always wins.
+        2. --config JSON value -- merged into args.box_size/args.nms_distance
+           by the JSON-merge block in main() *before* this function runs, so
+           by this point args.box_size/args.nms_distance already reflect
+           "CLI-explicit-or-JSON" (CLI still wins over JSON, since the merge
+           only overwrites a still-None value).
+        3. --dataset-profile-derived value, if --dataset-profile was supplied.
+        4. Today's existing hardcoded default (40 / 0.0), unchanged from
+           pre-plan behavior when no profile is referenced (regression
+           requirement).
+
+    Must run after the --config JSON merge and before any code reads
+    args.box_size/args.nms_distance as a plain number (both start out as
+    None from argparse now -- see parse_args).
+    """
+    profile = load_dataset_profile(args.dataset_profile) if args.dataset_profile else None
+    args.box_size = resolve_box_size(args.box_size, profile, hardcoded_default=40)
+    args.nms_distance = resolve_nms_distance(args.nms_distance, profile, hardcoded_default=0.0)
+
+
+def _apply_config_file(args, config_path):
+    """Merge a JSON config file's values into `args` in place.
+
+    CLI-explicit values always win: a key is only overwritten from the JSON
+    file when the current value is still `None` (never passed on the CLI) or
+    equals its known argparse default (the pre-existing "was this explicitly
+    passed or just sitting at its default" heuristic -- see the module
+    docstring note near --box-size/--nms-distance's argparse definitions for
+    why those two keys are deliberately excluded from this heuristic).
+    """
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_data = json.load(f)
+
+    defaults = {
+        "nth": 5,
+        "detect_batch_size": 4,
+        "alpha": 0.5,
+        "cutoff": 0.5,
+        "radius_scale": 1.0,
+        "min_box_size": 0.0,
+        "plot": False,
+        "use_radius": False,
+        "fp16": False,
+        "compile": False,
+    }
+    # box_size/nms_distance are deliberately absent from `defaults` above:
+    # their argparse defaults are now None (not 40/0.0, see parse_args),
+    # so "current_val is None" alone already distinguishes "never passed"
+    # from "explicitly passed" for these two keys -- no need for (and no
+    # risk from) the equality-with-default heuristic the other keys above
+    # still rely on. See _resolve_scale_params for where 40/0.0 finally
+    # apply.
+
+    for key, value in config_data.items():
+        current_val = getattr(args, key, None)
+        # If the current value is the default or None, overwrite it with JSON value
+        if current_val is None or (key in defaults and current_val == defaults[key]):
+            setattr(args, key, value)
+
+
 def main():
     """Entry point: load model and dispatch to TIFF or PNG processing."""
     args = parse_args()
 
     # Load from config file if provided
     if args.config:
-        if not os.path.exists(args.config):
-            raise FileNotFoundError(f"Config file not found: {args.config}")
-        with open(args.config, "r", encoding="utf-8") as f:
-            config_data = json.load(f)
+        _apply_config_file(args, args.config)
 
-        parser = argparse.ArgumentParser()  # dummy to get defaults
-
-        defaults = {
-            "nth": 5,
-            "box_size": 40,
-            "detect_batch_size": 4,
-            "alpha": 0.5,
-            "cutoff": 0.5,
-            "nms_distance": 0.0,
-            "radius_scale": 1.0,
-            "min_box_size": 0.0,
-            "plot": False,
-            "use_radius": False,
-            "fp16": False,
-            "compile": False,
-        }
-
-        for key, value in config_data.items():
-            current_val = getattr(args, key, None)
-            # If the current value is the default or None, overwrite it with JSON value
-            if current_val is None or (key in defaults and current_val == defaults[key]):
-                setattr(args, key, value)
+    _resolve_scale_params(args)
 
     if not args.model:
         raise ValueError("--model (or 'model' in config) must be provided.")

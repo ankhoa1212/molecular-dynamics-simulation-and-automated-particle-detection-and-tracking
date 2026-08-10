@@ -7,6 +7,12 @@ extends: config.yaml
 # Input: path to video, TIFF stack, or folder of images
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
 
+# Dataset scale profile: path to a YAML file with size_px/spacing_px (see
+# dataset-profiles/README.md). When set, drives box_size/nms_distance/
+# tile_size/search_range/memory derivation for any of those left unset below.
+# Unset by default -- no single profile is "live" for every user/dataset.
+# dataset_profile: ../dataset-profiles/<your-profile>.yaml
+
 model:
   type: lodestar
   checkpoint: ../data-setup/models/lodestar_model_15/model.pt
@@ -20,17 +26,29 @@ detection:
   # LodeSTAR cutoff uses mode="ratio": fraction of the per-frame max score.
   threshold: 0.1    # from autolabel_2um_lodestar_model_15.json (cutoff)
   alpha: 0.9        # weight score exponent (autolabel default)
-  nms_distance: 30  # suppress detections within 30px of a higher-scoring one
-  fp16: true         # run model in float16
+  # nms_distance intentionally NOT set here -- leaving it unset lets track.py
+  # derive it from dataset_profile's size_px/spacing_px, falling back to
+  # today's 30px default (detector_defaults.yaml's canonical lodestar value)
+  # if no profile is referenced. Set nms_distance here only to override that
+  # derived/default value for a specific investigation -- any value set here
+  # always wins.
+  # nms_distance: 30  # suppress detections within 30px of a higher-scoring one
+  fp16: true        # run model in float16
   # box_size: 40    # detection box side length (px), manual estimate until real PSF
                      # calibration exists for this dataset (see box_size KTD in
                      # docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md)
 
 tracking:
-  search_range: 20.0   # Trackpy: maximum pixel distance a particle can move between frames
-  memory: 10            # Trackpy: number of consecutive frames a particle may be missing
-  stub_filter: 6         # Trackpy: discard tracks shorter than this many frames (0 = keep all)
-  adaptive_stop: 1.0     # Trackpy: minimum search_range before giving up
+  # search_range intentionally NOT set here -- leaving it unset lets track.py
+  # derive it from dataset_profile's spacing_px (spacing_px * 0.5), falling
+  # back to LodeSTAR's own canonical 20.0 (trackers_common's per-model tuning
+  # for lodestar) if no profile is referenced. Set search_range here only to
+  # override that derived/default value for a specific investigation -- any
+  # value set here always wins.
+  # search_range: 20.0
+  memory: 10             # Trackpy: number of consecutive frames a particle may be missing
+  stub_filter: 6          # Trackpy: discard tracks shorter than this many frames (0 = keep all)
+  adaptive_stop: 1.0      # Trackpy: minimum search_range before giving up
 
 output:
   dir: /mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/lodestar/

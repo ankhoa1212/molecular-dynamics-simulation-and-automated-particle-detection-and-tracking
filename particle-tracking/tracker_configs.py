@@ -4,9 +4,12 @@
 Extracted from ``run_tracking.py`` so both the batch runner
 (``run_tracking.py``) and the multi-model comparison tool
 (``model_comparison.py``) generate per-model tracking configs from a single
-source of truth. Each model keeps its own tuned ``search_range``/``memory``/
-``stub_filter`` defaults here — callers pass an explicit ``output_dir``
-rather than this module hardcoding a results location.
+source of truth. Each model's tuned ``search_range``/``memory``/``stub_filter``
+defaults now live in ``trackers_common.tracker_defaults.yaml`` (shared with
+``verification/benchmark.py``'s tracking-metrics resolution — see
+``trackers-common/README.md``) rather than being hardcoded here — callers
+pass an explicit ``output_dir`` rather than this module hardcoding a results
+location.
 """
 
 import os
@@ -14,6 +17,8 @@ import tempfile
 from pathlib import Path
 
 import yaml
+
+from trackers_common.defaults import DEFAULT_KEY_PATH_MAP, load_tracking_config
 
 
 def _write_config(cfg: dict, model_prefix: str, name: str, script_dir: Path) -> Path:
@@ -87,12 +92,7 @@ def write_rfdetr_config(
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    tracking = {
-        "tracker": "trackpy",
-        "search_range": 25,
-        "memory": 5,
-        "stub_filter": 90,
-    }
+    tracking = {"tracker": "trackpy", **load_tracking_config("rf-detr", {}, DEFAULT_KEY_PATH_MAP)}
     if bridge_gap is not None:
         tracking["bridge_gap"] = bridge_gap
 
@@ -157,12 +157,7 @@ def write_lodestar_config(
     if threshold is None:
         threshold = 0.1
 
-    tracking = {
-        "tracker": "trackpy",
-        "search_range": 20,
-        "memory": 10,
-        "stub_filter": 6,
-    }
+    tracking = {"tracker": "trackpy", **load_tracking_config("lodestar", {}, DEFAULT_KEY_PATH_MAP)}
     if bridge_gap is not None:
         tracking["bridge_gap"] = bridge_gap
 
