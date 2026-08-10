@@ -163,7 +163,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        subproject: [rf-detr, particle-tracking, verification, detectors-common]
+        subproject: [rf-detr, particle-tracking, verification, detectors-common, data-setup, trackers-common]
 
     steps:
       - name: Checkout

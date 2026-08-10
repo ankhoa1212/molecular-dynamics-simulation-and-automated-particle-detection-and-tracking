@@ -382,13 +382,13 @@ Reports are written to `lint-reports/` (pylint text, JSON, and a summary). Fix a
 
 ### Testing
 
-CI runs the `rf-detr/`, `particle-tracking/`, `verification/`, and `detectors-common/` test suites on every push and PR, and blocks on failure — same as Black. Run them yourself before opening a PR:
+CI runs the `rf-detr/`, `particle-tracking/`, `verification/`, `detectors-common/`, `data-setup/`, and `trackers-common/` test suites on every push and PR, and blocks on failure — same as Black. Run them yourself before opening a PR:
 
 ```bash
 cd <subproject> && uv run pytest tests/ -v
 ```
 
-`data-setup/` and `yolov12/` have no test suite yet, and `lammps-scripts/` doesn't either despite having a `test/` directory (it currently holds only fixture data).
+`yolov12/` has no test suite yet, and `lammps-scripts/` doesn't either despite having a `test/` directory (it currently holds only fixture data).
 
 ### PR size
 
