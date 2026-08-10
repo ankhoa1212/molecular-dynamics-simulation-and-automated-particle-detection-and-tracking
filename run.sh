@@ -33,9 +33,7 @@ shift
 
 case "$STAGE" in
     label)
-        # data-setup has no pyproject.toml (plain venv, not uv-managed) --
-        # don't switch this to `uv run`, it has no uv project to find.
-        (cd data-setup && .venv/bin/python lodestar_autolabeler.py "$@")
+        uv run --directory data-setup python lodestar_autolabeler.py "$@"
         ;;
     track)
         uv run --directory particle-tracking python track.py "$@"
