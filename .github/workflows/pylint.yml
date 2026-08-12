@@ -2,11 +2,7 @@ name: Pylint & Black
 
 on:
   push:
-    paths:
-      - "**/*.py"
   pull_request:
-    paths:
-      - "**/*.py"
   workflow_dispatch:
 
 jobs:
@@ -63,15 +59,20 @@ jobs:
           fi
           echo "files=$FILES" >> $GITHUB_OUTPUT
       - name: Check Black formatting
-        continue-on-error: true
         run: |
           if [ -z "${{ steps.files.outputs.files }}" ]; then
             echo "::notice::No Python files to check"
             exit 0
           fi
-          black --check --line-length=100 ${{ steps.files.outputs.files }} || true
+          black --check --line-length=100 ${{ steps.files.outputs.files }}
       - name: Run pylint (parallel)
         id: pylint
+        # continue-on-error stays here deliberately: this job only installs a
+        # shared/root-level dependency set (most INSTALL_*_DEPS default off),
+        # so pylint reports E0401 import-resolution noise for every subproject
+        # package it can't see (pytest, rfdetr, freud, pims, ...) alongside
+        # any real findings. Making this blocking needs per-subproject dep
+        # installation in this job first -- a separate, larger change.
         continue-on-error: true
         run: |
           if [ -z "${{ steps.files.outputs.files }}" ]; then
@@ -156,3 +157,25 @@ jobs:
           name: lint-reports
           path: lint-reports/
           retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        subproject: [rf-detr, particle-tracking, verification, detectors-common, data-setup, trackers-common]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Run ${{ matrix.subproject }} tests
+        working-directory: ${{ matrix.subproject }}
+        run: |
+          uv sync
+          uv run pytest tests/ -v

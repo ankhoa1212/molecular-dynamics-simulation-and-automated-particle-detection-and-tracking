@@ -322,6 +322,18 @@ tracks.csv  +  annotated video
                           Measure MOTA/IDF1/fragmentation; compare physics observables
 ```
 
+`run.sh` dispatches the labeling, tracking, and verification stages into their own subproject venvs, without needing to `cd` into each one manually:
+
+```bash
+./run.sh label ...       # -> data-setup/lodestar_autolabeler.py
+./run.sh track ...       # -> particle-tracking/track.py
+./run.sh render ...      # -> verification/render.py
+./run.sh benchmark ...   # -> verification/benchmark.py
+./run.sh compare ...     # -> verification/compare.py
+```
+
+RF-DETR training and LAMMPS simulation are separate workflows and aren't covered — run them directly from `rf-detr/` and `lammps-scripts/` as shown above.
+
 ---
 
 ## Contributing
@@ -367,6 +379,26 @@ After that, Black runs automatically on staged files. If it reformats anything, 
 ```
 
 Reports are written to `lint-reports/` (pylint text, JSON, and a summary). Fix any Black formatting issues with the command printed by the script, then re-run to confirm.
+
+### Testing
+
+CI runs the `rf-detr/`, `particle-tracking/`, `verification/`, `detectors-common/`, `data-setup/`, and `trackers-common/` test suites on every push and PR, and blocks on failure — same as Black. Run them yourself before opening a PR:
+
+```bash
+cd <subproject> && uv run pytest tests/ -v
+```
+
+`yolov12/` has no test suite yet, and `lammps-scripts/` doesn't either despite having a `test/` directory (it currently holds only fixture data).
+
+### PR size
+
+Raw diff line counts can be misleading here — a repo-hygiene audit found one 18,700-line PR was only 31% behavior-changing source once `uv.lock` and other generated files, docs, and test code were split out separately. When judging whether a PR is reasonably scoped:
+
+- Exclude `uv.lock` and other generated files (see `.gitattributes`) — they're not meant to be reviewed line-by-line.
+- Look at the source-vs-test split, not just the total. A large diff that's mostly tests for a small behavior change is a different shape than a large diff of new source.
+- Prefer landing a feature branch's commits as one PR reasonably promptly over letting many commits accumulate across a long-lived branch before opening one.
+
+This is guidance, not an enforced threshold — a large PR with a good reason (a real feature, thorough test coverage) is fine; a large PR that's an accident of scope creep is worth splitting.
 
 ---
 

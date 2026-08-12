@@ -1,69 +1,41 @@
-# Particle Tracking Configuration — LodeSTAR detector
-# All paths are relative to the particle-tracking/ directory unless absolute.
-# CLI arguments always override values set here.
+# Particle Tracking Configuration — LodeSTAR detector, dim-early-frames scenario (override)
+# Complete on its own: uv run track.py --config basic_lodestar_config.yaml
+# `extends` auto-merges config.yaml (the base) underneath; only keys that
+# differ from it need to be listed here. CLI arguments still override both.
+extends: config.yaml
 
 # Input: path to video, TIFF stack, or folder of images
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
 
-# Model:
 model:
   type: lodestar
-
   checkpoint: ../data-setup/models/lodestar_model_15/model.pt
 
-  device: "0"  # "0" for first GPU, "cpu" for CPU-only
+# Tiling: RF-DETR-specific technique for >300-particle frames; not applicable to
+# LodeSTAR's per-frame detection. Explicitly off, since the base has it on.
+tiling:
+  enabled: false
 
-# Detection:
 detection:
   # LodeSTAR cutoff uses mode="ratio": fraction of the per-frame max score.
-  threshold: 0.1   # from autolabel_2um_lodestar_model_15.json (cutoff)
+  threshold: 0.1    # from autolabel_2um_lodestar_model_15.json (cutoff)
   alpha: 0.3        # weight score exponent; lower = less selective, better for dim early frames
   nms_distance: 30  # suppress detections within 30px of a higher-scoring one
-  fp16: true        # run model in float16
+  fp16: true         # run model in float16
 
-# Tracking:
 tracking:
-  tracker: trackpy  # trackpy (default, offline) | bytetrack (online)
-
-  # Trackpy: maximum pixel distance a particle can move between frames
-  search_range: 10.0
-
-  # Trackpy: number of consecutive frames a particle may be missing before its track ends
-  memory: 20
-
+  search_range: 10.0   # Trackpy: maximum pixel distance a particle can move between frames
+  memory: 20             # Trackpy: number of consecutive frames a particle may be missing
   # Trackpy: discard tracks shorter than this many frames (0 = keep all); tune down if real
   # particles stay in-frame for fewer frames than this (watch track_length_max in metrics.json)
   stub_filter: 3
+  adaptive_stop: 1.0     # Trackpy: minimum search_range before giving up
+  bridge_gap: 15          # Trackpy: reconnect track fragments separated by at most this many frames
+  bridge_radius: 20       # Trackpy: spatial search radius in pixels for gap-closing
 
-  # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
-  adaptive_stop: 1.0  # minimum search_range before giving up (set to null to disable)
-  adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
-
-  # Trackpy: reconnect track fragments separated by at most this many frames (disabled if null)
-  bridge_gap: 15
-  # Trackpy: spatial search radius in pixels for gap-closing (default: 2 × search_range)
-  bridge_radius: 20
-
-  # ByteTrack: frames to keep a lost track alive before discarding it
-  lost_track_buffer: 60
-
-  # ByteTrack: consecutive frames a detection must appear before a track is confirmed
-  minimum_consecutive_frames: 1
-
-  # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0)
-  track_activation_threshold: 0.1
-
-# Output:
 output:
   dir: /mnt/d/Particle Tracking Data/2um/lodestar/
+  save_trajectory_image: false  # base has this on; not exercised for this scenario
 
-  save_video: true  # Save an annotated MP4 with bounding boxes drawn
-
-  # Draw the "#<track_id>" label next to each bounding box in the output video.
-  # Off by default since the labels tend to clutter dense scenes.
-  video_labels: false
-
-  fps: 30
-
-  # Number of historical frames shown as a trail per trajectory in the output video
-  trace_length: 60
+analysis:
+  hexatic_order: false  # base has this on; not exercised for this scenario

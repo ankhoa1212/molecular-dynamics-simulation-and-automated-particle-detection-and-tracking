@@ -50,6 +50,16 @@ SCRIPT_DIR = Path(__file__).parent
 
 
 def load_config(config_path):
+    """Load a config file, auto-resolving a top-level `extends:` key.
+
+    An override file (e.g. lodestar_config.yaml) sets `extends: config.yaml`
+    so `--config lodestar_config.yaml` alone stays a complete, correct
+    invocation -- the base's keys are pulled in automatically rather than
+    silently falling back to main()'s hardcoded defaults for anything the
+    override doesn't restate. `extends` is resolved relative to the config
+    file's own directory and is popped before merging, so it never appears
+    in the returned dict.
+    """
     config_path = Path(config_path)
     if not config_path.exists():
         return {}
@@ -59,7 +69,35 @@ def load_config(config_path):
         print("Warning: 'pyyaml' not installed — config file ignored. Run 'pip install pyyaml'.")
         return {}
     with open(config_path) as f:
-        return yaml.safe_load(f) or {}
+        cfg = yaml.safe_load(f) or {}
+    extends = cfg.pop("extends", None)
+    if extends:
+        base = load_config(config_path.parent / extends)
+        cfg = merge_config(base, cfg)
+    return cfg
+
+
+def merge_config(base, override):
+    """Recursively merge override onto base; override wins at any nesting depth.
+
+    Used to layer a scenario override (e.g. lodestar_config.yaml) onto the
+    shared base (config.yaml) without either file needing to restate the
+    other's keys. Distinct from detectors_common.defaults.load_detector_config,
+    which does a flat per-key dotted-path lookup against an explicit map —
+    this merges two full nested config trees instead.
+
+    Only the top-level dict and any dict nodes actually replaced are copied;
+    unchanged nested values are shared by reference with base/override. Fine
+    for this module's read-only-after-merge usage -- don't mutate a merged
+    config's nested dicts/lists in place.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def cfg_get(cfg, *keys, default=None):
@@ -604,7 +642,19 @@ def main():
     parser.add_argument(
         "--config",
         default=str(SCRIPT_DIR / "config.yaml"),
-        help="Path to YAML config file",
+        help=(
+            "Path to YAML config file. If it has a top-level 'extends:' key, that file "
+            "is auto-merged underneath first."
+        ),
+    )
+    parser.add_argument(
+        "--override",
+        default=None,
+        help=(
+            "Path to a second YAML config merged onto --config (override wins at any "
+            "nesting depth). Rarely needed -- 'extends' inside a config file covers the "
+            "common case of a scenario config layered onto the base."
+        ),
     )
     # Model
     parser.add_argument("--model-type", choices=["rf-detr", "yolo", "lodestar"])
@@ -749,6 +799,8 @@ def main():
 
     args = parser.parse_args()
     cfg = load_config(args.config)
+    if args.override:
+        cfg = merge_config(cfg, load_config(args.override))
 
     # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
     # nms_distance/tile_size/search_range/memory each derive from it via

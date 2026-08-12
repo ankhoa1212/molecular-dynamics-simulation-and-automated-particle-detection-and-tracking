@@ -1,73 +1,34 @@
-# Particle Tracking Configuration
-# All paths are relative to the particle-tracking/ directory unless absolute.
-# CLI arguments always override values set here.
+# Particle Tracking Configuration — RF-DETR, cropped/basic scenario (override)
+# Complete on its own: uv run track.py --config basic_config.yaml
+# `extends` auto-merges config.yaml (the base) underneath; only keys that
+# differ from it need to be listed here. CLI arguments still override both.
+extends: config.yaml
 
 # Input: path to video, TIFF stack, or folder of images
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
 
-# Model:
-model:
-  type: rf-detr  # rf-detr | yolo | lodestar
-
-  checkpoint: ../rf-detr/checkpoints/checkpoint_best_regular.pth  # model checkpoint
-
-  # Only used when model.type is rf-detr
-  variant: large  # nano | small | medium | large
-  num_classes: 2  # number of classes in the checkpoint (2 = particle/background)
-
-  device: "0"  # "0" for first GPU, "cpu" for CPU-only
-
 # Crop: restrict detection to a region of interest (useful when particle count exceeds the
 # model's per-frame detection limit, e.g. RF-DETR's 300-query ceiling).
-# width/height: fraction of frame (0.0–1.0) or absolute pixels (> 1).
-# center: true  → crop is centred on the frame; x/y are ignored.
-# center: false → x/y set the top-left corner in pixels.
 crop:
   center: true  # centre the crop on the frame
   width: 0.5    # half the frame width  }  together → 1/4 of the original area
   height: 0.5   # half the frame height }
 
-# Detection:
+# Tiling: not used at this crop size -- explicitly off, since the base has it on.
+tiling:
+  enabled: false
+
 detection:
   threshold: 0.01  # Confidence threshold for keeping a detection (0.0–1.0)
 
-# Tracking:
 tracking:
-  tracker: trackpy  # trackpy (default, offline) | bytetrack (online)
+  search_range: 10.0   # Trackpy: maximum pixel distance a particle can move between frames
+  stub_filter: 3        # Trackpy: discard tracks shorter than this many frames (0 = keep all)
+  adaptive_stop: 1.0    # Trackpy: minimum search_range before giving up
 
-  # Trackpy: maximum pixel distance a particle can move between frames
-  search_range: 10.0
-
-  # Trackpy: number of consecutive frames a particle may be missing before its track ends
-  memory: 5
-
-  # Trackpy: discard tracks shorter than this many frames (0 = keep all)
-  stub_filter: 3
-
-  # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
-  adaptive_stop: 1.0  # minimum search_range before giving up (set to null to disable)
-  adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
-
-  # ByteTrack: frames to keep a lost track alive before discarding it
-  lost_track_buffer: 60
-
-  # ByteTrack: consecutive frames a detection must appear before a track is confirmed
-  minimum_consecutive_frames: 1
-
-  # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0)
-  track_activation_threshold: 0.1
-
-# Output:
 output:
   dir: /mnt/d/Particle Tracking Data/2um/rf-detr/
+  save_trajectory_image: false  # base has this on; not used at this crop size
 
-  save_video: true  # Save an annotated MP4 with bounding boxes drawn
-
-  # Draw the "#<track_id>" label next to each bounding box in the output video.
-  # Off by default since the labels tend to clutter dense scenes.
-  video_labels: false
-
-  fps: 30
-
-  # Number of historical frames shown as a trail per trajectory in the output video
-  trace_length: 60
+analysis:
+  hexatic_order: false  # base has this on; not used at this crop size

@@ -1,6 +1,8 @@
-# Particle Tracking Configuration — LodeSTAR detector
-# All paths are relative to the particle-tracking/ directory unless absolute.
-# CLI arguments always override values set here.
+# Particle Tracking Configuration — LodeSTAR detector (override)
+# Complete on its own: uv run track.py --config lodestar_config.yaml
+# `extends` auto-merges config.yaml (the base) underneath; only keys that
+# differ from it need to be listed here. CLI arguments still override both.
+extends: config.yaml
 
 # Input: path to video, TIFF stack, or folder of images
 input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
@@ -11,18 +13,18 @@ input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-
 # Unset by default -- no single profile is "live" for every user/dataset.
 # dataset_profile: ../dataset-profiles/<your-profile>.yaml
 
-# Model:
 model:
   type: lodestar
-
   checkpoint: ../data-setup/models/lodestar_model_15/model.pt
 
-  device: "0"  # "0" for first GPU, "cpu" for CPU-only
+# Tiling: RF-DETR-specific technique for >300-particle frames; not applicable to
+# LodeSTAR's per-frame detection. Explicitly off, since the base has it on.
+tiling:
+  enabled: false
 
-# Detection:
 detection:
   # LodeSTAR cutoff uses mode="ratio": fraction of the per-frame max score.
-  threshold: 0.1   # from autolabel_2um_lodestar_model_15.json (cutoff)
+  threshold: 0.1    # from autolabel_2um_lodestar_model_15.json (cutoff)
   alpha: 0.9        # weight score exponent (autolabel default)
   # nms_distance intentionally NOT set here -- leaving it unset lets track.py
   # derive it from dataset_profile's size_px/spacing_px, falling back to
@@ -36,10 +38,7 @@ detection:
                      # calibration exists for this dataset (see box_size KTD in
                      # docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md)
 
-# Tracking:
 tracking:
-  tracker: trackpy  # trackpy (default, offline) | bytetrack (online)
-
   # search_range intentionally NOT set here -- leaving it unset lets track.py
   # derive it from dataset_profile's spacing_px (spacing_px * 0.5), falling
   # back to LodeSTAR's own canonical 20.0 (trackers_common's per-model tuning
@@ -47,37 +46,13 @@ tracking:
   # override that derived/default value for a specific investigation -- any
   # value set here always wins.
   # search_range: 20.0
+  memory: 10             # Trackpy: number of consecutive frames a particle may be missing
+  stub_filter: 6          # Trackpy: discard tracks shorter than this many frames (0 = keep all)
+  adaptive_stop: 1.0      # Trackpy: minimum search_range before giving up
 
-  # Trackpy: number of consecutive frames a particle may be missing before its track ends
-  memory: 10
-
-  # Trackpy: discard tracks shorter than this many frames (0 = keep all)
-  stub_filter: 6
-
-  # Trackpy: use adaptive search in dense scenes (reduces search_range if too many candidates)
-  adaptive_stop: 1.0  # minimum search_range before giving up (set to null to disable)
-  adaptive_step: 0.95  # multiplicative factor to shrink search_range per attempt
-
-  # ByteTrack: frames to keep a lost track alive before discarding it
-  lost_track_buffer: 60
-
-  # ByteTrack: consecutive frames a detection must appear before a track is confirmed
-  minimum_consecutive_frames: 1
-
-  # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0)
-  track_activation_threshold: 0.1
-
-# Output:
 output:
   dir: /mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/lodestar/
+  save_trajectory_image: false  # base has this on; not exercised for this scenario
 
-  save_video: true  # Save an annotated MP4 with bounding boxes drawn
-
-  # Draw the "#<track_id>" label next to each bounding box in the output video.
-  # Off by default since the labels tend to clutter dense scenes.
-  video_labels: false
-
-  fps: 30
-
-  # Number of historical frames shown as a trail per trajectory in the output video
-  trace_length: 60
+analysis:
+  hexatic_order: false  # base has this on; not exercised for this scenario

@@ -166,9 +166,7 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         raw_last = prefs.get("last_dir")
         # Fall back: last_dir → CWD → home
         self._last_dir: Path = (
-            Path(raw_last)
-            if raw_last and Path(raw_last).is_dir()
-            else Path.cwd()
+            Path(raw_last) if raw_last and Path(raw_last).is_dir() else Path.cwd()
         )
         self._image_cache: dict[Path, Image.Image] = {}
         self._cache_size: int = 10
@@ -249,7 +247,10 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
             font=("Helvetica", 9, "bold"),
         )
         self._btn_mode_lodestar.pack(side=tk.LEFT, padx=1, pady=2)
-        ToolTip(self._btn_mode_lodestar, "Crop Mode — draw rectangles to save PNG patches for LodeSTAR training")
+        ToolTip(
+            self._btn_mode_lodestar,
+            "Crop Mode — draw rectangles to save PNG patches for LodeSTAR training",
+        )
 
         self._btn_mode_yolo = tk.Button(
             mode_frame,
@@ -258,7 +259,10 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
             font=("Helvetica", 9, "bold"),
         )
         self._btn_mode_yolo.pack(side=tk.LEFT, padx=1, pady=2)
-        ToolTip(self._btn_mode_yolo, "Label Mode — draw bounding boxes on full frames for YOLO / RF-DETR training")
+        ToolTip(
+            self._btn_mode_yolo,
+            "Label Mode — draw bounding boxes on full frames for YOLO / RF-DETR training",
+        )
         _sep(row1)
 
         # File
@@ -268,18 +272,14 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         _sep(row1)
 
         # Navigation
-        self._btn_prev = tk.Button(
-            row1, text="← Prev", command=self.prev_image, state=tk.DISABLED
-        )
+        self._btn_prev = tk.Button(row1, text="← Prev", command=self.prev_image, state=tk.DISABLED)
         self._btn_prev.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_prev, "Go to previous image (Left Arrow)")
 
         self._lbl_counter = tk.Label(row1, text="No images", width=10)
         self._lbl_counter.pack(side=tk.LEFT, padx=4)
 
-        self._btn_next = tk.Button(
-            row1, text="Next →", command=self.next_image, state=tk.DISABLED
-        )
+        self._btn_next = tk.Button(row1, text="Next →", command=self.next_image, state=tk.DISABLED)
         self._btn_next.pack(side=tk.LEFT, padx=2, pady=3)
         ToolTip(self._btn_next, "Go to next image (Right Arrow)")
         _sep(row1)
@@ -300,9 +300,7 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         self._row2 = row2
 
         # Undo (always visible)
-        tk.Button(row2, text="Undo", command=self.undo_last_crop).pack(
-            side=tk.LEFT, padx=4, pady=3
-        )
+        tk.Button(row2, text="Undo", command=self.undo_last_crop).pack(side=tk.LEFT, padx=4, pady=3)
         _sep(row2)
 
         # Edit Mode toggle (always visible)
@@ -327,16 +325,14 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         ToolTip(self._btn_save_crops, "Save PNG crop files automatically while drawing  (C)")
 
         # Label Mode only — detection overlay cycle
-        self._btn_yolo_mode = tk.Button(
-            row2, text="YOLO: Box", command=self.toggle_yolo_view_mode
-        )
+        self._btn_yolo_mode = tk.Button(row2, text="YOLO: Box", command=self.toggle_yolo_view_mode)
         ToolTip(self._btn_yolo_mode, "Cycle detection overlay: Box → Point → Both → None  (Y)")
 
         # Label Mode only — accept computer detections
-        self._btn_accept_all = tk.Button(
-            row2, text="Accept All", command=self.convert_all_yolo
+        self._btn_accept_all = tk.Button(row2, text="Accept All", command=self.convert_all_yolo)
+        ToolTip(
+            self._btn_accept_all, "Accept all computer detections on this frame as manual labels"
         )
-        ToolTip(self._btn_accept_all, "Accept all computer detections on this frame as manual labels")
 
         # Separator between detection controls and export (Label Mode only; stored for show/hide)
         self._mode_sep = tk.Frame(row2, width=2, bd=1, relief=tk.SUNKEN)
@@ -2164,11 +2160,11 @@ def _make_scrollable_row(parent: tk.Widget) -> tuple[tk.Frame, tk.Frame]:
 
     # Shift+scroll → horizontal pan (works on all platforms)
     def _hscroll(event: tk.Event) -> None:
-        if event.num == 4:   # Linux scroll-up
+        if event.num == 4:  # Linux scroll-up
             canvas.xview_scroll(-1, "units")
         elif event.num == 5:  # Linux scroll-down
             canvas.xview_scroll(1, "units")
-        elif event.delta:     # Windows / macOS
+        elif event.delta:  # Windows / macOS
             canvas.xview_scroll(-1 if event.delta > 0 else 1, "units")
 
     for widget in (canvas, inner):

@@ -862,6 +862,316 @@ class TestComputeAndSaveMetrics:
 
 
 # ---------------------------------------------------------------------------
+# U5: base + override config consolidation. merge_config's own semantics,
+# plus a regression suite over the real on-disk base/override files so a
+# future edit to any of the six particle-tracking/*.yaml files can't
+# silently drift a scenario away from its documented behavior.
+# ---------------------------------------------------------------------------
+
+PARTICLE_TRACKING_DIR = Path(__file__).parent.parent
+
+
+class TestMergeConfig:
+    def test_override_wins_at_top_level(self):
+        base = {"a": 1, "b": 2}
+        override = {"b": 3}
+        assert track.merge_config(base, override) == {"a": 1, "b": 3}
+
+    def test_override_wins_at_nested_depth(self):
+        base = {"tracking": {"search_range": 25.0, "memory": 5}}
+        override = {"tracking": {"search_range": 10.0}}
+        merged = track.merge_config(base, override)
+        assert merged["tracking"] == {"search_range": 10.0, "memory": 5}
+
+    def test_key_absent_from_override_falls_through_to_base(self):
+        base = {"output": {"fps": 30, "trace_length": 60}}
+        override = {}
+        assert track.merge_config(base, override) == {"output": {"fps": 30, "trace_length": 60}}
+
+    def test_override_key_nested_differently_than_base_does_not_merge_wrong_level(self):
+        # Mirrors the real nms_distance bug shape: a scalar in base becomes a
+        # dict in override (or vice versa) -- override must win outright, not
+        # attempt to merge a dict into a scalar or silently coerce/ignore it.
+        base = {"detection": {"threshold": 0.3}}
+        override = {"detection": {"threshold": {"ratio": 0.1}}}
+        merged = track.merge_config(base, override)
+        assert merged["detection"]["threshold"] == {"ratio": 0.1}
+
+    def test_base_is_not_mutated(self):
+        base = {"tracking": {"search_range": 25.0}}
+        override = {"tracking": {"search_range": 10.0}}
+        track.merge_config(base, override)
+        assert base == {"tracking": {"search_range": 25.0}}
+
+
+class TestLoadConfigExtends:
+    """load_config's `extends:` auto-resolution -- the mechanism that keeps
+    `--config <override>.yaml` alone a complete, correct invocation without
+    requiring --override too."""
+
+    def _write(self, tmp_path, name, content):
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump(content))
+        return path
+
+    def test_extends_pulls_in_base_keys_not_restated_in_override(self, tmp_path):
+        self._write(tmp_path, "base.yaml", {"tracking": {"search_range": 25.0, "memory": 5}})
+        override_path = self._write(
+            tmp_path, "override.yaml", {"extends": "base.yaml", "tracking": {"search_range": 10.0}}
+        )
+        cfg = track.load_config(override_path)
+        assert cfg["tracking"] == {"search_range": 10.0, "memory": 5}
+
+    def test_extends_key_is_stripped_from_result(self, tmp_path):
+        self._write(tmp_path, "base.yaml", {"a": 1})
+        override_path = self._write(tmp_path, "override.yaml", {"extends": "base.yaml", "b": 2})
+        cfg = track.load_config(override_path)
+        assert "extends" not in cfg
+
+    def test_extends_resolves_relative_to_override_files_own_directory(self, tmp_path):
+        subdir = tmp_path / "scenarios"
+        subdir.mkdir()
+        self._write(tmp_path, "base.yaml", {"a": 1})
+        override_path = self._write(subdir, "override.yaml", {"extends": "../base.yaml", "b": 2})
+        cfg = track.load_config(override_path)
+        assert cfg == {"a": 1, "b": 2}
+
+    def test_config_without_extends_loads_as_is(self, tmp_path):
+        path = self._write(tmp_path, "standalone.yaml", {"a": 1})
+        assert track.load_config(path) == {"a": 1}
+
+    def test_all_five_override_files_declare_extends_config_yaml(self):
+        for override_file in [
+            "basic_config.yaml",
+            "lodestar_config.yaml",
+            "multi_config.yaml",
+            "basic_lodestar_config.yaml",
+            "multi_lodestar_config.yaml",
+        ]:
+            with open(PARTICLE_TRACKING_DIR / override_file) as f:
+                raw = yaml.safe_load(f)
+            assert raw.get("extends") == "config.yaml", override_file
+
+    def test_config_yaml_itself_has_no_extends_key(self):
+        with open(PARTICLE_TRACKING_DIR / "config.yaml") as f:
+            raw = yaml.safe_load(f)
+        assert "extends" not in raw
+
+
+class TestOverrideCliWiring:
+    """The --override flag's plumbing through main(), and old-style
+    single-file invocations that rely on extends instead."""
+
+    def test_cli_override_flag_reaches_the_detection_pipeline(self, tmp_path, monkeypatch):
+        base_path = tmp_path / "base.yaml"
+        base_path.write_text(
+            yaml.safe_dump(
+                {
+                    "model": {"type": "lodestar", "checkpoint": "dummy.pt", "device": "cpu"},
+                    "detection": {"threshold": 0.1, "nms_distance": 30},
+                    "tracking": {
+                        "tracker": "trackpy",
+                        "search_range": 10.0,
+                        "memory": 3,
+                        "stub_filter": 0,
+                    },
+                    "output": {"dir": str(tmp_path / "out"), "save_video": False},
+                }
+            )
+        )
+        override_path = tmp_path / "override.yaml"
+        override_path.write_text(yaml.safe_dump({"detection": {"nms_distance": 7}}))
+
+        captured_nms_distance = []
+
+        def fake_detect_lodestar(*args, **kwargs):
+            captured_nms_distance.append(kwargs.get("nms_distance"))
+            return sv.Detections.empty()
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "track.py",
+                "--config",
+                str(base_path),
+                "--override",
+                str(override_path),
+                "--input",
+                "dummy.tif",
+            ],
+        )
+        monkeypatch.setattr(track, "get_lodestar_model", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(track, "load_frames", lambda *a, **kw: _fake_frames(3))
+        monkeypatch.setattr(track, "detect_lodestar", fake_detect_lodestar)
+        track.main()
+
+        assert captured_nms_distance == [7, 7, 7]
+
+    def test_old_style_standalone_config_still_produces_full_effective_config(self):
+        # Regression guard for the exact contract break a P0 review finding
+        # caught: --config lodestar_config.yaml alone (no --override) must
+        # still resolve every key the pre-consolidation standalone file had,
+        # not silently fall back to main()'s hardcoded defaults.
+        cfg = track.load_config(PARTICLE_TRACKING_DIR / "lodestar_config.yaml")
+        assert cfg["tracking"]["stub_filter"] == 6
+        assert cfg["tracking"]["lost_track_buffer"] == 60
+        assert cfg["output"]["save_video"] is True
+        assert cfg["output"]["trace_length"] == 60
+        assert cfg["tiling"]["enabled"] is False
+
+    def test_explicit_cli_arg_still_wins_over_extends_resolved_config(
+        self, tmp_path, run_main_lodestar
+    ):
+        captured = run_main_lodestar(
+            [
+                "--config",
+                str(PARTICLE_TRACKING_DIR / "lodestar_config.yaml"),
+                "--input",
+                "dummy.tif",
+                "--output-dir",
+                str(tmp_path / "out"),  # redirect away from /mnt/d in the real config
+                "--lodestar-box-size",
+                "99",
+            ],
+            _fake_frames(3),
+        )
+        assert captured == [99.0, 99.0, 99.0]
+
+
+class TestBaseOverrideConfigFiles:
+    """Regression coverage over the real on-disk configs (not synthetic dicts)."""
+
+    def test_base_config_loads_standalone_with_expected_defaults(self):
+        cfg = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        assert cfg["model"]["type"] == "rf-detr"
+        assert cfg["tiling"]["enabled"] is True
+        assert cfg["detection"]["threshold"] == 0.3
+        # search_range is intentionally absent -- commented out so dataset_profile
+        # derivation (or trackers_common's canonical fallback) supplies it at
+        # runtime, not the plain config load.
+        assert "search_range" not in cfg["tracking"]
+        assert cfg["output"]["fps"] == 30
+
+    @pytest.mark.parametrize(
+        "override_file,expected",
+        [
+            (
+                "lodestar_config.yaml",
+                {
+                    "model.type": "lodestar",
+                    # nms_distance/search_range are intentionally absent here: this
+                    # file leaves both commented out so track.py's dataset_profile
+                    # derivation (or its own canonical per-model fallback) supplies
+                    # them at runtime, not the plain base+override YAML merge --
+                    # see TestShippedConfigsNoLongerShortCircuitDerivation.
+                    "detection.alpha": 0.9,
+                    "tracking.memory": 10,
+                    "tracking.stub_filter": 6,
+                    "tiling.enabled": False,
+                    "analysis.hexatic_order": False,
+                },
+            ),
+            (
+                "basic_lodestar_config.yaml",
+                {
+                    "model.type": "lodestar",
+                    "detection.nms_distance": 30,
+                    "detection.alpha": 0.3,
+                    "tracking.search_range": 10.0,
+                    "tracking.memory": 20,
+                    "tracking.bridge_gap": 15,
+                    "tracking.bridge_radius": 20,
+                    "tiling.enabled": False,
+                    "analysis.hexatic_order": False,
+                    "output.save_trajectory_image": False,
+                },
+            ),
+            (
+                "multi_lodestar_config.yaml",
+                {
+                    "model.type": "lodestar",
+                    "detection.threshold": 0.01,
+                    "detection.nms_distance": 30,
+                    "detection.alpha": 0.9,
+                    "tracking.search_range": 20.0,
+                    "tiling.enabled": False,
+                    "analysis.hexatic_order": False,
+                    "output.save_trajectory_image": False,
+                },
+            ),
+            (
+                "basic_config.yaml",
+                {
+                    "model.type": "rf-detr",
+                    "crop.width": 0.5,
+                    "tiling.enabled": False,
+                    "detection.threshold": 0.01,
+                    "tracking.search_range": 10.0,
+                    "analysis.hexatic_order": False,
+                    "output.save_trajectory_image": False,
+                },
+            ),
+            (
+                "multi_config.yaml",
+                {
+                    "model.type": "rf-detr",
+                    "tiling.enabled": True,  # inherited from base, not overridden
+                    "detection.threshold": 0.3,  # inherited from base
+                },
+            ),
+        ],
+    )
+    def test_override_merged_onto_base_produces_expected_effective_values(
+        self, override_file, expected
+    ):
+        base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        override = track.load_config(PARTICLE_TRACKING_DIR / override_file)
+        merged = track.merge_config(base, override)
+
+        for dotted_key, expected_value in expected.items():
+            node = merged
+            for part in dotted_key.split("."):
+                node = node[part]
+            assert node == expected_value, f"{override_file}: {dotted_key}"
+
+    @pytest.mark.parametrize(
+        "override_file",
+        [
+            "lodestar_config.yaml",
+            "basic_lodestar_config.yaml",
+            "multi_lodestar_config.yaml",
+            "basic_config.yaml",
+            "multi_config.yaml",
+        ],
+    )
+    def test_multi_input_configs_have_list_input_others_have_string(self, override_file):
+        base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        override = track.load_config(PARTICLE_TRACKING_DIR / override_file)
+        merged = track.merge_config(base, override)
+
+        if "multi" in override_file:
+            assert isinstance(merged["input"], list)
+            assert len(merged["input"]) == 4
+        else:
+            assert isinstance(merged["input"], str)
+
+    def test_lodestar_scenarios_never_inherit_rfdetr_only_tiling(self):
+        # Regression guard for the exact class of bug R7 exists to prevent:
+        # a LodeSTAR override must explicitly disable tiling.enabled, since
+        # the base has it on and tiling is an RF-DETR-specific technique.
+        base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
+        for override_file in [
+            "lodestar_config.yaml",
+            "basic_lodestar_config.yaml",
+            "multi_lodestar_config.yaml",
+        ]:
+            override = track.load_config(PARTICLE_TRACKING_DIR / override_file)
+            merged = track.merge_config(base, override)
+            assert merged["tiling"]["enabled"] is False, override_file
+
+
+# ---------------------------------------------------------------------------
 # U5: dataset_profile-driven scale derivation (particle-tracking/config.yaml,
 # lodestar_config.yaml) -- box_size/nms_distance/tile_size/search_range/memory
 # each route through detectors_common/trackers_common's scale_derivation

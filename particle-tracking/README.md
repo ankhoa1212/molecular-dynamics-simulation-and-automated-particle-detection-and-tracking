@@ -150,8 +150,13 @@ uv run python track.py \
   --input ../lammps-scripts/results/central_pair_interaction.in.lammpstrj \
   --output-dir evaluation/results/simulation/
 
-# Use a different config file
+# Use a scenario config -- each one declares `extends: config.yaml` and is
+# still complete and standalone on its own, same as before
 uv run python track.py --config lodestar_config.yaml
+
+# --override merges a second file onto --config explicitly, for combining
+# any two files directly (rarely needed -- extends covers the common case)
+uv run python track.py --config config.yaml --override lodestar_config.yaml
 ```
 
 ---
@@ -160,7 +165,8 @@ uv run python track.py --config lodestar_config.yaml
 
 | Argument | Config key | Default | Description |
 |---|---|---|---|
-| `--config` | — | `config.yaml` | Path to YAML config file |
+| `--config` | — | `config.yaml` | Path to a YAML config file. If it has a top-level `extends:` key, that file is auto-merged underneath first |
+| `--override` | — | none | Path to a second YAML config merged onto `--config` (override wins at any nesting depth) |
 | `--model-type` | `model.type` | `rf-detr` | `rf-detr`, `yolo`, or `lodestar` |
 | `--checkpoint` | `model.checkpoint` | best EMA checkpoint | Path to model weights |
 | `--variant` | `model.variant` | `large` | RF-DETR size: `nano`, `small`, `medium`, `large` |
