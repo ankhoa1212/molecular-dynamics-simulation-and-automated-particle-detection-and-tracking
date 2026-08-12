@@ -3,8 +3,12 @@
 
 Usage:
     uv run python calibrate_psf.py --real-frames <dir> [--output-config <path>] [--dark-frames <dir>]
+    uv run python calibrate_psf.py --brightfield --lammps <path> [--real-frames <dir>] [--mie-frames <n>] ...
 
 Prints a YAML fragment ready to paste into config.yaml under synthetic:.
+--brightfield switches to calibrate_brightfield, a separate search over
+synthetic.brightfield for render_strategy: brightfield (see that function's
+docstring).
 
 Real saturated bright-field data should tune --min-area/--max-area/--percentile
 away from the small-particle-friendly defaults -- start from this repo's

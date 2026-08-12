@@ -249,6 +249,7 @@ uv sync
 | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
 | `deeptrack` | Physics-accurate scalar-diffraction PSF; spatially varying background; log-normal intensity; sCMOS noise |
 | `randomized` | Procedural renderer with per-frame stochastic PSF/intensity/noise sampling |
+| `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; small-batch/reference-quality, not a bulk generator |
 
 **Calibrate from real frames (run once):**
 
