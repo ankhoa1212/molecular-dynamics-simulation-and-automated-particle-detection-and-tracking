@@ -700,3 +700,126 @@ class TestProceduralStrategyWithoutDeeptrack:
                 cr_module.main()
 
         assert (out_dir / "renders_comparison.png").exists()
+
+
+# ---------------------------------------------------------------------------
+# brightfield strategy choice + missing-deeptrack skip guard (U4)
+# ---------------------------------------------------------------------------
+
+
+class TestBrightfieldStrategyChoice:
+    def test_brightfield_strategy_runs_without_deeptrack(self, cr_module, tmp_path, monkeypatch):
+        """render_strategy: brightfield warns and skips -- like 'deeptrack'
+        already does -- rather than crashing the whole script when
+        deeptrack isn't installed (previously only the literal string
+        'deeptrack' was covered by this guard). Passing 'brightfield' as a
+        --strategies value without an argparse error also proves it's a
+        valid CLI choice."""
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(
+            cr_module,
+            "_load_config",
+            lambda p: {
+                "synthetic": {
+                    "image_height": 32,
+                    "image_width": 32,
+                    "psf_sigma": 2.0,
+                    "peak_intensity": 1000,
+                    "shot_noise": False,
+                    "readout_noise": 0.0,
+                }
+            },
+        )
+
+        import yaml
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump({}))
+        out_dir = tmp_path / "out"
+
+        with mock.patch.dict(sys.modules, {"deeptrack": None}):
+            with mock.patch(
+                "sys.argv",
+                [
+                    "compare_renders.py",
+                    "--lammps",
+                    "fake.lammpstrj",
+                    "--config",
+                    str(cfg_path),
+                    "--strategies",
+                    "procedural",
+                    "brightfield",
+                    "--output-dir",
+                    str(out_dir),
+                ],
+            ):
+                # Should not raise even with deeptrack blocked -- brightfield
+                # is skipped with a warning, procedural still renders.
+                cr_module.main()
+
+        assert (out_dir / "renders_comparison.png").exists()
+
+    def test_brightfield_strategy_dispatches_when_deeptrack_available(
+        self, cr_module, tmp_path, monkeypatch
+    ):
+        """With deeptrack importable, 'brightfield' reaches _dispatch_render
+        (the stubbed render module) rather than being skipped."""
+        monkeypatch.setattr(
+            cr_module,
+            "_load_first_frame",
+            lambda path: (np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)),
+        )
+        monkeypatch.setattr(
+            cr_module,
+            "_load_config",
+            lambda p: {
+                "synthetic": {
+                    "image_height": 32,
+                    "image_width": 32,
+                }
+            },
+        )
+
+        import types
+
+        sys.modules["deeptrack"] = types.ModuleType("deeptrack")
+
+        called_strategy = []
+        original_dispatch = cr_module._dispatch_render
+
+        def _capture_dispatch(pos, box, cfg, rng, strategy):
+            called_strategy.append(strategy)
+            return original_dispatch(pos, box, cfg, rng, strategy)
+
+        monkeypatch.setattr(cr_module, "_dispatch_render", _capture_dispatch)
+
+        import yaml
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump({}))
+        out_dir = tmp_path / "out"
+
+        try:
+            with mock.patch(
+                "sys.argv",
+                [
+                    "compare_renders.py",
+                    "--lammps",
+                    "fake.lammpstrj",
+                    "--config",
+                    str(cfg_path),
+                    "--strategies",
+                    "brightfield",
+                    "--output-dir",
+                    str(out_dir),
+                ],
+            ):
+                cr_module.main()
+        finally:
+            sys.modules.pop("deeptrack", None)
+
+        assert called_strategy == ["brightfield"]

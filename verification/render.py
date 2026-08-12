@@ -20,6 +20,10 @@ Render strategies (set via synthetic.render_strategy in config.yaml):
     procedural  — flat 2D Gaussian PSF (default; unchanged from original)
     deeptrack   — physics-accurate scalar-diffraction PSF via DeepTrack2
     randomized  — procedural with per-frame stochastic parameter sampling
+    brightfield — coherent whole-frame optical-field solve via DeepTrack2's
+                  Brightfield optics; particles placed at real trajectory
+                  positions, small-batch/reference-quality (see
+                  render_brightfield.py)
 """
 
 import argparse
@@ -123,7 +127,12 @@ def _gaussian_ring_extent(sigma, ring_radius_factor=1.0, ring_width_factor=0.3, 
 
 
 def _disk_rim_profile(
-    r_grid, disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
+    r_grid,
+    disk_radius_px,
+    blur_sigma_px,
+    rim_depth=0.0,
+    rim_width_px=1.0,
+    rim_offset_px=0.0,
 ):
     """Flat-top disk (smoothed step) with an optional dark rim near its edge,
     peak-normalized (may dip below 0 near the rim edge; caller clips before
@@ -407,7 +416,7 @@ def _dispatch_render(
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
-        strategy: 'procedural' | 'deeptrack' | 'randomized'
+        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'brightfield'
         state: optional dict carrying cross-frame smoothing state for the
             'randomized' strategy (see render_randomized.render_frame_randomized).
             Passed through only for that branch; 'procedural' and 'deeptrack'
@@ -431,6 +440,16 @@ def _dispatch_render(
         except ImportError:
             raise ImportError(
                 "DeepTrack2 rendering requires 'deeptrack==2.0.1'. "
+                "Run 'uv add deeptrack==2.0.1' inside verification/. "
+            )
+    elif strategy == "brightfield":
+        try:
+            from render_brightfield import render_frame_brightfield
+
+            return render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=atom_ids)
+        except ImportError:
+            raise ImportError(
+                "Brightfield rendering requires 'deeptrack==2.0.1'. "
                 "Run 'uv add deeptrack==2.0.1' inside verification/. "
             )
     elif strategy == "randomized":
@@ -502,7 +521,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
     parser.add_argument("--video", action="store_true", help="Also encode frames into preview.mp4")
     parser.add_argument(
-        "--fps", type=float, default=10.0, help="Frame rate for --video output (default: 10)"
+        "--fps",
+        type=float,
+        default=10.0,
+        help="Frame rate for --video output (default: 10)",
     )
     args = parser.parse_args()
 
@@ -649,7 +671,12 @@ def main():
         all_frame_ids.append(atom_ids)
         for atom_id, (px, py) in zip(atom_ids, px_pos):
             track_rows.append(
-                {"frame": i, "particle_id": int(atom_id), "x": float(px), "y": float(py)}
+                {
+                    "frame": i,
+                    "particle_id": int(atom_id),
+                    "x": float(px),
+                    "y": float(py),
+                }
             )
 
         if i == 0 or (i + 1) % 10 == 0:

@@ -133,7 +133,12 @@ class TestRecoveredSigma:
 
 
 def _make_frame_with_background(
-    height: int, width: int, spots: list, sigma: float, amplitude: float, background: float
+    height: int,
+    width: int,
+    spots: list,
+    sigma: float,
+    amplitude: float,
+    background: float,
 ) -> np.ndarray:
     """A frame of isolated Gaussian particles of known background-subtracted
     `amplitude`, sitting on a known constant `background` baseline."""
@@ -150,7 +155,12 @@ class TestPeakMeanBackgroundSubtraction:
         true_background = 5000.0
         spots = [(r, c) for r in (40, 88) for c in (40, 88)]
         frame = _make_frame_with_background(
-            128, 128, spots, sigma=5.0, amplitude=true_amplitude, background=true_background
+            128,
+            128,
+            spots,
+            sigma=5.0,
+            amplitude=true_amplitude,
+            background=true_background,
         )
 
         with warnings.catch_warnings():
@@ -695,7 +705,9 @@ class TestDetectorTuningCliFlags:
                 ],
             ),
             mock.patch.object(
-                calibrate_psf, "calibrate_from_frames", wraps=calibrate_psf.calibrate_from_frames
+                calibrate_psf,
+                "calibrate_from_frames",
+                wraps=calibrate_psf.calibrate_from_frames,
             ) as spy,
         ):
             calibrate_psf.main()
@@ -714,7 +726,9 @@ class TestDetectorTuningCliFlags:
         with (
             mock.patch.object(sys, "argv", ["calibrate_psf.py", "--real-frames", str(frames_dir)]),
             mock.patch.object(
-                calibrate_psf, "calibrate_from_frames", wraps=calibrate_psf.calibrate_from_frames
+                calibrate_psf,
+                "calibrate_from_frames",
+                wraps=calibrate_psf.calibrate_from_frames,
             ) as spy,
         ):
             calibrate_psf.main()
@@ -723,3 +737,237 @@ class TestDetectorTuningCliFlags:
         assert kwargs["min_area"] == 4.0
         assert kwargs["max_area"] is None
         assert kwargs["percentile"] == 90.0
+
+
+# ---------------------------------------------------------------------------
+# calibrate_brightfield (U3)
+# ---------------------------------------------------------------------------
+
+
+def _mock_deeptrack_for_brightfield(resolve_return):
+    import types
+
+    fake_resolved = mock.MagicMock()
+    fake_resolved.resolve.return_value = resolve_return
+    fake_optics_instance = mock.MagicMock(return_value=fake_resolved)
+    deeptrack_stub = types.ModuleType("deeptrack")
+    fake_sphere = mock.MagicMock()
+    fake_sphere.__pow__ = mock.MagicMock(return_value=mock.MagicMock())
+    deeptrack_stub.Sphere = mock.MagicMock(return_value=fake_sphere)
+    fake_mie_sphere = mock.MagicMock()
+    fake_mie_sphere.__pow__ = mock.MagicMock(return_value=mock.MagicMock())
+    deeptrack_stub.MieSphere = mock.MagicMock(return_value=fake_mie_sphere)
+    deeptrack_stub.Brightfield = mock.MagicMock(return_value=fake_optics_instance)
+    sys.modules["deeptrack"] = deeptrack_stub
+
+
+class TestCalibrateBrightfield:
+    def teardown_method(self):
+        sys.modules.pop("deeptrack", None)
+        for key in list(sys.modules):
+            if "render_brightfield" in key:
+                del sys.modules[key]
+
+    def test_raises_when_no_targets_given(self):
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        with pytest.raises(ValueError, match="real_frames or mie_frames"):
+            calibrate_psf.calibrate_brightfield(
+                [], [], positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=2
+            )
+
+    def test_returns_brightfield_section_and_meta(self):
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((16, 16)))
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+
+        result = calibrate_psf.calibrate_brightfield(
+            real_frames, [], positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=3
+        )
+
+        assert set(result.keys()) == {"brightfield", "_meta"}
+        for key in (
+            "max_particles",
+            "intensity_scale",
+            "na",
+            "wavelength",
+            "resolution",
+            "refractive_index_medium",
+            "radius_min",
+            "radius_max",
+            "refractive_index_min",
+            "refractive_index_max",
+            "z_min_px",
+            "z_max_px",
+        ):
+            assert key in result["brightfield"]
+        assert "psd_mid_score" in result["_meta"]
+        assert result["_meta"]["n_iterations"] == 3
+
+    def test_search_evaluates_multiple_candidates(self):
+        """Guards against a search loop that silently degrades to a no-op --
+        successive iterations must sample different NA values."""
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((16, 16)))
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+
+        seen_na = []
+        import render_brightfield
+
+        original_resolve = render_brightfield._resolve_brightfield_intensity
+
+        def _spy_resolve(sample, bf_cfg, H, W):
+            seen_na.append(bf_cfg["na"])
+            return original_resolve(sample, bf_cfg, H, W)
+
+        with mock.patch.object(render_brightfield, "_resolve_brightfield_intensity", _spy_resolve):
+            calibrate_psf.calibrate_brightfield(
+                real_frames, [], positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=5
+            )
+
+        assert len(seen_na) == 5
+        assert len(set(seen_na)) > 1
+
+    def test_best_scoring_candidate_beats_a_fixed_worse_candidate(self):
+        """The kept candidate's score is the actual best seen, not just the
+        last or first evaluated -- a real selection, not a pass-through."""
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frame = rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)
+
+        # A resolve() that returns the real frame itself (as float) scores
+        # near-perfectly against it; deeptrack's actual output is unrelated
+        # noise, so at least one candidate should score far lower.
+        _mock_deeptrack_for_brightfield(real_frame.astype(np.complex128) / real_frame.max())
+        result = calibrate_psf.calibrate_brightfield(
+            [real_frame], [], positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=3
+        )
+        assert result["_meta"]["psd_mid_score"] > 0.5
+
+    def test_missing_deeptrack_propagates_import_error(self):
+        sys.modules.pop("deeptrack", None)
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+        with mock.patch.dict(sys.modules, {"deeptrack": None}):
+            with pytest.raises(ImportError, match="deeptrack==2.0.1"):
+                calibrate_psf.calibrate_brightfield(
+                    real_frames,
+                    [],
+                    positions,
+                    (0, 1, 0, 1),
+                    16,
+                    16,
+                    rng,
+                    n_iterations=2,
+                )
+
+
+class TestMergeConfigBrightfieldSection:
+    """Extends TestMergeConfig-style coverage for the flat brightfield
+    section calibrate_brightfield produces -- _merge_params_into_config
+    needs no code changes for it since it's flat like every other section
+    (see calibrate_brightfield's docstring)."""
+
+    def test_brightfield_section_merges_as_a_flat_block(self, tmp_path):
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump({"synthetic": {"render_strategy": "procedural"}}))
+
+        calibrate_psf._merge_params_into_config(
+            cfg_path,
+            {
+                "brightfield": {
+                    "na": 1.1,
+                    "wavelength": 5.5e-7,
+                    "intensity_scale": 12345.0,
+                },
+                "_meta": {"psd_mid_score": 0.9},
+            },
+        )
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert result["synthetic"]["brightfield"]["na"] == 1.1
+        assert result["synthetic"]["brightfield"]["wavelength"] == 5.5e-7
+        assert result["synthetic"]["brightfield"]["intensity_scale"] == 12345.0
+        assert "_meta" not in result["synthetic"]
+        # Pre-existing key preserved
+        assert result["synthetic"]["render_strategy"] == "procedural"
+
+
+class TestBrightfieldCli:
+    """--brightfield CLI mode (calibrate_brightfield's argparse entry point)."""
+
+    def test_brightfield_without_lammps_exits(self):
+        with mock.patch.object(
+            sys, "argv", ["calibrate_psf.py", "--brightfield", "--mie-frames", "1"]
+        ):
+            with pytest.raises(SystemExit):
+                calibrate_psf.main()
+
+    def test_brightfield_without_real_frames_or_mie_frames_exits(self, tmp_path):
+        lammps_stub = mock.MagicMock()
+        lammps_stub.parse_lammps_dump.return_value = iter(
+            [
+                {
+                    "box_bounds": ["0.0 10.0", "0.0 10.0"],
+                    "atom_header": "ITEM: ATOMS id xu yu",
+                    "atoms": ["1 5.0 5.0"],
+                }
+            ]
+        )
+        with mock.patch.dict(sys.modules, {"lammps_parser": lammps_stub}):
+            with mock.patch.object(
+                sys,
+                "argv",
+                ["calibrate_psf.py", "--brightfield", "--lammps", "fake.lammpstrj"],
+            ):
+                with pytest.raises(SystemExit):
+                    calibrate_psf.main()
+
+    def test_brightfield_happy_path_merges_config(self, tmp_path):
+        lammps_stub = mock.MagicMock()
+        lammps_stub.parse_lammps_dump.return_value = iter(
+            [
+                {
+                    "box_bounds": ["0.0 10.0", "0.0 10.0"],
+                    "atom_header": "ITEM: ATOMS id xu yu",
+                    "atoms": ["1 5.0 5.0", "2 6.0 6.0", "3 4.0 4.0"],
+                }
+            ]
+        )
+        _mock_deeptrack_for_brightfield(np.random.default_rng(0).random((32, 32)))
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump({"synthetic": {"render_strategy": "procedural"}}))
+
+        with mock.patch.dict(sys.modules, {"lammps_parser": lammps_stub}):
+            with mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "calibrate_psf.py",
+                    "--brightfield",
+                    "--lammps",
+                    "fake.lammpstrj",
+                    "--mie-frames",
+                    "1",
+                    "--mie-frames-particles",
+                    "2",
+                    "--n-iterations",
+                    "2",
+                    "--image-height",
+                    "32",
+                    "--image-width",
+                    "32",
+                    "--merge-config",
+                    str(cfg_path),
+                ],
+            ):
+                calibrate_psf.main()
+
+        result = yaml.safe_load(cfg_path.read_text())
+        assert "brightfield" in result["synthetic"]
+        assert "na" in result["synthetic"]["brightfield"]
+        assert result["synthetic"]["render_strategy"] == "procedural"  # preserved

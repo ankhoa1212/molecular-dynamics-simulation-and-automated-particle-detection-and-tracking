@@ -103,6 +103,7 @@ def main():
             "procedural",
             "deeptrack",
             "randomized",
+            "brightfield",
             "deeptrack-real",
             "deeptrack-procedural",
             "deeptrack-physics",
@@ -152,13 +153,21 @@ def main():
         "deeptrack-physics": "physics",
     }
 
+    # Every strategy backed by the deeptrack package (not just literal
+    # "deeptrack") needs the same missing-import skip guard below --
+    # "brightfield" hits the exact same ImportError deep inside
+    # _dispatch_render if deeptrack isn't installed, and without this guard
+    # covering it too, that ImportError would crash this whole script
+    # instead of skipping just that one strategy.
+    _DEEPTRACK_BACKED_STRATEGIES = {"deeptrack", "brightfield"}
+
     rendered = {}
     for strategy in args.strategies:
         crop_source = _CROP_SOURCE_BY_STRATEGY.get(strategy)
         dispatch_strategy = "deeptrack" if crop_source else strategy
-        if dispatch_strategy == "deeptrack":
+        if dispatch_strategy in _DEEPTRACK_BACKED_STRATEGIES:
             try:
-                import render_deeptrack  # noqa: F401
+                import deeptrack  # noqa: F401
             except ImportError:
                 print(f"WARNING: deeptrack not installed — skipping '{strategy}'.")
                 continue

@@ -11,7 +11,7 @@
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
-  render_strategy: procedural   # procedural | deeptrack | randomized
+  render_strategy: procedural   # procedural | deeptrack | randomized | brightfield
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
@@ -273,6 +273,63 @@ synthetic:
     ring_A1: 0.8997
     ring_r1: 47.56
     ring_s1: 11.05
+
+  # --- render_strategy: brightfield ---
+  # Whole-frame coherent optical-field solve (DeepTrack2's Brightfield
+  # optics), NOT a per-particle stamp -- particles are placed at the
+  # LAMMPS trajectory's real x/y positions (already physically
+  # non-overlapping) rather than a synthetic placement layer; see
+  # render_brightfield.py's module docstring for why dt.NonOverlapping is
+  # not used. Small-batch/reference-quality by design, not a bulk
+  # generator -- see docs/brainstorms/2026-08-12-brightfield-particle-
+  # rendering-requirements.md and docs/plans/2026-08-12-002-feat-
+  # brightfield-particle-rendering-plan.md. Flat section (like psf/particle/
+  # noise above), not nested -- calibrate_psf.py's _merge_params_into_config
+  # only patches flat key: value lines per section.
+  brightfield:
+    max_particles: 50   # safety cap on particles rendered per frame. Per-frame
+                         # cost is real and highly variable even without
+                         # NonOverlapping -- locally measured 0.5-2.3s for
+                         # N=1-10 particles on a 128x128 canvas, while a single
+                         # N=60 attempt on the same canvas exceeded 120s. Frames
+                         # above this cap render a random max_particles-sized
+                         # subset (seeded, reproducible) with a warning, rather
+                         # than silently hanging. Revisit once calibrate_psf.py's
+                         # brightfield search loop (render_strategy: brightfield
+                         # calibration entry point) has real timing data at this
+                         # dataset's actual canvas size and defocus range.
+    intensity_scale: 20000.0   # ADU per unit of Brightfield's raw (unitless)
+                                # intensity output -- maps the optical solve onto
+                                # this pipeline's 16-bit ADU convention. Starting
+                                # point, not calibrated -- see calibrate_psf.py's
+                                # brightfield entry point.
+
+    # --- Optics params, passed directly to deeptrack.Brightfield ---
+    na: 1.0                       # numerical aperture
+    wavelength: 550e-9            # illumination wavelength (metres)
+    resolution: 100e-9            # pixel size (metres/pixel)
+    refractive_index_medium: 1.33 # surrounding medium (water)
+
+    # --- Per-particle physical properties (single particle type this
+    # iteration -- see origin doc Scope Boundaries) ---
+    radius_min: 0.5e-6              # metres, uniform [min, max]
+    radius_max: 0.5e-6
+    refractive_index_min: 1.45      # polystyrene ~1.45-1.60 at visible
+    refractive_index_max: 1.45      # wavelengths; starting point, not calibrated
+    z_min_px: 0.0                   # defocus range (deeptrack z units); 0/0
+    z_max_px: 0.0                   # means every particle renders in-focus
+                                     # until calibrated/configured
+
+    # --- Mie ground-truth tier (calibration only -- never used by the
+    # routine render_strategy: brightfield path) ---
+    mie_max_particles: 20   # MieScatterer evaluates each particle's field over
+                             # the *entire* padded canvas (no per-particle ROI);
+                             # measured super-linear and ~18s for 100 particles
+                             # on a small 256x256 canvas. This cap keeps a
+                             # calibration run's ground-truth generation
+                             # practical -- see render_brightfield.py's
+                             # generate_mie_ground_truth docstring.
+    mie_max_frames: 5        # small-batch by design; not a bulk dataset
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
