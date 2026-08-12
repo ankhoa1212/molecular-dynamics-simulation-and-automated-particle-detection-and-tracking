@@ -282,6 +282,7 @@ def _write_model_config(
     crop_w: int | None,
     crop_h: int | None,
     bridge_gap: int | None,
+    checkpoint: Path | None = None,
 ) -> Path:
     """Generate a per-model tracking config via the shared tracker_configs.py writers."""
     import tracker_configs
@@ -295,7 +296,17 @@ def _write_model_config(
             "docs/plans/2026-07-13-001-feat-multi-model-comparison-preview-metrics-plan.md)."
         )
     writer = getattr(tracker_configs, writer_name)
-    return writer(name, input_path, output_dir, crop_w, crop_h, bridge_gap, SCRIPT_DIR)
+    # Only write_rfdetr_config currently accepts an explicit checkpoint override
+    # (write_lodestar_config's hardcoded default already matches this repo's
+    # canonical lodestar checkpoint, so it's never been given the same parameter).
+    writer_kwargs = (
+        {"checkpoint": str(checkpoint)}
+        if model_type == "rf-detr" and checkpoint is not None
+        else {}
+    )
+    return writer(
+        name, input_path, output_dir, crop_w, crop_h, bridge_gap, SCRIPT_DIR, **writer_kwargs
+    )
 
 
 def run_model_tracking(
@@ -409,6 +420,7 @@ def run_full_comparison(
                 crop_w,
                 crop_h,
                 args.bridge_gap,
+                checkpoint=spec.checkpoint,
             )
         except Exception as exc:
             entry["error"] = str(exc)
@@ -445,7 +457,11 @@ def run_full_comparison(
             entry["stderr_tail"] = stderr[-2000:]
             print(f"[{model_type}] FAILED (exit code {rc})")
         else:
-            tracks_csv = model_output_dir / "tracks.csv"
+            # track.py always nests its actual output under output_dir/<input's
+            # Path.stem>/ (input_paths batch-mode support), never directly in
+            # output_dir itself — model_output_dir here is the *configured*
+            # output.dir, not where tracks.csv actually landed.
+            tracks_csv = model_output_dir / input_path.stem / "tracks.csv"
             try:
                 entry["stats"] = analyze_tracks.compute_track_stats(tracks_csv, verbose=False)
             except Exception as exc:

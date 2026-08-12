@@ -89,6 +89,7 @@ def write_rfdetr_config(
     crop_h: int | None,
     bridge_gap: int | None,
     script_dir: Path,
+    checkpoint: str | None = None,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -100,7 +101,7 @@ def write_rfdetr_config(
         "input": input_path,
         "model": {
             "type": "rf-detr",
-            "checkpoint": "../rf-detr/checkpoints/checkpoint_best_regular.pth",
+            "checkpoint": checkpoint or "../rf-detr/checkpoints/checkpoint_best_regular.pth",
             "variant": "large",
             "num_classes": 2,
             "num_queries": 300,

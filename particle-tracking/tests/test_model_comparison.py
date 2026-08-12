@@ -188,14 +188,17 @@ class TestBuildRfdetrScript:
 # ────────────────────────────────────────────────────────────
 
 
-def _fake_rfdetr_writer(name, input_path, output_dir, crop_w, crop_h, bridge_gap, script_dir):
+def _fake_rfdetr_writer(
+    name, input_path, output_dir, crop_w, crop_h, bridge_gap, script_dir, checkpoint=None
+):
     """Stand-in for tracker_configs.write_rfdetr_config that avoids touching the real
     particle-tracking/run_configs/ directory and mirrors its real stub_filter/search_range
     defaults (90 / 25)."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     cfg_path = Path(output_dir) / f"{name}.yaml"
+    checkpoint_line = f'\nmodel:\n  checkpoint: "{checkpoint}"' if checkpoint else ""
     cfg_path.write_text(
-        f'input: "{input_path}"\ntracking:\n  stub_filter: 90\n  search_range: 25\n'
+        f'input: "{input_path}"\ntracking:\n  stub_filter: 90\n  search_range: 25\n{checkpoint_line}'
     )
     return cfg_path
 
@@ -625,6 +628,113 @@ class TestRunFullComparison:
         )
         with pytest.raises(SystemExit):
             run_full_comparison(args, parser)
+
+
+class TestCheckpointPassthroughRegression:
+    """Direct regression coverage for the bug where write_rfdetr_config() hardcoded its
+    checkpoint path and silently ignored --models' checkpoint argument entirely -- prior
+    coverage only exercised this incidentally (e.g. via the fake writer's own default
+    behavior), never asserting the checkpoint value actually reaches the writer call."""
+
+    def test_rfdetr_checkpoint_reaches_the_writer_call(self, tmp_path):
+        input_path = tmp_path / "video.tif"
+        input_path.write_bytes(b"fake")
+
+        args, parser = _parse_full_run_args(
+            tmp_path, input_path, ["rf-detr:../rf-detr/checkpoints-a40/checkpoint_best_ema.pth"]
+        )
+
+        with (
+            patch(
+                "tracker_configs.write_rfdetr_config", side_effect=_fake_rfdetr_writer
+            ) as mock_writer,
+            patch("subprocess.Popen") as mock_popen_cls,
+            patch("analyze_tracks.compute_track_stats") as mock_stats,
+        ):
+            mock_popen_cls.return_value = _mock_popen(0)
+            mock_stats.return_value = {"n_tracks": 1}
+
+            run_full_comparison(args, parser)
+
+        assert (
+            mock_writer.call_args.kwargs["checkpoint"]
+            == "../rf-detr/checkpoints-a40/checkpoint_best_ema.pth"
+        )
+
+    def test_lodestar_spec_does_not_forward_a_checkpoint_kwarg(self, tmp_path):
+        """write_lodestar_config() never accepted a checkpoint parameter -- its hardcoded
+        default already matches the canonical lodestar checkpoint. Confirms the rf-detr-only
+        checkpoint threading in _write_model_config() doesn't spill over to lodestar specs."""
+        input_path = tmp_path / "video.tif"
+        input_path.write_bytes(b"fake")
+
+        args, parser = _parse_full_run_args(
+            tmp_path, input_path, ["lodestar:../data-setup/models/lodestar_model_15/model.pt"]
+        )
+
+        with (
+            patch(
+                "tracker_configs.write_lodestar_config", side_effect=_fake_lodestar_writer
+            ) as mock_writer,
+            patch("subprocess.Popen") as mock_popen_cls,
+            patch("analyze_tracks.compute_track_stats") as mock_stats,
+        ):
+            mock_popen_cls.return_value = _mock_popen(0)
+            mock_stats.return_value = {"n_tracks": 1}
+
+            run_full_comparison(args, parser)
+
+        assert "checkpoint" not in mock_writer.call_args.kwargs
+
+
+class TestTracksCsvPathRegression:
+    """Direct regression coverage for the bug where run_full_comparison() looked for
+    tracks.csv directly at model_output_dir, but track.py always nests actual output under
+    model_output_dir/<input's Path.stem>/ for batch-mode support -- prior coverage fully
+    mocked compute_track_stats with no assertion on the path it was called with."""
+
+    def test_directory_input_uses_nested_stem_path(self, tmp_path):
+        input_dir = tmp_path / "synthetic_frames"
+        input_dir.mkdir()
+        (input_dir / "frame_00000.png").write_bytes(b"fake")
+
+        args, parser = _parse_full_run_args(tmp_path, input_dir, ["rf-detr:ckpt.pth"])
+
+        with (
+            patch("tracker_configs.write_rfdetr_config", side_effect=_fake_rfdetr_writer),
+            patch("subprocess.Popen") as mock_popen_cls,
+            patch("analyze_tracks.compute_track_stats") as mock_stats,
+        ):
+            mock_popen_cls.return_value = _mock_popen(0)
+            mock_stats.return_value = {"n_tracks": 1}
+
+            manifest_path, _ = run_full_comparison(args, parser)
+
+        model_output_dir = Path(json.loads(manifest_path.read_text())["models"][0]["output_dir"])
+        called_path = Path(mock_stats.call_args.args[0])
+        assert called_path == model_output_dir / "synthetic_frames" / "tracks.csv"
+
+    def test_file_input_uses_nested_stem_path_not_full_filename(self, tmp_path):
+        """Path("video.tif").stem == "video" -- the extension must be stripped, not just
+        the directory-input case coincidentally working because a directory has no suffix."""
+        input_file = tmp_path / "video.tif"
+        input_file.write_bytes(b"fake")
+
+        args, parser = _parse_full_run_args(tmp_path, input_file, ["rf-detr:ckpt.pth"])
+
+        with (
+            patch("tracker_configs.write_rfdetr_config", side_effect=_fake_rfdetr_writer),
+            patch("subprocess.Popen") as mock_popen_cls,
+            patch("analyze_tracks.compute_track_stats") as mock_stats,
+        ):
+            mock_popen_cls.return_value = _mock_popen(0)
+            mock_stats.return_value = {"n_tracks": 1}
+
+            manifest_path, _ = run_full_comparison(args, parser)
+
+        model_output_dir = Path(json.loads(manifest_path.read_text())["models"][0]["output_dir"])
+        called_path = Path(mock_stats.call_args.args[0])
+        assert called_path == model_output_dir / "video" / "tracks.csv"
 
 
 class TestExistingImageModeUnaffected:
