@@ -414,6 +414,7 @@ def calibrate_brightfield(
     # so they need no fitting.
     fitted_real_frames = [_fit_to_canvas(f, image_height, image_width) for f in real_frames]
     targets = list(mie_frames) + fitted_real_frames
+    search_max_particles = min(max(len(positions_lj), 1), 50)
 
     best_score = -np.inf
     best_params = None
@@ -427,7 +428,7 @@ def calibrate_brightfield(
         z_a = float(rng.uniform(*bounds["z_range_px"]))
         z_b = float(rng.uniform(*bounds["z_range_px"]))
         candidate = {
-            "max_particles": max(len(positions_lj), 1),
+            "max_particles": search_max_particles,
             "intensity_scale": float(rng.uniform(*bounds["intensity_scale"])),
             "na": float(rng.uniform(*bounds["na"])),
             "wavelength": float(rng.uniform(*bounds["wavelength"])),
