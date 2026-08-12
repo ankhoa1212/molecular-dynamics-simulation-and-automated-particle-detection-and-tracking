@@ -955,6 +955,11 @@ def main():
             cfg_get(cfg, "detection", "box_size", default=None), detection_profile
         )
     )
+    if model_type == "lodestar" and detection_profile is not None:
+        print(
+            f"LodeSTAR:  box_size={lodestar_box_size}, nms_distance={lodestar_nms_distance} "
+            "(derived from dataset_profile)"
+        )
     lodestar_fp16 = args.lodestar_fp16 or cfg_get(cfg, "detection", "fp16", default=False)
     save_trajectory_image = args.save_trajectory_image or cfg_get(
         cfg, "output", "save_trajectory_image", default=False
@@ -1169,6 +1174,13 @@ def main():
             print(
                 f"Tiling:    {nx}×{ny} tiles, tile_size={tiling_tile_size}, overlap={tiling_overlap} (frame {fw}×{fh})"
             )
+            if tiling_explicit_tile_size is None and detection_profile is None:
+                print(
+                    "Warning:   tiling has no explicit tile_size and no dataset_profile -- "
+                    f"running at the {tiling_tile_size}px hardcoded fallback, which may be "
+                    "larger than this frame and silently cap detections at num_queries. "
+                    "Set dataset_profile (or tile_size) to derive a value for this dataset."
+                )
 
         # 1. Detection phase
         all_detections = []

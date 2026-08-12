@@ -51,6 +51,13 @@ class TestWriteRfdetrConfig:
         assert parsed["output"]["save_trajectory_image"] is True
         assert "tiling" in parsed  # no crop given -> tiling spatial config
         assert "crop" not in parsed
+        # R1 regression: no live tile_size literal shadowing track.py's own
+        # dataset-profile-derived resolution (resolve_tile_size).
+        assert "tile_size" not in parsed["tiling"]
+        assert parsed["tiling"]["enabled"] is True
+        assert parsed["tiling"]["overlap"] == 100
+        assert parsed["tiling"]["nms_threshold"] == 0.3
+        assert "dataset_profile" not in parsed
 
     def test_crop_dims_override_tiling(self, tmp_path):
         output_dir = str(tmp_path / "out")
@@ -89,6 +96,31 @@ class TestWriteRfdetrConfig:
         assert cfg_path.parent == tmp_path / "run_configs"
         assert cfg_path.name.startswith("rf-detr_myname_")
         assert cfg_path.suffix == ".yaml"
+
+    def test_dataset_profile_included_when_given(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_rfdetr_config(
+            "vid1",
+            "/videos/vid1.tif",
+            output_dir,
+            None,
+            None,
+            None,
+            tmp_path,
+            dataset_profile="../dataset-profiles/synthetic-default.yaml",
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert parsed["dataset_profile"] == "../dataset-profiles/synthetic-default.yaml"
+
+    def test_dataset_profile_omitted_when_none(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_rfdetr_config(
+            "vid1", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert "dataset_profile" not in parsed
 
     def test_same_name_produces_distinct_paths_across_calls(self, tmp_path):
         # Regression: two invocations sharing the same `name` (e.g. two
@@ -136,11 +168,14 @@ class TestWriteLodestarConfig:
         assert parsed["model"]["type"] == "lodestar"
         assert parsed["model"]["checkpoint"] == "../data-setup/models/lodestar_model_15/model.pt"
         assert parsed["detection"]["alpha"] == 0.9
-        assert parsed["detection"]["nms_distance"] == 30
         assert parsed["detection"]["fp16"] is True
         assert parsed["tracking"]["search_range"] == 20
         assert parsed["tracking"]["memory"] == 10
         assert parsed["tracking"]["stub_filter"] == 6
+        # R1 regression (same shape as RF-DETR's tile_size): no live nms_distance
+        # literal shadowing track.py's dataset-profile-derived resolution.
+        assert "nms_distance" not in parsed["detection"]
+        assert "dataset_profile" not in parsed
 
     def test_crop_dims_included_when_given(self, tmp_path):
         output_dir = str(tmp_path / "out")
@@ -178,6 +213,31 @@ class TestWriteLodestarConfig:
         assert cfg_path.parent == tmp_path / "run_configs"
         assert cfg_path.name.startswith("lodestar_myname_")
         assert cfg_path.suffix == ".yaml"
+
+    def test_dataset_profile_included_when_given(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_lodestar_config(
+            "vid1",
+            "/videos/vid1.tif",
+            output_dir,
+            None,
+            None,
+            None,
+            tmp_path,
+            dataset_profile="../dataset-profiles/synthetic-default.yaml",
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert parsed["dataset_profile"] == "../dataset-profiles/synthetic-default.yaml"
+
+    def test_dataset_profile_omitted_when_none(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_lodestar_config(
+            "vid1", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert "dataset_profile" not in parsed
 
     def test_threshold_falls_back_to_default_when_autolabel_config_missing(self, tmp_path):
         # tmp_path has no ../data-setup/configs/autolabel_2um_lodestar_model_15.json,

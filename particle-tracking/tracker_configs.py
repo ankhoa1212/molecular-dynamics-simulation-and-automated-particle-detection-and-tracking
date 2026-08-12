@@ -66,14 +66,20 @@ def parse_crop_dims(crop_str: str | None, error_fn) -> tuple[int | None, int | N
 
 
 def _spatial_config(crop_w: int | None, crop_h: int | None, default_tiling: bool) -> dict:
-    """Return the crop or tiling sub-dict for a generated config, or {} for neither."""
+    """Return the crop or tiling sub-dict for a generated config, or {} for neither.
+
+    tile_size is deliberately omitted from the tiling dict below (rather than hardcoded)
+    so track.py's own dataset-profile-derived resolution (resolve_tile_size) isn't
+    permanently shadowed by an explicit value that always wins by precedence — mirrors
+    config.yaml's own tiling: block, which leaves tile_size commented out for the same
+    reason.
+    """
     if crop_w is not None and crop_h is not None:
         return {"crop": {"width": crop_w, "height": crop_h, "center": True}}
     if default_tiling:
         return {
             "tiling": {
                 "enabled": True,
-                "tile_size": 800,
                 "overlap": 100,
                 "nms_threshold": 0.3,
             }
@@ -90,6 +96,7 @@ def write_rfdetr_config(
     bridge_gap: int | None,
     script_dir: Path,
     checkpoint: str | None = None,
+    dataset_profile: str | None = None,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -99,6 +106,7 @@ def write_rfdetr_config(
 
     cfg = {
         "input": input_path,
+        **({"dataset_profile": dataset_profile} if dataset_profile is not None else {}),
         "model": {
             "type": "rf-detr",
             "checkpoint": checkpoint or "../rf-detr/checkpoints/checkpoint_best_regular.pth",
@@ -151,6 +159,7 @@ def write_lodestar_config(
     crop_h: int | None,
     bridge_gap: int | None,
     script_dir: Path,
+    dataset_profile: str | None = None,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -164,16 +173,23 @@ def write_lodestar_config(
 
     cfg = {
         "input": input_path,
+        **({"dataset_profile": dataset_profile} if dataset_profile is not None else {}),
         "model": {
             "type": "lodestar",
             "checkpoint": "../data-setup/models/lodestar_model_15/model.pt",
             "device": "0",
         },
         **_spatial_config(crop_w, crop_h, default_tiling=False),
+        # nms_distance intentionally NOT set here -- leaving it unset lets track.py
+        # derive it from dataset_profile's size_px/spacing_px, falling back to
+        # detector_defaults.yaml's canonical 30px value if no profile is referenced.
+        # Matches lodestar_config.yaml's own convention (same rationale, same comment
+        # shape) -- a live literal here would permanently shadow that derivation,
+        # reproducing the exact nms_distance 0.51->0.12 recall-collapse bug this
+        # mechanism exists to prevent (see AGENTS.md).
         "detection": {
             "threshold": threshold,
             "alpha": 0.9,
-            "nms_distance": 30,
             "fp16": True,
         },
         "tracking": tracking,
