@@ -35,6 +35,7 @@ data-setup/models/
 # yolov12
 yolov12/*.pt
 yolov12/runs/
+/runs/
 
 # yolov5 (vendored, not a submodule)
 yolov5/

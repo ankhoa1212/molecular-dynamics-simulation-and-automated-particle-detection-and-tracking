@@ -31,6 +31,13 @@ model:
   resolution: null                 # input resolution in px (null = rfdetr default: 704 for large, 560 for base)
 
 training:
+  seed: 42                         # seeds all RNGs at fit start (rfdetr no-ops seeding when unset — see module_model.py:on_fit_start)
+  # NOT YET APPLIED to checkpoints/ -- that checkpoint predates this config (trained unseeded, HorizontalFlip only).
+  # yolov12/config.yaml's flipud is deliberately kept at 0.0 to match it. Retrain rf-detr with this config, then
+  # bump yolov12's flipud back to 0.5, to restore matched augmentation between the two models.
+  aug_config:                       # rfdetr's library default (AUG_CONFIG) leaves VerticalFlip commented out;
+    HorizontalFlip: {p: 0.5}        # particle microscopy frames have no canonical "up", so enable it here
+    VerticalFlip: {p: 0.5}          # (matches yolov12's flipud, once yolov12 is bumped back to 0.5)
   epochs: 50
   batch_size: 1                    # forced to 1; auto-tuner understimates peak VRAM from 600-query IoU loss on 12 GB GPUs
   grad_accum_steps: 8              # effective_batch = batch_size * grad_accum_steps; drop to 1 on large GPUs

@@ -96,6 +96,8 @@ def main() -> None:
 
     train_kwargs: dict = {
         "dataset_dir": str(dataset_dir),
+        "seed": train_cfg["seed"],
+        "aug_config": train_cfg["aug_config"],
         "epochs": train_cfg["epochs"],
         "batch_size": train_cfg["batch_size"],
         "grad_accum_steps": train_cfg["grad_accum_steps"],

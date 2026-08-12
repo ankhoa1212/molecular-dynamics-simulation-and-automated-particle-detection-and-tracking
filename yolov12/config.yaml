@@ -1,5 +1,5 @@
 data:
-  dir: "/mnt/d/Particle Tracking Data/2um-yolov12/"             # path to directory containing data.yaml and images (absolute or relative to this config file)
+  dir: "/mnt/d/Particle Tracking Data/2um-yolov12-matched/"      # same images + train/val/test split as rf-detr/config.yaml (data-setup/yolo_split.py), for an apples-to-apples comparison
 
 model:
   weights: yolo12m.pt    # medium variant: better spatial feature depth for dense single-class detection
@@ -7,9 +7,13 @@ model:
 
 training:
   epochs: 100
-  batch: 16
+  batch: 4                # dropped from 16: TaskAlignedAssigner's per-batch cost tensor scales with
+                          # batch x max_particles_in_batch x anchors -- frames average ~1480 particles
+                          # (max 3225), which OOM'd the assigner on the RTX 4070 12GB at batch 16
   device: "0"
   name: yolo12m-particles
+  flipud: 0.0             # kept off for now to match rf-detr's CURRENTLY TRAINED checkpoint (predates rf-detr/config.yaml's
+                          # VerticalFlip addition). Bump to 0.5 once rf-detr is retrained with that config -- see aug_config there.
 
 mlflow:
   experiment_name: yolov12
