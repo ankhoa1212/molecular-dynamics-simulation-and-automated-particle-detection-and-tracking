@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from detectors_common.dataset_profile import load_dataset_profile
 from tracker_configs import parse_crop_dims, write_lodestar_config, write_rfdetr_config
 
 # ────────────────────────────────────────────────────────────
@@ -65,6 +66,15 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Reconnect track fragments with a gap of at most N frames",
     )
+    parser.add_argument(
+        "--dataset-profile",
+        type=str,
+        default=None,
+        help="Path to a dataset scale profile YAML (size_px/spacing_px). When set, "
+        "tile_size/box_size/nms_distance/search_range derive from it via "
+        "detectors_common/trackers_common.scale_derivation unless explicitly "
+        "overridden elsewhere. Applies uniformly to every video in this run",
+    )
 
     args = parser.parse_args()
 
@@ -72,6 +82,15 @@ def parse_args() -> argparse.Namespace:
 
     if args.bridge_gap is not None and args.bridge_gap <= 0:
         parser.error("--bridge-gap requires a positive integer")
+
+    # Fail fast on a bad --dataset-profile path before generating any config for
+    # any of VIDEOS' entries, rather than surfacing it later inside a track.py
+    # subprocess partway through the batch.
+    if args.dataset_profile is not None:
+        try:
+            load_dataset_profile(args.dataset_profile)
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(f"--dataset-profile: {exc}")
 
     return args
 
@@ -232,6 +251,7 @@ def main() -> None:
                 crop_h,
                 args.bridge_gap,
                 script_dir,
+                dataset_profile=args.dataset_profile,
             )
         )
         lodestar_configs.append(
@@ -243,6 +263,7 @@ def main() -> None:
                 crop_h,
                 args.bridge_gap,
                 script_dir,
+                dataset_profile=args.dataset_profile,
             )
         )
         print(f"  Configs for {short_name}", flush=True)
