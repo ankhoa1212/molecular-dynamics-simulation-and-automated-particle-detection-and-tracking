@@ -283,6 +283,7 @@ def _write_model_config(
     crop_h: int | None,
     bridge_gap: int | None,
     checkpoint: Path | None = None,
+    dataset_profile: str | None = None,
 ) -> Path:
     """Generate a per-model tracking config via the shared tracker_configs.py writers."""
     import tracker_configs
@@ -304,6 +305,10 @@ def _write_model_config(
         if model_type == "rf-detr" and checkpoint is not None
         else {}
     )
+    # Unlike checkpoint, both writers accept dataset_profile -- it drives
+    # tile_size for rf-detr and box_size/nms_distance/search_range for lodestar.
+    if dataset_profile is not None:
+        writer_kwargs["dataset_profile"] = dataset_profile
     return writer(
         name, input_path, output_dir, crop_w, crop_h, bridge_gap, SCRIPT_DIR, **writer_kwargs
     )
@@ -376,10 +381,19 @@ def run_full_comparison(
     import json
 
     import analyze_tracks
+    from detectors_common.dataset_profile import load_dataset_profile
 
     input_path = Path(args.input)
     if not input_path.exists():
         parser.error(f"Input not found: {input_path}")
+
+    # Fail fast on a bad --dataset-profile path before any per-model config is
+    # generated, rather than surfacing it later inside a track.py subprocess.
+    if args.dataset_profile is not None:
+        try:
+            load_dataset_profile(args.dataset_profile)
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(f"--dataset-profile: {exc}")
 
     crop_w, crop_h = parse_crop(args.crop, parser)
 
@@ -393,9 +407,11 @@ def run_full_comparison(
         # First occurrence of a model_type keeps today's unsuffixed naming; a repeat
         # model_type (e.g. two rf-detr specs with different checkpoints) gets a numeric
         # suffix so it doesn't collide with the first entry's output dir/config file.
-        # This is path/config-name hygiene only — the config writers below don't accept
-        # a checkpoint parameter yet, so two same-model_type entries still run the same
-        # hardcoded checkpoint (see plan KTD/Scope Boundaries).
+        # This is path/config-name hygiene only — write_lodestar_config doesn't accept
+        # a checkpoint parameter (its hardcoded default already matches the canonical
+        # lodestar checkpoint), so two same-model_type lodestar entries still run the
+        # same checkpoint (see plan KTD/Scope Boundaries). rf-detr entries do each get
+        # their own spec.checkpoint threaded through via write_rfdetr_config.
         seen_model_types[model_type] = seen_model_types.get(model_type, 0) + 1
         occurrence = seen_model_types[model_type]
         dir_suffix = model_type if occurrence == 1 else f"{model_type}-{occurrence}"
@@ -421,6 +437,7 @@ def run_full_comparison(
                 crop_h,
                 args.bridge_gap,
                 checkpoint=spec.checkpoint,
+                dataset_profile=args.dataset_profile,
             )
         except Exception as exc:
             entry["error"] = str(exc)
@@ -578,6 +595,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="Reconnect track fragments with a gap of at most N frames (--input mode only)",
+    )
+    parser.add_argument(
+        "--dataset-profile",
+        type=str,
+        default=None,
+        help="Path to a dataset scale profile YAML (size_px/spacing_px). When set, "
+        "tile_size/box_size/nms_distance/search_range derive from it via "
+        "detectors_common/trackers_common.scale_derivation unless explicitly "
+        "overridden elsewhere (--input mode only)",
     )
     return parser
 
