@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,13 @@ class TestWriteRfdetrConfig:
         assert parsed["output"]["save_trajectory_image"] is True
         assert "tiling" in parsed  # no crop given -> tiling spatial config
         assert "crop" not in parsed
+        # R1 regression: no live tile_size literal shadowing track.py's own
+        # dataset-profile-derived resolution (resolve_tile_size).
+        assert "tile_size" not in parsed["tiling"]
+        assert parsed["tiling"]["enabled"] is True
+        assert parsed["tiling"]["overlap"] == 100
+        assert parsed["tiling"]["nms_threshold"] == 0.3
+        assert "dataset_profile" not in parsed
 
     def test_crop_dims_override_tiling(self, tmp_path):
         output_dir = str(tmp_path / "out")
@@ -89,6 +97,31 @@ class TestWriteRfdetrConfig:
         assert cfg_path.parent == tmp_path / "run_configs"
         assert cfg_path.name.startswith("rf-detr_myname_")
         assert cfg_path.suffix == ".yaml"
+
+    def test_dataset_profile_included_when_given(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_rfdetr_config(
+            "vid1",
+            "/videos/vid1.tif",
+            output_dir,
+            None,
+            None,
+            None,
+            tmp_path,
+            dataset_profile="../dataset-profiles/synthetic-default.yaml",
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert parsed["dataset_profile"] == "../dataset-profiles/synthetic-default.yaml"
+
+    def test_dataset_profile_omitted_when_none(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_rfdetr_config(
+            "vid1", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert "dataset_profile" not in parsed
 
     def test_same_name_produces_distinct_paths_across_calls(self, tmp_path):
         # Regression: two invocations sharing the same `name` (e.g. two
@@ -136,11 +169,14 @@ class TestWriteLodestarConfig:
         assert parsed["model"]["type"] == "lodestar"
         assert parsed["model"]["checkpoint"] == "../data-setup/models/lodestar_model_15/model.pt"
         assert parsed["detection"]["alpha"] == 0.9
-        assert parsed["detection"]["nms_distance"] == 30
         assert parsed["detection"]["fp16"] is True
         assert parsed["tracking"]["search_range"] == 20
         assert parsed["tracking"]["memory"] == 10
         assert parsed["tracking"]["stub_filter"] == 6
+        # R1 regression (same shape as RF-DETR's tile_size): no live nms_distance
+        # literal shadowing track.py's dataset-profile-derived resolution.
+        assert "nms_distance" not in parsed["detection"]
+        assert "dataset_profile" not in parsed
 
     def test_crop_dims_included_when_given(self, tmp_path):
         output_dir = str(tmp_path / "out")
@@ -178,6 +214,31 @@ class TestWriteLodestarConfig:
         assert cfg_path.parent == tmp_path / "run_configs"
         assert cfg_path.name.startswith("lodestar_myname_")
         assert cfg_path.suffix == ".yaml"
+
+    def test_dataset_profile_included_when_given(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_lodestar_config(
+            "vid1",
+            "/videos/vid1.tif",
+            output_dir,
+            None,
+            None,
+            None,
+            tmp_path,
+            dataset_profile="../dataset-profiles/synthetic-default.yaml",
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert parsed["dataset_profile"] == "../dataset-profiles/synthetic-default.yaml"
+
+    def test_dataset_profile_omitted_when_none(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_lodestar_config(
+            "vid1", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert "dataset_profile" not in parsed
 
     def test_threshold_falls_back_to_default_when_autolabel_config_missing(self, tmp_path):
         # tmp_path has no ../data-setup/configs/autolabel_2um_lodestar_model_15.json,
@@ -327,6 +388,42 @@ class TestRunTrackingIntegration:
             assert lodestar_parsed["output"]["dir"] == lodestar_output_dir
             assert lodestar_parsed["tracking"]["stub_filter"] == 6
 
+    def test_dataset_profile_reaches_every_video_when_given(self, tmp_path, monkeypatch):
+        """Mirrors main()'s per-video loop shape (one dataset_profile value threaded
+        into both writer calls for every VIDEOS entry), the same way
+        args.bridge_gap is already exercised by the test above."""
+        import run_tracking
+
+        results_base = str(tmp_path / "results")
+        monkeypatch.setattr(run_tracking, "RESULTS_BASE", results_base)
+        script_dir = tmp_path
+        profile_path = str(tmp_path / "profile.yaml")
+
+        for short_name, input_path in run_tracking.VIDEOS.items():
+            rfdetr_cfg = run_tracking.write_rfdetr_config(
+                short_name,
+                input_path,
+                f"{results_base}/rf-detr/{short_name}",
+                None,
+                None,
+                None,
+                script_dir,
+                dataset_profile=profile_path,
+            )
+            assert yaml.safe_load(rfdetr_cfg.read_text())["dataset_profile"] == profile_path
+
+            lodestar_cfg = run_tracking.write_lodestar_config(
+                short_name,
+                input_path,
+                f"{results_base}/lodestar/{short_name}",
+                None,
+                None,
+                None,
+                script_dir,
+                dataset_profile=profile_path,
+            )
+            assert yaml.safe_load(lodestar_cfg.read_text())["dataset_profile"] == profile_path
+
     def test_run_tracking_no_longer_defines_writers_locally(self):
         """The functions must be genuinely imported, not shadowed by a
         leftover local definition in run_tracking.py's module namespace."""
@@ -340,3 +437,81 @@ class TestRunTrackingIntegration:
         assert Path(inspect.getsourcefile(run_tracking.write_lodestar_config)).name == (
             "tracker_configs.py"
         )
+
+
+class TestRunTrackingDatasetProfileFlag:
+    """--dataset-profile CLI wiring in run_tracking.parse_args(), per R2/R3/R7."""
+
+    @staticmethod
+    def _write_profile(tmp_path, name="profile.yaml"):
+        profile_path = tmp_path / name
+        profile_path.write_text("size_px: 5.0\nspacing_px: 10.0\n")
+        return profile_path
+
+    def test_defaults_to_none(self, monkeypatch):
+        import run_tracking
+
+        monkeypatch.setattr(sys, "argv", ["run_tracking.py"])
+        args = run_tracking.parse_args()
+
+        assert args.dataset_profile is None
+
+    def test_valid_path_is_accepted(self, tmp_path, monkeypatch):
+        import run_tracking
+
+        profile_path = self._write_profile(tmp_path)
+        monkeypatch.setattr(
+            sys, "argv", ["run_tracking.py", "--dataset-profile", str(profile_path)]
+        )
+        args = run_tracking.parse_args()
+
+        assert args.dataset_profile == str(profile_path)
+
+    def test_invalid_path_is_a_cli_error(self, tmp_path, monkeypatch):
+        import run_tracking
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_tracking.py", "--dataset-profile", str(tmp_path / "does_not_exist.yaml")],
+        )
+
+        with pytest.raises(SystemExit):
+            run_tracking.parse_args()
+
+    def test_combines_with_crop_and_bridge_gap(self, tmp_path, monkeypatch):
+        import run_tracking
+
+        profile_path = self._write_profile(tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "run_tracking.py",
+                "--dataset-profile",
+                str(profile_path),
+                "--crop",
+                "512x512",
+                "--bridge-gap",
+                "10",
+            ],
+        )
+        args = run_tracking.parse_args()
+
+        assert args.dataset_profile == str(profile_path)
+        assert (args.crop_w, args.crop_h) == (512, 512)
+        assert args.bridge_gap == 10
+
+    def test_combines_with_crop_auto(self, tmp_path, monkeypatch):
+        import run_tracking
+
+        profile_path = self._write_profile(tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_tracking.py", "--dataset-profile", str(profile_path), "--crop-auto"],
+        )
+        args = run_tracking.parse_args()
+
+        assert args.dataset_profile == str(profile_path)
+        assert args.crop_auto is True

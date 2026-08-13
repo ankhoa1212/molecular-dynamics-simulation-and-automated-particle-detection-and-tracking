@@ -1338,6 +1338,88 @@ class TestDatasetProfileTilingDerivation:
         assert captured and all(t == 1024 for t in captured)
 
 
+class TestTilingFallbackWarning:
+    """R6 regression: a run with tiling enabled but neither an explicit tile_size
+    nor a dataset_profile must warn that it's silently at the hardcoded fallback --
+    otherwise the exact incident that motivated this plan (RF-DETR capped at
+    num_queries regardless of true particle density) can recur with no signal."""
+
+    def test_warns_when_no_explicit_tile_size_and_no_profile(
+        self, tmp_path, run_main_capture_tiling, capsys
+    ):
+        cfg_path = _write_config(
+            tmp_path,
+            dataset_profile=None,
+            tiling={"enabled": True, "overlap": 20, "nms_threshold": 0.3},
+        )
+        big_frames = [np.zeros((2000, 2000, 3), dtype=np.uint8) for _ in range(2)]
+
+        run_main_capture_tiling(
+            ["--config", str(cfg_path)], _constant_detection_model(), big_frames
+        )
+
+        assert "hardcoded fallback" in capsys.readouterr().out
+
+    def test_no_warning_when_dataset_profile_is_set(
+        self, tmp_path, run_main_capture_tiling, capsys
+    ):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_config(
+            tmp_path,
+            dataset_profile=profile_path,
+            tiling={"enabled": True, "overlap": 20, "nms_threshold": 0.3},
+        )
+        big_frames = [np.zeros((300, 300, 3), dtype=np.uint8) for _ in range(2)]
+
+        run_main_capture_tiling(
+            ["--config", str(cfg_path)], _constant_detection_model(), big_frames
+        )
+
+        assert "hardcoded fallback" not in capsys.readouterr().out
+
+    def test_no_warning_when_explicit_tile_size_is_set(
+        self, tmp_path, run_main_capture_tiling, capsys
+    ):
+        cfg_path = _write_config(
+            tmp_path,
+            dataset_profile=None,
+            tiling={"enabled": True, "tile_size": 500, "overlap": 20, "nms_threshold": 0.3},
+        )
+        big_frames = [np.zeros((2000, 2000, 3), dtype=np.uint8) for _ in range(2)]
+
+        run_main_capture_tiling(
+            ["--config", str(cfg_path)], _constant_detection_model(), big_frames
+        )
+
+        assert "hardcoded fallback" not in capsys.readouterr().out
+
+
+class TestLodestarProfileVisibility:
+    """R6 regression: KTD3 widens dataset_profile's blast radius onto lodestar's
+    box_size/nms_distance, previously only discoverable by reading the generated
+    config. The resolved values must be printed at runtime instead."""
+
+    def test_prints_resolved_values_when_profile_is_set(
+        self, tmp_path, run_main_lodestar_capture_kwargs, capsys
+    ):
+        profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
+        cfg_path = _write_lodestar_config(tmp_path, dataset_profile=profile_path)
+
+        run_main_lodestar_capture_kwargs(["--config", str(cfg_path)], _fake_frames(3))
+
+        out = capsys.readouterr().out
+        assert "LodeSTAR:" in out
+        assert "box_size=" in out
+        assert "nms_distance=" in out
+
+    def test_no_print_when_no_profile(self, tmp_path, run_main_lodestar_capture_kwargs, capsys):
+        cfg_path = _write_lodestar_config(tmp_path, dataset_profile=None)
+
+        run_main_lodestar_capture_kwargs(["--config", str(cfg_path)], _fake_frames(3))
+
+        assert "LodeSTAR:" not in capsys.readouterr().out
+
+
 class TestShippedConfigsNoLongerShortCircuitDerivation:
     """Regression guard for R11/AE7: the shipped config.yaml/lodestar_config.yaml
     must not carry live literal values for the parameters this plan derives --
