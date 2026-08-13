@@ -68,7 +68,9 @@ def run(config_path: str = "config.yaml") -> None:
             imgsz=model_cfg["imgsz"],
             batch=train_cfg["batch"],
             device=train_cfg["device"],
+            project=os.path.join(config_dir, "runs", "detect"),
             name=train_cfg["name"],
+            flipud=train_cfg["flipud"],
             task="detect",
         )
     finally:
