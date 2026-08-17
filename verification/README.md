@@ -3,7 +3,7 @@
 End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering.
 
 1. **`render.py`** — converts a LAMMPS trajectory into synthetic microscopy TIFFs with known particle positions; writes `ground_truth.json` (per-frame positions) and `ground_truth_tracks.csv` (per-particle track ground truth for MOTA/IDF1).
-2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
+2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, YOLOv12, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
@@ -17,11 +17,11 @@ cd verification/
 uv sync
 ```
 
-`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default) and LodeSTAR each pull their compiled dependencies (torch, and either `rfdetr` or `deeplay`/`supervision`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv. `trackpy` needs no sibling-project venv — it's a classical, non-CUDA algorithm and already a native dependency of `verification/`'s own venv (installed by the `uv sync` above):
+`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default), LodeSTAR, and YOLOv12 each pull their compiled dependencies (torch, and either `rfdetr`, `deeplay`/`supervision`, or `ultralytics`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv. `trackpy` needs no sibling-project venv — it's a classical, non-CUDA algorithm and already a native dependency of `verification/`'s own venv (installed by the `uv sync` above):
 
 ```bash
 cd ../rf-detr && uv sync             # --model-type rf-detr (default)
-cd ../particle-tracking && uv sync   # --model-type lodestar
+cd ../particle-tracking && uv sync   # --model-type lodestar or yolo
 # --model-type trackpy needs nothing further — runs natively in verification/.venv
 ```
 
@@ -157,6 +157,12 @@ uv run python benchmark.py \
     --ground-truth verification_output/ground_truth.json \
     --model-type lodestar
 
+# Detection only, YOLOv12
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type yolo
+
 # Detection only, trackpy (classical baseline, no venv/checkpoint needed)
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
@@ -197,9 +203,10 @@ synthetic dataset; a real dataset's `size_px`/`spacing_px` come from `calibrate_
 |----------------|-------------------|----------------|-------|
 | `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
 | `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
+| `yolo` | `benchmark.yolo.*` (`checkpoint`, `threshold`, `device`) | `particle-tracking/.venv` | Always runs full-frame — ultralytics applies its own internal NMS/detection cap (`max_det=5000`), so tiling doesn't apply |
 | `trackpy` | `benchmark.trackpy.*` (`diameter`, `minmass`, `separation`) | none — runs natively in `verification/.venv` | Classical brightness-thresholding baseline (`trackpy.locate`), not a learned model; no checkpoint file, no loaded model object |
 
-`--device` is shared across model types; `benchmark.lodestar.device` overrides it for LodeSTAR specifically when set. `trackpy` is CPU-only and ignores `--device`.
+`--device` is shared across model types; `benchmark.lodestar.device`/`benchmark.yolo.device` override it for LodeSTAR/YOLOv12 specifically when set. `trackpy` is CPU-only and ignores `--device`.
 
 Options:
 
@@ -209,7 +216,7 @@ Options:
 | `--ground-truth` | *(required)* | `ground_truth.json` from render.py |
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
-| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
+| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, `yolo`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--device` | `0` | CUDA device index or `cpu` |
 | `--save-video` | off | Write `tracking_visualization_{model_type}.mp4` with detection boxes and trajectory traces overlaid. Uses `tracking.search_range`/`memory` from `--config` to link detections, independent of `--ground-truth-tracks` (only needed for MOTA/IDF1) |
 | `--video-fps` | `10.0` | Frame rate for `--save-video` output |

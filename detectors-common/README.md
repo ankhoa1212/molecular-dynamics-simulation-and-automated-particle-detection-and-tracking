@@ -1,7 +1,7 @@
 # detectors-common
 
-Shared detector-loading, tiling, and config-merge primitives for RF-DETR and
-LodeSTAR, extracted from `particle-tracking/track.py` and
+Shared detector-loading, tiling, and config-merge primitives for RF-DETR,
+LodeSTAR, and YOLOv12, extracted from `particle-tracking/track.py` and
 `verification/benchmark.py` to stop the two from drifting against each other
 (see `docs/plans/2026-07-17-001-refactor-consolidate-verification-particle-tracking-plan.md`).
 
@@ -47,7 +47,7 @@ doesn't reference a profile. The tracking-side counterparts (`search_range`,
 ## Dependencies
 
 `numpy`, `supervision`, and `pyyaml` (for `dataset_profile.py`'s loader).
-`torch`, `rfdetr`, and `deeplay` are never declared here — every function
-that needs them imports lazily inside its own body, assuming the caller's
-environment already has them importable (via its own dependencies, or via
-this package's site-packages-injection helpers).
+`torch`, `rfdetr`, `deeplay`, and `ultralytics` are never declared here —
+every function that needs them imports lazily inside its own body, assuming
+the caller's environment already has them importable (via its own
+dependencies, or via this package's site-packages-injection helpers).
