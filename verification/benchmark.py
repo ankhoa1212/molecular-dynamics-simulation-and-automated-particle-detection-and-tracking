@@ -2,10 +2,11 @@
 """Benchmark detection accuracy on synthetic frames from render.py.
 
 Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR (with
-optional tiling), LodeSTAR (full-frame, no tiling), or trackpy (classical
-brightness-thresholding baseline, no venv/checkpoint needed) via --model-type,
-matches detections to known particle positions, and reports per-frame
-precision/recall/F1 and mean position error.
+optional tiling), LodeSTAR (full-frame, no tiling), YOLO (full-frame, own
+internal NMS, no tiling), or trackpy (classical brightness-thresholding
+baseline, no venv/checkpoint needed) via --model-type, matches detections to
+known particle positions, and reports per-frame precision/recall/F1 and mean
+position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
 --ground-truth-tracks is supplied (CSV from render.py U1).
@@ -27,7 +28,7 @@ Usage:
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
-        [--model-type rf-detr|lodestar|trackpy]
+        [--model-type rf-detr|lodestar|yolo|trackpy]
 """
 
 import os
@@ -51,6 +52,10 @@ SCRIPT_DIR = Path(__file__).parent
 _MODEL_VENV_DIRS = {
     "rf-detr": SCRIPT_DIR / ".." / "rf-detr" / ".venv",
     "lodestar": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
+    # Same venv as lodestar -- ultralytics/torch are already dependencies of
+    # particle-tracking/.venv (that's where track.py's own yolo support runs
+    # from), no separate venv needed.
+    "yolo": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
     "trackpy": None,
 }
 _DEFAULT_MODEL_TYPE = "rf-detr"
@@ -204,6 +209,20 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
     return _impl(
         model, frame, threshold, device, alpha=alpha, nms_distance=nms_distance, box_size=box_size
     )
+
+
+def get_yolo_model(checkpoint):
+    """Load a YOLO checkpoint, injecting particle-tracking/.venv's site-packages
+    via the shared loader."""
+    from detectors_common.yolo_loader import get_yolo_model as _impl
+
+    return _impl(checkpoint, inject_venv_site_packages=_MODEL_VENV_DIRS["yolo"])
+
+
+def detect_yolo(model, frame, threshold, device):
+    from detectors_common.yolo_loader import detect_yolo as _impl
+
+    return _impl(model, frame, threshold, device)
 
 
 def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
@@ -598,8 +617,15 @@ def _motmetrics_compute_worker(acc, metrics, conn):
     # See _link_df_with_fallback_impl's identical guard for the full
     # rationale (near-cap combinatorial solvers can grow memory far faster
     # than a wall-clock timeout alone can react to). scipy's
-    # linear_sum_assignment here has the same failure shape.
-    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
+    # linear_sum_assignment here has the same failure shape. 6GB (was 2GB):
+    # this machine has ~14GB free, and this subprocess never runs
+    # concurrently with _build_accumulator_with_timeout's own 8GB-bounded
+    # subprocess (the accumulator is fully built and back in the parent
+    # before this one starts) -- raised to give real headroom for YOLO's
+    # ~9000-track-ID case (2GB was tuned against the original ~1700-track
+    # incident; this dataset's post-max_det-fix YOLO detections fragment
+    # into far more tracks than that).
+    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
 
     try:
         summary = mm.metrics.create().compute(acc, metrics=metrics, name="tracking")
@@ -609,9 +635,12 @@ def _motmetrics_compute_worker(acc, metrics, conn):
     conn.send(summary.iloc[0].to_dict())
 
 
-def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=90):
+def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=300):
     """Run motmetrics' mh.compute() in a subprocess with a hard wall-clock
-    timeout, terminating it if exceeded.
+    timeout, terminating it if exceeded. 300s (was 90s): IDF1's global
+    identity-assignment cost scales with distinct track-ID count, and this
+    dataset's detectors can now produce far more tracks (~9000 for YOLO)
+    than the ~1700 the original 90s budget was tuned against.
 
     IDF1's global identity-assignment can scale very poorly with the number
     of distinct GT/predicted track IDs -- confirmed directly (2026-08-08):
@@ -655,6 +684,133 @@ def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=90):
     return None
 
 
+# RLIMIT_AS for _motmetrics_build_worker -- generous relative to this
+# machine's ~14GB free (leaves the rest of the system untouched even in the
+# worst case) while giving real headroom above the per-frame dist_matrix
+# cost at this project's dense-detector densities (RF-DETR/YOLO: up to
+# ~1163-1773 predictions/frame against 1446 GT -- a ~1446x1773 float64
+# matrix is only ~20MB, but motmetrics retains per-frame event data across
+# all 151 frames for the eventual global compute, so the cumulative cost is
+# what this bounds). A RLIMIT_AS hit inside the child raises MemoryError,
+# caught below and reported as a clean None -- it can never touch memory
+# outside this one subprocess, unlike the unprotected in-parent-process
+# growth this replaces (see this module's git history for the 2026-08-08
+# incident that motivated the density pre-check this function supersedes).
+_BUILD_ACCUMULATOR_RLIMIT_BYTES = 8 * 1024**3
+
+
+def _motmetrics_build_worker(gt_df, linked, psf_sigma_px, threshold_radii, conn):
+    """multiprocessing target for _build_accumulator_with_timeout. Must be a
+    module-level function (not a closure/lambda) -- multiprocessing pickles
+    the target callable to hand it to the child process. Builds the
+    MOTAccumulator itself (not just the final compute() call) inside this
+    RLIMIT_AS-bounded child -- see _BUILD_ACCUMULATOR_RLIMIT_BYTES."""
+    import resource
+
+    import motmetrics as mm
+    import pandas as pd
+
+    resource.setrlimit(
+        resource.RLIMIT_AS, (_BUILD_ACCUMULATOR_RLIMIT_BYTES, _BUILD_ACCUMULATOR_RLIMIT_BYTES)
+    )
+
+    try:
+        acc = mm.MOTAccumulator(auto_id=True)
+        for frame_idx in sorted(gt_df["frame"].unique()):
+            gt_frame = gt_df[gt_df["frame"] == frame_idx]
+            pred_frame = (
+                linked[linked["frame"] == frame_idx]
+                if "frame" in linked.columns
+                else pd.DataFrame()
+            )
+
+            gt_ids = gt_frame["particle_id"].tolist()
+            gt_xy = gt_frame[["x", "y"]].to_numpy()
+
+            pred_ids = pred_frame["track_id"].tolist() if not pred_frame.empty else []
+            pred_xy = (
+                pred_frame[["x", "y"]].to_numpy() if not pred_frame.empty else np.zeros((0, 2))
+            )
+
+            if len(gt_ids) == 0 and len(pred_ids) == 0:
+                acc.update([], [], [])
+                continue
+
+            if len(gt_ids) > 0 and len(pred_ids) > 0:
+                from scipy.spatial.distance import cdist
+
+                dist_matrix = cdist(gt_xy, pred_xy) / psf_sigma_px
+                # match_threshold (in the same psf_sigma-normalized units) must
+                # actually gate which pairs motmetrics treats as candidate
+                # matches -- NaN is motmetrics' documented "impossible pairing"
+                # sentinel, excluding it from the assignment problem entirely.
+                # Leaving every pair as a dense finite-distance candidate makes
+                # the assignment solver's cost scale with the full dense GT x
+                # pred matrix instead of the sparse subset within actual
+                # matching range.
+                dist_matrix[dist_matrix > threshold_radii] = np.nan
+            elif len(gt_ids) > 0:
+                dist_matrix = np.full((len(gt_ids), 0), np.nan)
+            else:
+                dist_matrix = np.full((0, len(pred_ids)), np.nan)
+
+            acc.update(gt_ids, pred_ids, dist_matrix)
+    except MemoryError:
+        conn.send(None)
+        return
+    conn.send(acc)
+
+
+def _build_accumulator_with_timeout(gt_df, linked, psf_sigma_px, threshold_radii, timeout_s=180):
+    """Build the motmetrics MOTAccumulator in a subprocess with a hard
+    RLIMIT_AS memory ceiling and wall-clock timeout, terminating it if
+    exceeded.
+
+    Confirmed directly (2026-08-08): this loop's own acc.update() calls --
+    not just the later mm.metrics.create().compute() call, which
+    _compute_motmetrics_with_timeout already protects -- can grow memory into
+    the double-digit-GB range and get OOM-killed when run unprotected in the
+    parent process. Before this function existed, a density/track-count
+    pre-check in _run_tracking_metrics was the only guard, which meant dense
+    detectors (RF-DETR, YOLO) never got a chance to actually produce MOTA/IDF1
+    at all, even when the real cost would have fit safely. This function
+    replaces that pre-check with a hard, self-contained safety ceiling
+    instead -- worst case, the child hits RLIMIT_AS, raises MemoryError, and
+    this returns None cleanly, exactly as safe as being skipped outright but
+    without giving up on cases that actually fit.
+
+    Uses "spawn" and polls before joining, for the same reasons as
+    _link_df_with_fallback/_compute_motmetrics_with_timeout (fork-after-CUDA
+    hazard; join-before-poll pipe deadlock on a large payload -- an
+    MOTAccumulator for a dense, 151-frame run is comparable in size to the
+    linked DataFrames those functions already pass through this exact
+    pattern).
+
+    Returns:
+        The built MOTAccumulator, or None if the build hit RLIMIT_AS or
+        didn't finish within timeout_s.
+    """
+    import multiprocessing as mp
+
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe()
+    proc = ctx.Process(
+        target=_motmetrics_build_worker,
+        args=(gt_df, linked, psf_sigma_px, threshold_radii, child_conn),
+    )
+    proc.start()
+    if parent_conn.poll(timeout_s):
+        try:
+            result = parent_conn.recv()
+        except EOFError:
+            result = None
+        proc.join()
+        return result
+    proc.terminate()
+    proc.join()
+    return None
+
+
 def _run_tracking_metrics(
     all_detections_by_frame,
     gt_tracks_path,
@@ -672,7 +828,7 @@ def _run_tracking_metrics(
         all_detections_by_frame: dict frame_idx → (N, 2) float array of pred (x, y)
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", or "trackpy") --
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo", or "trackpy") --
             resolves search_range/memory/stub_filter from trackers_common's
             canonical per-model tuning (trackers_common.tracker_defaults.yaml),
             the same values particle-tracking/tracker_configs.py generates for
@@ -698,15 +854,13 @@ def _run_tracking_metrics(
     if not tracking_enabled:
         return None
 
-    try:
-        import motmetrics as mm
-    except ImportError:
+    import importlib.util
+
+    if importlib.util.find_spec("motmetrics") is None:
         print(
             "Warning: motmetrics not installed — skipping tracking metrics. Run: uv add motmetrics"
         )
         return None
-    import importlib.util
-
     if importlib.util.find_spec("trackpy") is None:
         print("Warning: trackpy not installed — skipping tracking metrics. Run: uv add trackpy")
         return None
@@ -800,89 +954,26 @@ def _run_tracking_metrics(
         )
         return None
 
-    # Skip the accumulator-building loop entirely above a safe detection
-    # density OR a safe distinct-track-id count, rather than only guarding
-    # the later motmetrics compute step. Confirmed directly (2026-08-08):
-    # this loop's own acc.update() calls -- not just
-    # mm.metrics.create().compute() -- can grow this PARENT process's
-    # memory into the double-digit GB range and get OOM-killed. That growth
-    # happens in-process, not inside _compute_motmetrics_with_timeout's
-    # subprocess, so no timeout or rlimit protects it -- these two
-    # pre-checks are the only guard. This dormant risk was previously
-    # masked because trackpy linking used to fail first at high density
-    # (see _link_df_with_fallback); fixing that exposed it.
-    #
-    # Both checks are needed -- they catch different failure shapes:
-    # - avg_det_per_frame catches high raw density (RF-DETR: ~1500-1900/
-    #   frame): 400/frame leaves margin above the safe ~200/frame (tuned
-    #   LodeSTAR) and below the dangerous ~684+/frame (LodeSTAR at more
-    #   aggressive tuning).
-    # - n_distinct_tracks catches trackpy's own classical linker, which
-    #   stayed under 400/frame (~253/frame average -- precision 1.0, recall
-    #   0.18 against 1446 GT particles) yet still triggered an OOM,
-    #   confirmed directly: at this density the linker fragments into
-    #   thousands of short-lived track IDs (matching
-    #   _compute_motmetrics_with_timeout's own docstring: "~1446 GT
-    #   particles against ~1700 distinct trackpy track IDs ... exhausted
-    #   this machine's RAM+swap", previously believed contained by that
-    #   function's own timeout -- it isn't, because this loop runs first).
-    #   1000 leaves margin below that ~1700 reference point --
-    #   deliberately LOWER, since 1700 already OOM'd once.
-    avg_det_per_frame = len(det_df) / max(1, det_df["frame"].nunique())
-    n_distinct_tracks = linked["track_id"].nunique()
-    if avg_det_per_frame > 400 or n_distinct_tracks > 1000:
+    # Build motmetrics accumulator frame-by-frame -- in a subprocess with a
+    # hard RLIMIT_AS memory ceiling, not in this (parent) process. Confirmed
+    # directly (2026-08-08): this loop's own acc.update() calls -- not just
+    # mm.metrics.create().compute() below -- can grow memory into the
+    # double-digit GB range and get OOM-killed. A density/track-count
+    # pre-check used to skip this loop entirely above ~400 detections/frame
+    # or ~1000 distinct track IDs as the only guard; that meant dense
+    # detectors (RF-DETR, YOLO) never got a chance to actually produce
+    # MOTA/IDF1 even when the real cost would have fit safely.
+    # _build_accumulator_with_timeout replaces that pre-check with a
+    # self-contained safety ceiling instead -- see its own docstring.
+    acc = _build_accumulator_with_timeout(gt_df, linked, psf_sigma_px, threshold_radii)
+    if acc is None:
         print(
-            f"Warning: detection density ({avg_det_per_frame:.0f}/frame) or fragmented "
-            f"track count ({n_distinct_tracks} distinct track IDs) is too high to safely "
-            "build the MOTA/IDF1 accumulator in-process -- confirmed directly to risk "
-            "double-digit-GB memory growth and an OOM kill at this scale. Skipping "
-            "tracking metrics (the --save-video trajectory overlay is unaffected -- it "
-            "uses a separate, subprocess-isolated linking call)."
+            "Warning: building the MOTA/IDF1 accumulator did not finish within its "
+            "memory/time budget -- skipping tracking metrics (the --save-video "
+            "trajectory overlay is unaffected -- it uses a separate, "
+            "subprocess-isolated linking call)."
         )
         return None
-
-    # Build motmetrics accumulator frame-by-frame
-    acc = mm.MOTAccumulator(auto_id=True)
-    for frame_idx in sorted(gt_df["frame"].unique()):
-        gt_frame = gt_df[gt_df["frame"] == frame_idx]
-        pred_frame = (
-            linked[linked["frame"] == frame_idx] if "frame" in linked.columns else pd.DataFrame()
-        )
-
-        gt_ids = gt_frame["particle_id"].tolist()
-        gt_xy = gt_frame[["x", "y"]].to_numpy()
-
-        pred_ids = pred_frame["track_id"].tolist() if not pred_frame.empty else []
-        pred_xy = pred_frame[["x", "y"]].to_numpy() if not pred_frame.empty else np.zeros((0, 2))
-
-        if len(gt_ids) == 0 and len(pred_ids) == 0:
-            acc.update([], [], [])
-            continue
-
-        if len(gt_ids) > 0 and len(pred_ids) > 0:
-            from scipy.spatial.distance import cdist
-
-            dist_matrix = cdist(gt_xy, pred_xy) / psf_sigma_px
-            # match_threshold (in the same psf_sigma-normalized units) must
-            # actually gate which pairs motmetrics treats as candidate
-            # matches -- NaN is motmetrics' documented "impossible pairing"
-            # sentinel, excluding it from the assignment problem entirely.
-            # Leaving every pair as a dense finite-distance candidate (the
-            # prior behavior here) is not just semantically wrong -- it also
-            # makes the assignment solver's cost scale with the full dense
-            # GT x pred matrix instead of the sparse subset within actual
-            # matching range, which becomes computationally intractable at
-            # real particle densities (confirmed: mh.compute() did not
-            # return within 90s at ~1446 GT x ~250-2000 pred/frame without
-            # this gate; the fix above is unrelated to and does not replace
-            # this one).
-            dist_matrix[dist_matrix > threshold_radii] = np.nan
-        elif len(gt_ids) > 0:
-            dist_matrix = np.full((len(gt_ids), 0), np.nan)
-        else:
-            dist_matrix = np.full((0, len(pred_ids)), np.nan)
-
-        acc.update(gt_ids, pred_ids, dist_matrix)
 
     summary_dict = _compute_motmetrics_with_timeout(
         acc,
@@ -1046,7 +1137,7 @@ def _write_tracking_video(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark RF-DETR/LodeSTAR/trackpy on synthetic frames"
+        description="Benchmark RF-DETR/LodeSTAR/YOLO/trackpy on synthetic frames"
     )
     parser.add_argument(
         "--frames", required=True, help="Directory of synthetic PNG frames (from render.py)"
@@ -1191,6 +1282,25 @@ def main():
         # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
         # read them (print, get_rfdetr_model, detect_with_tiling) are all gated
         # behind `model_type != "lodestar"`, so no placeholder values are needed here.
+    elif model_type == "yolo":
+        checkpoint = Path(
+            _cfg_get(
+                cfg,
+                "yolo",
+                "checkpoint",
+                default="../yolov12/runs/detect/yolo12m-particles/weights/best.pt",
+            )
+        )
+        # 0.25: ultralytics' own conventional default conf threshold -- not yet
+        # empirically tuned against this checkpoint's own score distribution
+        # (unlike e.g. lodestar's threshold, read from a fitted cutoff file above).
+        threshold = _cfg_get(cfg, "yolo", "threshold", default=0.25)
+        device_raw = args.device or _cfg_get(cfg, "yolo", "device", default=None)
+        # variant/num_queries/tiling_* are RF-DETR-only — gated behind
+        # `model_type not in ("lodestar", "yolo")` below, so no placeholder
+        # values needed here. Ultralytics applies its own internal NMS -- no
+        # external box_size/nms_distance/tiling step, same reasoning as
+        # LodeSTAR's "fully-convolutional with no query cap" tiling exemption.
     elif model_type == "trackpy":
         # trackpy has no checkpoint file and no loaded model object — a real
         # absence, not a placeholder path (see plan KTDs). device is computed
@@ -1240,7 +1350,7 @@ def main():
         print(f"Error: no frame_*.png files in {frames_dir}")
         sys.exit(1)
 
-    if model_type not in ("lodestar", "trackpy"):
+    if model_type not in ("lodestar", "yolo", "trackpy"):
         # tile_size: explicit benchmark.tiling.tile_size config value always
         # wins; otherwise derive from dataset_profile (clamped to this run's
         # own frame dimensions), else this file's own long-standing literal
@@ -1266,9 +1376,10 @@ def main():
     else:
         print(f"Checkpoint: {checkpoint}")
     print(f"Frames:     {len(tiff_files)}")
-    if model_type in ("lodestar", "trackpy"):
+    if model_type in ("lodestar", "yolo", "trackpy"):
         print(
             "Tiling:     n/a (LodeSTAR is fully-convolutional with no query cap to tile around; "
+            "YOLO applies its own internal NMS with no query cap either; "
             "trackpy is a classical algorithm with no detection cap at all)"
         )
     else:
@@ -1276,6 +1387,8 @@ def main():
 
     if model_type == "lodestar":
         model = get_lodestar_model(checkpoint, device, fp16=fp16)
+    elif model_type == "yolo":
+        model = get_yolo_model(checkpoint)
     elif model_type == "trackpy":
         model = None
     else:
@@ -1310,6 +1423,8 @@ def main():
                 nms_distance=nms_distance,
                 box_size=box_size,
             )
+        elif model_type == "yolo":
+            dets = detect_yolo(model, img_rgb, threshold, device)
         elif model_type == "trackpy":
             # Must stay before `elif tiling_enabled:` below — tiling_enabled is
             # only ever assigned in the rf-detr branch of config resolution

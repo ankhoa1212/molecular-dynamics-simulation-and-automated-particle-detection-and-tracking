@@ -306,7 +306,9 @@ class TestRunDetectorYoloDevice:
 
         track._run_detector(model, frame, "yolo", threshold=0.3, device="cuda:1")
 
-        model.predict.assert_called_once_with(frame, conf=0.3, device="cuda:1", verbose=False)
+        model.predict.assert_called_once_with(
+            frame, conf=0.3, device="cuda:1", verbose=False, max_det=5000
+        )
 
 
 # Note: the LodeSTAR autolabel-cutoff reader itself now lives in tracker_configs.py

@@ -427,6 +427,24 @@ class TestReexecForModelVenv:
         assert str(lodestar_venv) in called_python
         assert str(rf_detr_venv) not in called_python
 
+    def test_yolo_selects_particle_tracking_venv_same_as_lodestar(self, tmp_path):
+        """model_type=yolo shares lodestar's venv mapping (particle-tracking/.venv
+        already has ultralytics/torch) -- not the rf-detr-mapped venv."""
+        rf_detr_venv = _make_fake_venv(tmp_path, "rf_detr_venv")
+        yolo_venv = _make_fake_venv(tmp_path, "yolo_venv")
+
+        with mock.patch.dict(
+            benchmark._MODEL_VENV_DIRS,
+            {"rf-detr": rf_detr_venv, "yolo": yolo_venv},
+        ):
+            with mock.patch.object(benchmark.os, "execv") as fake_execv:
+                benchmark._reexec_for_model_venv("yolo")
+
+        fake_execv.assert_called_once()
+        called_python = fake_execv.call_args[0][0]
+        assert str(yolo_venv) in called_python
+        assert str(rf_detr_venv) not in called_python
+
     def test_rf_detr_default_targets_rf_detr_venv(self):
         """model_type omitted/rf-detr preserves today's exact re-exec targeting."""
         venv_python = benchmark._MODEL_VENV_DIRS["rf-detr"] / "bin" / "python"
@@ -1927,20 +1945,21 @@ def _scattered_detections_and_gt(tmp_path, n_particles_per_frame, n_frames, spac
 
 
 class TestTrackingMetricsDensityGuard:
-    """_run_tracking_metrics must skip building the motmetrics accumulator
-    -- not just guard the later mm.metrics.create().compute() call -- above
-    a safe detection density or distinct-track-id count. Confirmed directly
-    (2026-08-08): the accumulator-building loop's own acc.update() calls can
-    grow this process's own memory into the double-digit-GB range and get
-    OOM-killed on real (not synthetic-test) detector output, independently
-    of _compute_motmetrics_with_timeout's own subprocess+timeout guard --
-    that guard runs strictly after this loop, so it never gets a chance to
-    protect against this specific cost."""
+    """_run_tracking_metrics used to skip building the motmetrics accumulator
+    entirely above a hardcoded density (400/frame) or distinct-track-id
+    (1000) threshold -- a blunt pre-check that gave up on RF-DETR/YOLO's real
+    production density (~1000-1800/frame on the verification benchmark)
+    outright, even though the actual cost might have fit safely. That
+    pre-check is gone: the accumulator is now always attempted, inside
+    _build_accumulator_with_timeout's own RLIMIT_AS-bounded subprocess (see
+    TestBuildAccumulatorWithTimeout below for that subprocess's own safety
+    net). These tests prove densities that used to hard-skip now compute for
+    real instead."""
 
-    def test_skips_when_average_density_exceeds_threshold(self, tmp_path):
-        # 450 particles/frame, widely spaced (2px apart, no clustering) --
-        # links trivially fast, but average density (450/frame) exceeds the
-        # 400/frame safety threshold on its own.
+    def test_computes_above_former_average_density_threshold(self, tmp_path):
+        # 450 particles/frame -- used to hard-skip at the old 400/frame
+        # threshold. Widely spaced (2px apart, no clustering) so linking is
+        # trivially fast; this isolates the accumulator-building step itself.
         detections, gt_path = _scattered_detections_and_gt(
             tmp_path, n_particles_per_frame=450, n_frames=2, spacing=2.0
         )
@@ -1948,14 +1967,15 @@ class TestTrackingMetricsDensityGuard:
 
         result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
-        assert result is None
+        assert result is not None
+        assert "mota" in result and "idf1" in result
 
-    def test_skips_when_track_id_cardinality_exceeds_threshold(self, tmp_path):
+    def test_computes_above_former_track_id_cardinality_threshold(self, tmp_path):
         # 300 particles/frame across 4 frames (1200 total detections, well
-        # under the 400/frame density threshold on its own) but no particle
-        # links across frames (see _scattered_detections_and_gt), so every
-        # detection becomes its own track -- 1200 distinct track ids,
-        # exceeding the 1000 threshold on cardinality alone.
+        # under the old 400/frame density threshold on its own) but no
+        # particle links across frames (see _scattered_detections_and_gt), so
+        # every detection becomes its own track -- 1200 distinct track ids,
+        # which used to hard-skip on the old 1000 cardinality threshold alone.
         detections, gt_path = _scattered_detections_and_gt(
             tmp_path, n_particles_per_frame=300, n_frames=4, spacing=2.0
         )
@@ -1963,9 +1983,10 @@ class TestTrackingMetricsDensityGuard:
 
         result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
-        assert result is None
+        assert result is not None
+        assert "mota" in result and "idf1" in result
 
-    def test_computes_normally_below_both_thresholds(self, tmp_path):
+    def test_computes_normally_at_small_scale(self, tmp_path):
         detections, gt_path = _scattered_detections_and_gt(
             tmp_path, n_particles_per_frame=5, n_frames=3, spacing=2.0
         )
@@ -1974,7 +1995,64 @@ class TestTrackingMetricsDensityGuard:
         result = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
 
         assert result is not None
-        assert "mota" in result and "idf1" in result
+
+
+def _slow_motmetrics_build_worker(_gt_df, _linked, _psf_sigma_px, _threshold_radii, conn):
+    """Module-level (not a test-method closure) so it's picklable by
+    _build_accumulator_with_timeout's "spawn" context -- see
+    _slow_motmetrics_worker's identical rationale above."""
+    import time
+
+    time.sleep(5)
+    conn.send(None)
+
+
+class TestBuildAccumulatorWithTimeout:
+    """_build_accumulator_with_timeout is the safety net that replaced the
+    density/track-id pre-check above: the accumulator-building loop itself
+    (not just the later mm.metrics.create().compute() call, which
+    TestComputeMotmetricsWithTimeout separately covers) runs inside a
+    subprocess with a hard RLIMIT_AS ceiling and wall-clock timeout, so a
+    case that genuinely doesn't fit fails cleanly instead of growing this
+    process's own memory unprotected -- confirmed directly (2026-08-08) that
+    unprotected in-parent-process growth here can reach double-digit GB and
+    get OOM-killed."""
+
+    def test_happy_path_returns_accumulator(self, tmp_path):
+        detections, gt_path = _scattered_detections_and_gt(
+            tmp_path, n_particles_per_frame=3, n_frames=2, spacing=2.0
+        )
+        import pandas as pd
+
+        gt_df = pd.read_csv(gt_path)
+        rows = [
+            {"frame": frame_idx, "x": cx, "y": cy}
+            for frame_idx, centers in detections.items()
+            for cx, cy in centers
+        ]
+        det_df = pd.DataFrame(rows)
+        from trackers_common.linking import link_and_filter_tracks
+
+        linked = link_and_filter_tracks(det_df, search_range=1.0, memory=0, stub_filter=None)
+
+        acc = benchmark._build_accumulator_with_timeout(
+            gt_df, linked, psf_sigma_px=5.0, threshold_radii=0.5, timeout_s=30
+        )
+
+        assert acc is not None
+
+    def test_returns_none_when_build_exceeds_timeout(self, monkeypatch):
+        monkeypatch.setattr(benchmark, "_motmetrics_build_worker", _slow_motmetrics_build_worker)
+        import pandas as pd
+
+        gt_df = pd.DataFrame({"frame": [0], "particle_id": [1], "x": [0.0], "y": [0.0]})
+        linked = pd.DataFrame({"frame": [0], "track_id": [1], "x": [0.0], "y": [0.0]})
+
+        acc = benchmark._build_accumulator_with_timeout(
+            gt_df, linked, psf_sigma_px=5.0, threshold_radii=0.5, timeout_s=1
+        )
+
+        assert acc is None
 
 
 class TestSubnetOversizeGuard:

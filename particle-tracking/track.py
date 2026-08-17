@@ -18,6 +18,7 @@ from detectors_common.rfdetr_loader import (
     get_rfdetr_model as _shared_get_rfdetr_model,
 )
 from detectors_common.lodestar_loader import get_lodestar_model, detect_lodestar
+from detectors_common.yolo_loader import get_yolo_model, detect_yolo
 from detectors_common.tiling import detect_with_tiling
 from detectors_common.defaults import load_detector_config
 from detectors_common.scale_derivation import (
@@ -130,16 +131,6 @@ def get_rfdetr_model(variant, checkpoint, device, num_classes=None, num_queries=
     return _shared_get_rfdetr_model(
         variant, checkpoint, device, rf_detr_venv, num_classes=num_classes, num_queries=num_queries
     )
-
-
-def get_yolo_model(checkpoint):
-    try:
-        from ultralytics import YOLO
-
-        return YOLO(str(checkpoint))
-    except ImportError:
-        print("Error: 'ultralytics' not found. Run 'pip install ultralytics'.")
-        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -324,10 +315,7 @@ def _run_detector(
     if model_type == "rf-detr":
         return model.predict(frame, threshold=threshold)
     elif model_type == "yolo":
-        import supervision as sv
-
-        results = model.predict(frame, conf=threshold, device=device, verbose=False)[0]
-        return sv.Detections.from_ultralytics(results)
+        return detect_yolo(model, frame, threshold, device)
     elif model_type == "lodestar":
         return detect_lodestar(
             model,
@@ -1206,10 +1194,7 @@ def main():
                 else:
                     detections = model.predict(detect_frame, threshold=threshold)
             elif model_type == "yolo":
-                results = model.predict(detect_frame, conf=threshold, device=device, verbose=False)[
-                    0
-                ]
-                detections = sv.Detections.from_ultralytics(results)
+                detections = detect_yolo(model, detect_frame, threshold, device)
             elif model_type == "lodestar":
                 detections = detect_lodestar(
                     model,

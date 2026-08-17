@@ -228,6 +228,17 @@ def _fake_lodestar_writer(
     return cfg_path
 
 
+def _fake_yolo_writer(name, input_path, output_dir, crop_w, crop_h, bridge_gap, script_dir):
+    """Stand-in for tracker_configs.write_yolo_config; mirrors its real
+    stub_filter/search_range defaults (6 / 25 -- stub_filter independently
+    measured, not inherited from rf-detr's 90; see
+    trackers_common/tracker_defaults.yaml)."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    cfg_path = Path(output_dir) / f"{name}.yaml"
+    cfg_path.write_text(f'input: "{input_path}"\ntracking:\n  stub_filter: 6\n  search_range: 25\n')
+    return cfg_path
+
+
 def _parse_full_run_args(tmp_path, input_path, model_specs, output_dir=None, extra_argv=None):
     parser = build_arg_parser()
     output_dir = output_dir or (tmp_path / "cmp")
@@ -280,9 +291,19 @@ class TestReadTuning:
 
 
 class TestWriteModelConfig:
-    def test_yolo_raises_clear_error(self):
-        with pytest.raises(ValueError, match="No config writer available for model type 'yolo'"):
-            _write_model_config("yolo", "name", "in.tif", "out", None, None, None)
+    def test_unknown_model_type_raises_clear_error(self):
+        with pytest.raises(
+            ValueError, match="No config writer available for model type 'not-a-real-model'"
+        ):
+            _write_model_config("not-a-real-model", "name", "in.tif", "out", None, None, None)
+
+    def test_yolo_dispatches_to_shared_writer(self, tmp_path):
+        with patch("tracker_configs.write_yolo_config", side_effect=_fake_yolo_writer):
+            cfg = _write_model_config(
+                "yolo", "cmp_yolo", "in.tif", str(tmp_path / "out"), None, None, None
+            )
+        assert cfg.exists()
+        assert _read_tuning(cfg)["stub_filter"] == 6
 
     def test_rfdetr_dispatches_to_shared_writer(self, tmp_path):
         with patch("tracker_configs.write_rfdetr_config", side_effect=_fake_rfdetr_writer):
@@ -345,6 +366,7 @@ class TestRunFullComparison:
         with (
             patch("tracker_configs.write_rfdetr_config", side_effect=_fake_rfdetr_writer),
             patch("tracker_configs.write_lodestar_config", side_effect=_fake_lodestar_writer),
+            patch("tracker_configs.write_yolo_config", side_effect=_fake_yolo_writer),
             patch("subprocess.Popen") as mock_popen_cls,
             patch("analyze_tracks.compute_track_stats") as mock_stats,
         ):
@@ -353,7 +375,7 @@ class TestRunFullComparison:
 
             manifest_path, any_model_failed = run_full_comparison(args, parser)
 
-        assert any_model_failed is True  # yolo has no config writer -> counts as a real failure
+        assert any_model_failed is False  # all three models now have config writers
 
         manifest = json.loads(manifest_path.read_text())
         assert len(manifest["models"]) == 3
@@ -366,16 +388,11 @@ class TestRunFullComparison:
         assert by_type["rf-detr"]["exit_code"] == 0
         assert by_type["lodestar"]["stats"] == {"n_tracks": 5, "track_length_mean": 12.0}
         assert by_type["lodestar"]["exit_code"] == 0
+        assert by_type["yolo"]["stats"] == {"n_tracks": 5, "track_length_mean": 12.0}
+        assert by_type["yolo"]["exit_code"] == 0
 
-        # yolo has no config writer yet (pre-existing gap) — recorded as a clear failure,
-        # not a crash, and does not stop the other two models from completing.
-        assert by_type["yolo"]["stats"] is None
-        assert by_type["yolo"]["exit_code"] is None
-        assert "error" in by_type["yolo"]
-        assert "yolo" in by_type["yolo"]["error"]
-
-        # rf-detr and lodestar both actually ran their subprocess.
-        assert mock_popen_cls.call_count == 2
+        # all three models actually ran their subprocess.
+        assert mock_popen_cls.call_count == 3
 
     def test_tuning_differs_true_for_rfdetr_vs_lodestar_defaults(self, tmp_path):
         input_path = tmp_path / "video.tif"

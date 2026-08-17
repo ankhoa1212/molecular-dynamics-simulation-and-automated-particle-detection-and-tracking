@@ -373,7 +373,7 @@ synthetic:
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
-  model_type: rf-detr       # rf-detr | lodestar | trackpy — overridden by --model-type
+  model_type: rf-detr       # rf-detr | lodestar | yolo | trackpy — overridden by --model-type
   match_distance: 10        # pixels — max center-to-center dist to count a detection as TP; shared across model types
 
   # --- model_type: rf-detr ---
@@ -444,6 +444,23 @@ benchmark:
     # lodestar-box-sizing-plan.md). Set box_size here only to override that derived value
     # for a specific investigation -- any value set here always wins.
     fp16: false                # run model in float16
+    device: null                # used only when --device is not passed on the CLI; --device always wins
+
+  # --- model_type: yolo (requires particle-tracking/.venv — run `uv sync` there first;
+  # same venv lodestar uses, since ultralytics/torch are already dependencies there) ---
+  yolo:
+    # Trained on the same LodeSTAR-labeled split RF-DETR uses (data-setup/yolo_split.py,
+    # yolov12/config.yaml's "fix: make RF-DETR/YOLOv12 training reproducible and directly
+    # comparable" run) -- 100/100 epochs, yolo12m, mAP50=0.752 on its own held-out val
+    # split. Copied here (not committed to git -- see .gitignore) from the MLflow run
+    # that produced it (yolov12/mlruns/160295411491071449/9e9c62d3da13402f97da3c522b46f9b9)
+    # into this stable, human-readable path matching what a local
+    # `uv run python train.py` under yolov12/config.yaml's current name: yolo12m-particles
+    # would have produced natively.
+    checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
+    threshold: 0.25            # ultralytics' own conventional default -- not yet empirically
+                                # swept against this checkpoint's score distribution the way
+                                # rf-detr's 0.2 (F1-peak sweep) or lodestar's 0.01 (fitted cutoff) were.
     device: null                # used only when --device is not passed on the CLI; --device always wins
 
   # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —

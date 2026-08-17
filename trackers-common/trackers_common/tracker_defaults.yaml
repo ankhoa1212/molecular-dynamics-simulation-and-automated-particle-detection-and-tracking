@@ -31,3 +31,27 @@ lodestar:
   stub_filter: 6
   adaptive_stop: 12
   adaptive_step: 0.95
+
+# search_range/memory/adaptive_stop/adaptive_step started from rf-detr's
+# tuning (both are box-based deep detectors with internal NMS, unlike
+# LodeSTAR's point detections) and haven't been independently swept.
+# stub_filter=90 (rf-detr's value) was tried first and measured directly
+# against this dataset (verification/verification_output/synthetic_frames,
+# 151 frames) with the yolo12m-particles checkpoint at threshold=0.25: it
+# filtered out every single trajectory. rf-detr's own detection density
+# (~900-1500/frame) sustains long unbroken tracks; this checkpoint's much
+# lower recall on this benchmark (~0.21, vs ~0.56 on its own real-data val
+# split -- see yolov12/config.yaml) means frequent per-frame misses that
+# constantly break trajectories -- confirmed directly: with search_range=
+# 3.125 (this run's actual collapsed value, see adaptive_stop/adaptive_step
+# above), pre-stub-filter track lengths had max=77 frames (out of 151),
+# median=2, p95=15 -- no track ever reaches 90. stub_filter=6 (matching
+# lodestar's value, the other detector whose tracks are similarly short-
+# lived) keeps 2328 of the 10419 raw tracks rather than zero, while still
+# discarding single/double-frame noise blips.
+yolo:
+  search_range: 25
+  memory: 5
+  stub_filter: 6
+  adaptive_stop: 12
+  adaptive_step: 0.95
