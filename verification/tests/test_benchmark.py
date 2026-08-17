@@ -1263,15 +1263,22 @@ class TestLodestarNmsDistanceProfileDerivation:
         nms_distance = self._run(tmp_path, monkeypatch)
         assert nms_distance == 5
 
-    def test_shipped_config_yaml_falls_back_to_5(self):
+    def test_shipped_config_yaml_derives_nms_distance_from_profile(self):
         """Regression guard: verification/config.yaml's own lodestar.nms_distance
-        and dataset_profile must stay unset (commented out) so the shipped
-        default resolves through main()'s hardcoded_default=5 call-site
-        argument, not detectors_common's generic canonical 30."""
+        stays unset (explicit config always wins if ever set), but
+        dataset_profile is enabled (U6) -- it resolves through
+        dataset-profiles/synthetic-default.yaml's spacing_px, not the
+        hardcoded_default=5 call-site fallback that applied before the
+        profile was referenced (though it happens to derive to the same
+        5px here -- see resolve_nms_distance)."""
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
         assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "nms_distance") is None
-        assert benchmark._cfg_get(real_cfg, "dataset_profile") is None
-        assert benchmark.resolve_nms_distance(None, None, hardcoded_default=5) == 5
+        profile_path = benchmark._cfg_get(real_cfg, "dataset_profile")
+        assert profile_path is not None
+        profile = benchmark.load_detection_profile(
+            str((benchmark.SCRIPT_DIR / profile_path).resolve())
+        )
+        assert benchmark.resolve_nms_distance(None, profile, hardcoded_default=5) == 5.0
 
 
 class TestTrackpyDiameterProfileDerivation:
@@ -1410,15 +1417,23 @@ class TestTileSizeProfileDerivation:
         tile_size = self._run(tmp_path, monkeypatch)
         assert tile_size == 160
 
-    def test_shipped_config_yaml_falls_back_to_160(self):
+    def test_shipped_config_yaml_derives_tile_size_from_profile(self):
         """Regression guard: verification/config.yaml's own tiling.tile_size
-        and dataset_profile must stay unset (commented out) so the shipped
-        default resolves through main()'s hardcoded_default=160 call-site
-        argument, not detectors_common's generic canonical 512."""
+        stays unset (explicit config always wins if ever set), but
+        dataset_profile is enabled (U6) -- it resolves through
+        dataset-profiles/synthetic-default.yaml's spacing_px (clamped to
+        this file's own 512x512 synthetic.image_width/image_height), not
+        the hardcoded_default=160 call-site fallback that applied before
+        the profile was referenced."""
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
         assert benchmark._cfg_get(real_cfg, "benchmark", "tiling", "tile_size") is None
-        assert benchmark._cfg_get(real_cfg, "dataset_profile") is None
-        assert benchmark.resolve_tile_size(None, None, None, None, hardcoded_default=160) == 160
+        profile_path = benchmark._cfg_get(real_cfg, "dataset_profile")
+        assert profile_path is not None
+        profile = benchmark.load_detection_profile(
+            str((benchmark.SCRIPT_DIR / profile_path).resolve())
+        )
+        tile_size = benchmark.resolve_tile_size(None, profile, 512, 512, hardcoded_default=160)
+        assert tile_size == pytest.approx(217.316, rel=1e-3)
 
 
 class TestRunTrackingMetricsProfileDerivation:
@@ -1576,9 +1591,18 @@ class TestShippedConfigNoLongerShortCircuitsDerivation:
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
         assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "nms_distance") is None
 
-    def test_trackpy_diameter_is_commented_out(self):
+    def test_trackpy_diameter_is_an_explicit_empirically_tuned_value(self):
+        # Deliberate exception (U6) to this class's general "derived, not
+        # literal" guard: a fresh sweep against render_strategy:
+        # brightfield_fast found diameter=7 measurably beats the
+        # dataset_profile-derived value (rounds to 5 from size_px=5.0) --
+        # trackpy.locate's window needs to cover the particle's visible
+        # ring extent, not just its core, so profile-derivation's core-only
+        # size_px systematically undershoots here. See
+        # docs/plans/2026-08-16-001-feat-brightfield-fast-render-path-plan.md's
+        # U6 and config.yaml's own comment on this value.
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
-        assert benchmark._cfg_get(real_cfg, "benchmark", "trackpy", "diameter") is None
+        assert benchmark._cfg_get(real_cfg, "benchmark", "trackpy", "diameter") == 7
 
 
 # ---------------------------------------------------------------------------

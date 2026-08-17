@@ -48,7 +48,12 @@ class TestWriteRfdetrConfig:
         assert parsed["detection"]["threshold"] == 0.3
         assert parsed["tracking"]["search_range"] == 25
         assert parsed["tracking"]["memory"] == 5
-        assert parsed["tracking"]["stub_filter"] == 90
+        # 6, not the historical 90 -- re-swept (U6) against
+        # render_strategy: brightfield_fast; 90 zeroed out every trackpy
+        # trajectory on that benchmark dataset once trackpy started falling
+        # back to this value. See trackers-common/trackers_common/
+        # tracker_defaults.yaml's rf-detr entry.
+        assert parsed["tracking"]["stub_filter"] == 6
         assert parsed["output"]["save_trajectory_image"] is True
         assert "tiling" in parsed  # no crop given -> tiling spatial config
         assert "crop" not in parsed
@@ -377,7 +382,7 @@ class TestRunTrackingIntegration:
             rfdetr_parsed = yaml.safe_load(rfdetr_cfg.read_text())
             assert rfdetr_parsed["input"] == input_path
             assert rfdetr_parsed["output"]["dir"] == rfdetr_output_dir
-            assert rfdetr_parsed["tracking"]["stub_filter"] == 90
+            assert rfdetr_parsed["tracking"]["stub_filter"] == 6  # see U6 note above
 
             lodestar_output_dir = f"{results_base}/lodestar/{short_name}"
             lodestar_cfg = run_tracking.write_lodestar_config(

@@ -4,10 +4,15 @@
 # Dataset scale profile: path to a YAML file with size_px/spacing_px (see
 # dataset-profiles/README.md). When set, drives box_size/nms_distance/
 # tile_size/diameter/search_range/memory derivation for any of those left
-# unset below. Unset by default -- no single profile is "live" for every
-# user/dataset. dataset-profiles/synthetic-default.yaml (from U2) is a
-# reasonable example value for this file's own synthetic default trajectory.
-# dataset_profile: ../dataset-profiles/synthetic-default.yaml
+# unset below. dataset-profiles/synthetic-default.yaml matches this file's
+# own synthetic default trajectory (continuous_force_1500_5.0.lammpstrj,
+# 512x512) exactly -- enabled here (U6) since LodeSTAR's fallback default
+# nms_distance (30px) suppresses almost every true detection at this
+# trajectory's real ~10.9px spacing (the same catastrophic-recall issue
+# already documented and fixed for the procedural strategy below, which
+# applies identically here since particle positions/density are the same
+# trajectory, only rendering differs).
+dataset_profile: ../dataset-profiles/synthetic-default.yaml
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
@@ -385,9 +390,14 @@ benchmark:
   checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
   variant: large            # nano | small | medium | large
   num_queries: 300
-  threshold: 0.2            # detection confidence threshold — 0.2 peaks F1 (0.47) on the
-                             # checkpoints-a40 model; swept 0.05-0.3 on 2026-07-17, see
-                             # docs/plans/2026-07-16-002-feat-lodestar-verification-benchmark-plan.md
+  threshold: 0.08           # detection confidence threshold — re-swept (U6) against the
+                             # render_strategy: brightfield_fast dataset (151 frames @
+                             # ~1446 particles, replacing the procedural imagery the 0.2
+                             # value above was tuned against): F1 plateaus 0.6573-0.6598
+                             # across 0.02-0.1, peaking at 0.08 (F1=0.6598, P=0.6742,
+                             # R=0.6460); 0.1-0.4 declines monotonically (F1=0.6597 down
+                             # to 0.6445). See docs/plans/2026-08-16-001-feat-brightfield-
+                             # fast-render-path-plan.md's U6.
 
   tiling:
     enabled: true
@@ -416,7 +426,20 @@ benchmark:
   # --- model_type: lodestar (requires particle-tracking/.venv — run `uv sync` there first) ---
   lodestar:
     checkpoint: ../data-setup/models/lodestar_model_15/model.pt
-    threshold: 0.01           # LodeSTAR cutoff — lower than RF-DETR's; see particle-tracking/lodestar_config.yaml
+    threshold: 0.0005         # re-swept (U6) against render_strategy: brightfield_fast
+                               # (replacing the 0.01 procedural-imagery value): F1 stays
+                               # catastrophically low (0.02-0.05) across every threshold
+                               # tested (0.0005-0.1), with recall never exceeding ~0.03 --
+                               # not a threshold-sensitivity problem (nms_distance/box_size
+                               # already correctly derived via dataset_profile below,
+                               # confirmed). Reads as a genuine domain-mismatch: this
+                               # checkpoint's self-supervised feature detector, fit against
+                               # real photographic microscopy crops, does not generalize to
+                               # this coherent-brightfield concentric-ring appearance.
+                               # 0.0005 is this sweep's measured best (F1=0.0527), not a
+                               # value to trust as "tuned" in the sense the other three
+                               # detectors' values are. See docs/plans/2026-08-16-001-feat-
+                               # brightfield-fast-render-path-plan.md's U6.
     alpha: 0.9                # weight score exponent
     # nms_distance intentionally NOT set here -- leaving it unset lets benchmark.py
     # derive it from dataset_profile's size_px/spacing_px, falling back to today's
@@ -458,24 +481,26 @@ benchmark:
     # `uv run python train.py` under yolov12/config.yaml's current name: yolo12m-particles
     # would have produced natively.
     checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
-    threshold: 0.25            # ultralytics' own conventional default -- not yet empirically
-                                # swept against this checkpoint's score distribution the way
-                                # rf-detr's 0.2 (F1-peak sweep) or lodestar's 0.01 (fitted cutoff) were.
+    threshold: 0.3             # re-swept (U6) against render_strategy: brightfield_fast
+                                # (replacing ultralytics' unswept 0.25 default): F1 peaks
+                                # at 0.3 (F1=0.6162, P=0.6957, R=0.5530) across 0.1-0.4
+                                # (0.6011-0.6162), a clean interior optimum. See
+                                # docs/plans/2026-08-16-001-feat-brightfield-fast-render-
+                                # path-plan.md's U6.
     device: null                # used only when --device is not passed on the CLI; --device always wins
 
   # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
   # runs natively in verification/.venv, trackpy is already a dependency here) ---
   trackpy:
-    # diameter intentionally NOT set here -- leaving it unset lets benchmark.py
-    # derive it from dataset_profile's size_px (rounded to the nearest odd
-    # integer -- trackpy.locate requires one), falling back to today's 15px
-    # default if no profile is referenced. Set diameter here only to override
-    # that derived/default value for a specific investigation -- any value set
-    # here always wins.
-    # diameter: 15              # must be odd — trackpy.locate raises otherwise. Documented starting
-                                # value only, not yet empirically tuned against this repo's synthetic
-                                # frames (see docs/plans/2026-07-18-001-feat-trackpy-benchmark-comparison-plan.md);
-                                # should be somewhat larger than a particle's visible pixel diameter.
+    diameter: 7                # re-swept (U6) against render_strategy: brightfield_fast (must
+                                # be odd -- trackpy.locate raises otherwise). F1 peaks at 7
+                                # (F1=0.5671, P=0.6554, R=0.4998); a clean interior optimum
+                                # over 5-21 (F1 falls off in both directions: 5 -> 0.4768,
+                                # 9 -> 0.5234, 21 -> 0.1591). Smaller than the dataset_profile-
+                                # derived size_px (5.0 -> diameter 5) since trackpy.locate's
+                                # window needs to cover the particle's visible ring extent, not
+                                # just its core. See docs/plans/2026-08-16-001-feat-brightfield-
+                                # fast-render-path-plan.md's U6.
     minmass: null               # minimum integrated brightness; null lets trackpy use its own default
                                  # (0 — no mass-based filtering; trackpy.locate's percentile filter,
                                  # default 64, still applies regardless of this value)

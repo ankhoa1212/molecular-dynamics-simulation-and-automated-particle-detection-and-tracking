@@ -11,7 +11,7 @@ class TestLoadTrackingConfig:
     def test_rfdetr_canonical_values_match_known_tuning(self):
         result = load_tracking_config("rf-detr", {}, _KEY_PATH_MAP)
 
-        assert result == {"search_range": 25, "memory": 5, "stub_filter": 90}
+        assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
 
     def test_lodestar_canonical_values_match_known_tuning(self):
         result = load_tracking_config("lodestar", {}, _KEY_PATH_MAP)
@@ -30,10 +30,14 @@ class TestLoadTrackingConfig:
 
         assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
 
-    def test_trackpy_falls_back_to_rfdetr_values(self):
+    def test_trackpy_has_its_own_tuned_entry(self):
+        # trackpy previously fell back to rf-detr's tuning (no dedicated
+        # entry); it has its own explicit entry now (U6) so rf-detr's
+        # stub_filter can be tuned independently without silently changing
+        # trackpy's behavior too.
         result = load_tracking_config("trackpy", {}, _KEY_PATH_MAP)
 
-        assert result == {"search_range": 25, "memory": 5, "stub_filter": 90}
+        assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
 
     def test_caller_supplied_value_overrides_canonical_default(self):
         tool_config = {"tracking": {"search_range": 15}}
@@ -42,7 +46,7 @@ class TestLoadTrackingConfig:
 
         assert result["search_range"] == 15
         assert result["memory"] == 5  # not overridden, still canonical
-        assert result["stub_filter"] == 90
+        assert result["stub_filter"] == 6
 
     def test_unknown_model_type_with_no_fallback_match_returns_empty_when_key_path_missing(self):
         # An unmapped canonical key with no tool_config value and no default

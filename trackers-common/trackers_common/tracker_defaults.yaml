@@ -5,8 +5,10 @@
 # tracker_configs.py and verification/benchmark.py -- see this package's README.
 #
 # trackpy (verification's classical blob detector) has no track.py-side model_type
-# of its own, so it has no tuned entry here -- callers fall back to the rf-detr
-# values as a documented default, not a claim of measured trackpy-detector parity.
+# of its own -- unlike rf-detr/lodestar/yolo, tracker_configs.py's writers never
+# generate a config for it. It has its own tuned entry below anyway (U6), keyed
+# by the same "trackpy" model_type string benchmark.py already uses, so its
+# tracking-linkage tuning isn't silently coupled to rf-detr's.
 #
 # adaptive_stop/adaptive_step are NOT per-model-tuned in tracker_configs.py's
 # writers (a pre-existing gap -- direct track.py runs against
@@ -21,7 +23,14 @@
 rf-detr:
   search_range: 25
   memory: 5
-  stub_filter: 90
+  stub_filter: 6  # lowered from 90 (U6, docs/plans/2026-08-16-001-feat-brightfield-fast-
+                  # render-path-plan.md), re-swept against render_strategy:
+                  # brightfield_fast. Before trackpy had its own entry below, it fell
+                  # back to this value and got zeroed out completely (MOTA/IDF1 both
+                  # 0.0, 0 fragmentations -- the same failure mode the yolo entry's own
+                  # history below documents for 90 against the old procedural imagery).
+                  # 6 is the smallest of the three canonical values already measured
+                  # not to zero out short-track detectors on this dataset.
   adaptive_stop: 12
   adaptive_step: 0.95
 
@@ -50,6 +59,18 @@ lodestar:
 # lived) keeps 2328 of the 10419 raw tracks rather than zero, while still
 # discarding single/double-frame noise blips.
 yolo:
+  search_range: 25
+  memory: 5
+  stub_filter: 6
+  adaptive_stop: 12
+  adaptive_step: 0.95
+
+# trackpy previously had no entry here (fell back to rf-detr's tuning above,
+# per this file's header comment). Given its own explicit entry now (U6) so
+# rf-detr's stub_filter can be tuned independently without silently changing
+# trackpy's behavior too -- see rf-detr's own entry above for the failure
+# this fallback caused before this entry existed.
+trackpy:
   search_range: 25
   memory: 5
   stub_filter: 6
