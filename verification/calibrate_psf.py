@@ -693,6 +693,7 @@ def _run_brightfield_calibration(args):
             "brightfield": {
                 "mie_max_particles": n_particles,
                 "mie_max_frames": args.mie_frames,
+                "magnification": 1.0,
             },
         }
         mie_frames = generate_mie_ground_truth(

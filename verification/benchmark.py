@@ -833,9 +833,10 @@ def _run_tracking_metrics(
             canonical per-model tuning (trackers_common.tracker_defaults.yaml),
             the same values particle-tracking/tracker_configs.py generates for
             real per-model production runs. "trackpy" has no track.py-side
-            model_type of its own and falls back to the rf-detr tuning (see
-            trackers_common.defaults.FALLBACK_MODEL_TYPE) -- a documented
-            default, not a claim of measured trackpy-detector parity.
+            model_type of its own but has its own tuned entry in
+            tracker_defaults.yaml; only a model_type with no entry at all
+            falls back to the rf-detr tuning (see
+            trackers_common.defaults.FALLBACK_MODEL_TYPE).
         derived_psf_sigma_px: if given, overrides cfg's synthetic.psf_sigma /
             synthetic.psf.sigma_px for the match-threshold calculation --
             e.g. a value derived from --lammps-in, matching whatever width

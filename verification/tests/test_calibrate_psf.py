@@ -1121,3 +1121,53 @@ class TestBrightfieldCli:
         assert "brightfield" in result["synthetic"]
         assert "na" in result["synthetic"]["brightfield"]
         assert result["synthetic"]["render_strategy"] == "procedural"  # preserved
+
+    def test_mie_ground_truth_frames_rendered_at_magnification_1_0(self, tmp_path):
+        # Regression check: the Mie ground-truth cfg used to omit
+        # magnification, falling back to deeptrack.Brightfield's own
+        # default of 10.0 -- a 10x particle-scale mismatch against
+        # calibrate_brightfield's search candidates, which always render at
+        # magnification 1.0. Spies on the real (unmocked)
+        # generate_mie_ground_truth/dt.Brightfield call chain to confirm
+        # the actual optics call now receives magnification=1.0.
+        lammps_stub = mock.MagicMock()
+        lammps_stub.parse_lammps_dump.return_value = iter(
+            [
+                {
+                    "box_bounds": ["0.0 10.0", "0.0 10.0"],
+                    "atom_header": "ITEM: ATOMS id xu yu",
+                    "atoms": ["1 5.0 5.0", "2 6.0 6.0", "3 4.0 4.0"],
+                }
+            ]
+        )
+        _mock_deeptrack_for_brightfield(np.random.default_rng(0).random((32, 32)))
+        import deeptrack
+
+        with mock.patch.dict(sys.modules, {"lammps_parser": lammps_stub}):
+            with mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "calibrate_psf.py",
+                    "--brightfield",
+                    "--lammps",
+                    "fake.lammpstrj",
+                    "--mie-frames",
+                    "1",
+                    "--mie-frames-particles",
+                    "2",
+                    "--n-iterations",
+                    "1",
+                    "--image-height",
+                    "32",
+                    "--image-width",
+                    "32",
+                ],
+            ):
+                calibrate_psf.main()
+
+        magnifications = [
+            call.kwargs["magnification"] for call in deeptrack.Brightfield.call_args_list
+        ]
+        assert magnifications
+        assert all(m == 1.0 for m in magnifications)

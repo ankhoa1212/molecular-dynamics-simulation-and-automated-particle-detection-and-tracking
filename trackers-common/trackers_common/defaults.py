@@ -16,10 +16,11 @@ import yaml
 
 _DEFAULTS_PATH = Path(__file__).parent / "tracker_defaults.yaml"
 
-# trackpy (verification's classical blob detector) has no track.py-side model_type
-# and therefore no tuned entry in tracker_defaults.yaml -- callers resolving
-# tracking config for it should pass this as their model_type instead, a
-# documented fallback rather than a claim of measured trackpy-detector parity.
+# Fallback for any model_type with no tuned entry of its own in
+# tracker_defaults.yaml (e.g. a future model added to track.py before its
+# tuning is landed there) -- a documented fallback rather than a claim of
+# measured parity with rf-detr's tuning. trackpy has its own tuned entry
+# and no longer resolves through this fallback.
 FALLBACK_MODEL_TYPE = "rf-detr"
 
 # Every current consumer (particle-tracking/tracker_configs.py,
@@ -63,8 +64,8 @@ def load_tracking_config(model_type, tool_config, key_path_map):
     omitted from the result -- the caller applies its own further fallback for
     keys this file doesn't cover.
 
-    model_type == "trackpy" (no tuned entry) resolves against FALLBACK_MODEL_TYPE's
-    defaults instead.
+    A model_type with no tuned entry in tracker_defaults.yaml resolves against
+    FALLBACK_MODEL_TYPE's defaults instead.
     """
     defaults_by_model = _load_defaults()
     defaults = defaults_by_model.get(model_type) or defaults_by_model.get(FALLBACK_MODEL_TYPE, {})
