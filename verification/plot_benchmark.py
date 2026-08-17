@@ -230,7 +230,6 @@ def _plot_summary_bars(per_model, out):
     model's CSV has timing (older run, before benchmark.py recorded it).
     """
     models = list(per_model.keys())
-    colors = [_color_for(m, models) for m in models]
     has_tracking = any(data["tracking"] for data in per_model.values())
     has_timing = any(
         data["aggregate"]["median_inference_ms"] is not None for data in per_model.values()
