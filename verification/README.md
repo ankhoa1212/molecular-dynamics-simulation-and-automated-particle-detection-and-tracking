@@ -41,6 +41,7 @@ Ready-to-use configs for each strategy live in `configs/`:
 | `configs/render_deeptrack.yaml` | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
 | `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
 | `configs/render_brightfield.yaml` | `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; particles placed at the real trajectory's own x/y positions, not stamped independently. Small-batch/reference-quality by design (see `render_brightfield.py`'s module docstring for real per-frame cost data), not a bulk generator like the other three strategies |
+| `configs/render_brightfield_fast.yaml` | `brightfield_fast` | FFT-based reimplementation of `brightfield`'s coherent optics directly in numpy/scipy (no deeptrack dependency), independent of particle count. Default strategy (`config.yaml`'s `render_strategy`), used for bulk/production-density rendering. See `render_brightfield_fast.py`'s module docstring for the algorithm and its validated equivalence to `brightfield` |
 
 Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
 
@@ -87,6 +88,8 @@ uv run python calibrate_psf.py \
 
 `--real-frames` is optional here (unlike the default mode above) as long as `--mie-frames` is greater than 0 — at least one of the two fitting targets is required. `--merge-config` writes the result under `synthetic.brightfield` the same way the default mode writes `synthetic.psf`/etc.; the same PSD mid-band similarity ≥ 0.85 acceptance criterion applies, checked via `compare_renders.py --strategies brightfield`.
 
+`brightfield_fast` reuses `synthetic.brightfield`'s physical optics/particle parameters (na, wavelength, resolution, magnification, radius, refractive index, z range) unchanged — the same `--brightfield` calibration above applies to it too. `synthetic.brightfield_fast.max_particles`/`.n_z_slices` (bulk-rendering and z-bucketing knobs specific to the fast path — see `render_brightfield_fast.py`) are set directly in config, not fit by `calibrate_psf.py`.
+
 ## Step 1 — Render synthetic frames
 
 ```bash
@@ -98,6 +101,7 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --confi
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_deeptrack.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield_fast.yaml
 ```
 
 Outputs:
@@ -120,7 +124,7 @@ Key settings in `config.yaml` under `synthetic:`:
 
 | Key | Description |
 |-----|-------------|
-| `render_strategy` | `procedural` / `deeptrack` / `randomized` / `brightfield` |
+| `render_strategy` | `procedural` / `deeptrack` / `randomized` / `brightfield` / `brightfield_fast` (default) |
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
@@ -135,6 +139,8 @@ Key settings in `config.yaml` under `synthetic:`:
 | `brightfield.na` / `.wavelength` / `.resolution` / `.refractive_index_medium` | `brightfield` optics params, passed to `deeptrack.Brightfield` |
 | `brightfield.radius_min`/`.radius_max`, `.refractive_index_min`/`.refractive_index_max`, `.z_min_px`/`.z_max_px` | `brightfield` per-particle physical property ranges (single particle type this iteration) |
 | `brightfield.mie_max_particles` / `.mie_max_frames` | Caps on `brightfield`'s Mie ground-truth calibration tier |
+| `brightfield_fast.max_particles` | Safety cap on particles rendered per `brightfield_fast` frame; above this, a random subset is rendered and a warning is raised (see `render_brightfield_fast.py`) |
+| `brightfield_fast.n_z_slices` | Number of z-buckets particles are grouped into for `brightfield_fast`'s combined-defocus pupil propagation (see `render_brightfield_fast.py`'s module docstring) |
 
 
 ## Step 2 — Benchmark detection and tracking accuracy

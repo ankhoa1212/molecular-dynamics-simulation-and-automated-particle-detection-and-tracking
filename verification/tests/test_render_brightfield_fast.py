@@ -10,6 +10,7 @@ this file.
 """
 
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +27,9 @@ from render_brightfield_fast import (
 )
 
 
-def _cfg(image_size=128, z_min_px=0.0, z_max_px=0.0, n_z_slices=10, amplitude=0.0):
+def _cfg(
+    image_size=128, z_min_px=0.0, z_max_px=0.0, n_z_slices=10, amplitude=0.0, max_particles=5000
+):
     return {
         "image_width": image_size,
         "image_height": image_size,
@@ -43,7 +46,7 @@ def _cfg(image_size=128, z_min_px=0.0, z_max_px=0.0, n_z_slices=10, amplitude=0.
             "z_max_px": z_max_px,
             "intensity_scale": 20000.0,
         },
-        "brightfield_fast": {"max_particles": 5000, "n_z_slices": n_z_slices},
+        "brightfield_fast": {"max_particles": max_particles, "n_z_slices": n_z_slices},
         "background": {"heterogeneity_scale": 50, "amplitude": amplitude},
         "noise": {"gain_sigma": 0.0, "read_noise": 0.0},
     }
@@ -204,6 +207,22 @@ class TestRenderFrameBrightfieldFast:
         frame = render_frame_brightfield_fast(positions, _BOX, _cfg(image_size=256), rng)
         assert np.all(np.isfinite(frame.astype(np.float64)))
         assert frame.max() <= 65535
+
+    def test_particle_count_above_cap_warns_and_truncates(self):
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(20, 80, size=(9, 2))  # cap is 5
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            render_frame_brightfield_fast(positions, _BOX, _cfg(max_particles=5), rng)
+        assert any("max_particles" in str(w.message) for w in caught)
+
+    def test_particle_count_at_or_below_cap_does_not_warn(self):
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(20, 80, size=(3, 2))  # cap is 5
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            render_frame_brightfield_fast(positions, _BOX, _cfg(max_particles=5), rng)
+        assert not any("max_particles" in str(w.message) for w in caught)
 
     def test_production_density_renders_in_practical_time(self):
         # R8's sanity-check scenario at a smaller canvas for test speed --

@@ -49,6 +49,8 @@ No deeptrack runtime dependency: reads the exact formulas from the installed
 deeptrack==2.0.1 source but does not import deeptrack itself.
 """
 
+import warnings
+
 import numpy as np
 
 from render_brightfield import _sample_particle_properties
@@ -245,6 +247,12 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
         pixel_positions = _lj_to_pixels(positions_lj, box, H, W)
         n = len(pixel_positions)
         if n > max_particles:
+            warnings.warn(
+                f"render_strategy: brightfield_fast -- frame has {n} particles, "
+                f"above synthetic.brightfield_fast.max_particles ({max_particles}). "
+                "Rendering a random subset instead of the full frame.",
+                stacklevel=2,
+            )
             keep = np.sort(rng.choice(n, size=max_particles, replace=False))
             pixel_positions = pixel_positions[keep]
         radii, refractive_indices, z = _sample_particle_properties(
