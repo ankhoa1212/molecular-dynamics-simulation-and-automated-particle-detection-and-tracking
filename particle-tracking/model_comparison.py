@@ -304,8 +304,8 @@ def _write_model_config(
         if model_type == "rf-detr" and checkpoint is not None
         else {}
     )
-    # Unlike checkpoint, both writers accept dataset_profile -- it drives
-    # tile_size for rf-detr and box_size/nms_distance/search_range for lodestar.
+    # Unlike checkpoint, all three writers accept dataset_profile -- it drives
+    # tile_size/nms_distance/search_range derivation for rf-detr, lodestar, and yolo alike.
     if dataset_profile is not None:
         writer_kwargs["dataset_profile"] = dataset_profile
     return writer(
