@@ -11,7 +11,7 @@
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
-  render_strategy: procedural   # procedural | deeptrack | randomized | brightfield
+  render_strategy: procedural   # procedural | deeptrack | randomized | brightfield | brightfield_fast
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
@@ -330,6 +330,26 @@ synthetic:
                              # practical -- see render_brightfield.py's
                              # generate_mie_ground_truth docstring.
     mie_max_frames: 5        # small-batch by design; not a bulk dataset
+
+  # --- render_strategy: brightfield_fast ---
+  # Same coherent optics as `brightfield` above (physical params are read
+  # from the `brightfield` section above -- the two strategies render the
+  # same physical scene two different ways, so they share calibration
+  # rather than duplicating it), reimplemented directly in numpy/scipy with
+  # no deeptrack dependency, so per-frame cost is independent of particle
+  # count -- see render_brightfield_fast.py. This section holds only
+  # brightfield_fast-specific tuning knobs.
+  brightfield_fast:
+    max_particles: 5000   # safety cap -- unlike brightfield's own cap (a hard
+                           # necessity given its per-particle cost), this one
+                           # guards only against unbounded index-map memory use
+                           # at pathological densities, not compute cost.
+    n_z_slices: 10   # number of depth-buckets particles are grouped into for
+                      # defocus (synthetic.brightfield's z_min_px/z_max_px).
+                      # Coarser = faster but risks banding; finer costs more
+                      # linearly. A deliberate approximation of the slow
+                      # path's own (finer) physical voxel granularity, not a
+                      # match to it -- see render_brightfield_fast.py.
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:

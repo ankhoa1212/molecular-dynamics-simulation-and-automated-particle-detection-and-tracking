@@ -24,6 +24,11 @@ Render strategies (set via synthetic.render_strategy in config.yaml):
                   Brightfield optics; particles placed at real trajectory
                   positions, small-batch/reference-quality (see
                   render_brightfield.py)
+    brightfield_fast — same coherent optics, reimplemented directly in
+                  numpy/scipy (no deeptrack dependency) so cost is
+                  independent of particle count; validated against
+                  brightfield as a fast, production-density-capable
+                  equivalent (see render_brightfield_fast.py)
 """
 
 import argparse
@@ -416,7 +421,7 @@ def _dispatch_render(
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
-        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'brightfield'
+        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'brightfield' | 'brightfield_fast'
         state: optional dict carrying cross-frame smoothing state for the
             'randomized' strategy (see render_randomized.render_frame_randomized).
             Passed through only for that branch; 'procedural' and 'deeptrack'
@@ -451,6 +456,16 @@ def _dispatch_render(
             raise ImportError(
                 "Brightfield rendering requires 'deeptrack==2.0.1'. "
                 "Run 'uv add deeptrack==2.0.1' inside verification/. "
+            )
+    elif strategy == "brightfield_fast":
+        try:
+            from render_brightfield_fast import render_frame_brightfield_fast
+
+            return render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=atom_ids)
+        except ImportError:
+            raise ImportError(
+                "brightfield_fast rendering requires render_brightfield_fast.py. "
+                "Ensure the file exists in the verification/ directory."
             )
     elif strategy == "randomized":
         try:

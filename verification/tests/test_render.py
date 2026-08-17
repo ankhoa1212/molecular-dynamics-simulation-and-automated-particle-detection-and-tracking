@@ -585,6 +585,58 @@ class TestRenderStrategyDispatch:
         assert core_mean > 0.5 * 40000
         assert ring_mean < 0.3 * core_mean
 
+    def test_brightfield_fast_strategy_produces_uint16(self, render_module):
+        """U2 happy path: brightfield_fast dispatches to
+        render_frame_brightfield_fast and produces an output frame, with no
+        deeptrack dependency required."""
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        cfg = {
+            "image_height": 32,
+            "image_width": 32,
+            "brightfield": {
+                "na": 1.0,
+                "wavelength": 550e-9,
+                "resolution": 100e-9,
+                "refractive_index_medium": 1.33,
+                "radius_min": 0.5e-6,
+                "radius_max": 0.5e-6,
+                "refractive_index_min": 1.45,
+                "refractive_index_max": 1.45,
+                "z_min_px": 0.0,
+                "z_max_px": 0.0,
+                "intensity_scale": 20000.0,
+            },
+            "brightfield_fast": {"max_particles": 5000, "n_z_slices": 10},
+            "background": {"heterogeneity_scale": 50, "amplitude": 0},
+            "noise": {"gain_sigma": 0.0, "read_noise": 0.0},
+        }
+        rng = np.random.default_rng(42)
+        frame = render_module._dispatch_render(positions, box, cfg, rng, "brightfield_fast")
+        assert frame.dtype == np.uint16
+        assert frame.shape == (32, 32)
+
+    def test_brightfield_fast_strategy_missing_module_raises_clear_error(
+        self, render_module, monkeypatch
+    ):
+        """U2 error path: if render_brightfield_fast.py is unimportable, the
+        dispatch raises a clear, strategy-specific error that references its
+        own module -- not deeptrack, since brightfield_fast has no deeptrack
+        dependency."""
+        for key in list(sys.modules.keys()):
+            if "render_brightfield_fast" in key:
+                del sys.modules[key]
+
+        with mock.patch.dict(sys.modules, {"render_brightfield_fast": None}):
+            with pytest.raises(ImportError, match="render_brightfield_fast"):
+                render_module._dispatch_render(
+                    np.array([[5.0, 5.0]]),
+                    (0.0, 10.0, 0.0, 10.0),
+                    {},
+                    np.random.default_rng(0),
+                    "brightfield_fast",
+                )
+
 
 # ---------------------------------------------------------------------------
 # U2: render_deeptrack.py — DeepTrack2 PSF + enhanced noise model

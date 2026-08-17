@@ -104,6 +104,7 @@ def main():
             "deeptrack",
             "randomized",
             "brightfield",
+            "brightfield_fast",
             "deeptrack-real",
             "deeptrack-procedural",
             "deeptrack-physics",

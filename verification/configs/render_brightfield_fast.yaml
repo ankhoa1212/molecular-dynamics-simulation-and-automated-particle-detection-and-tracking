@@ -1,0 +1,46 @@
+# render.py config — brightfield_fast strategy
+# Same coherent optics as render_brightfield.yaml (physical params below
+# match that file's brightfield: section, since the two strategies render
+# the same physical scene two different ways), reimplemented directly in
+# numpy/scipy with no deeptrack dependency -- per-frame cost is independent
+# of particle count, so this config targets production density directly
+# rather than render_brightfield.yaml's small-batch canvas. See
+# render_brightfield_fast.py.
+#
+# Usage:
+#   uv run python render.py --lammps <path> --config configs/render_brightfield_fast.yaml
+
+synthetic:
+  render_strategy: brightfield_fast
+  image_width: 512
+  image_height: 512
+  output_dir: verification_output/synthetic_frames_brightfield_fast/
+
+  brightfield:
+    intensity_scale: 20000.0
+
+    na: 1.0
+    wavelength: 550e-9
+    resolution: 100e-9
+    refractive_index_medium: 1.33
+
+    radius_min: 0.5e-6
+    radius_max: 0.5e-6
+    refractive_index_min: 1.45
+    refractive_index_max: 1.45
+    z_min_px: 0.0
+    z_max_px: 0.0
+
+  brightfield_fast:
+    max_particles: 5000
+    n_z_slices: 10
+
+  # Spatially varying background + sCMOS noise -- shared convention with
+  # render_brightfield.yaml
+  background:
+    heterogeneity_scale: 50
+    amplitude: 500
+
+  noise:
+    gain_sigma: 0.02
+    read_noise: 15.0
