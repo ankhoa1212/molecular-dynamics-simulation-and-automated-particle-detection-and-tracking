@@ -23,14 +23,11 @@
 rf-detr:
   search_range: 25
   memory: 5
-  stub_filter: 6  # lowered from 90 (U6, docs/plans/2026-08-16-001-feat-brightfield-fast-
-                  # render-path-plan.md), re-swept against render_strategy:
-                  # brightfield_fast. Before trackpy had its own entry below, it fell
-                  # back to this value and got zeroed out completely (MOTA/IDF1 both
-                  # 0.0, 0 fragmentations -- the same failure mode the yolo entry's own
-                  # history below documents for 90 against the old procedural imagery).
-                  # 6 is the smallest of the three canonical values already measured
-                  # not to zero out short-track detectors on this dataset.
+  stub_filter: 90  # dataset-profiles/stress-test-results.md: empirically tuned for
+                    # rf-detr's own long, dense tracks at full 151-frame production
+                    # scale. Left unchanged by U6 -- the zeroed-out-trajectories bug
+                    # was trackpy silently falling back to this value (see trackpy's
+                    # own entry below), not a problem with 90 for rf-detr itself.
   adaptive_stop: 12
   adaptive_step: 0.95
 
@@ -66,10 +63,12 @@ yolo:
   adaptive_step: 0.95
 
 # trackpy previously had no entry here (fell back to rf-detr's tuning above,
-# per this file's header comment). Given its own explicit entry now (U6) so
-# rf-detr's stub_filter can be tuned independently without silently changing
-# trackpy's behavior too -- see rf-detr's own entry above for the failure
-# this fallback caused before this entry existed.
+# per this file's header comment). Before this entry existed, falling back to
+# rf-detr's stub_filter=90 zeroed out every trackpy trajectory (MOTA/IDF1
+# both 0.0, 0 fragmentations) -- trackpy's own tracks are much shorter-lived
+# than rf-detr's, so rf-detr's value was never appropriate for it. Given its
+# own explicit entry now (U6), matching lodestar/yolo's stub_filter=6, so
+# rf-detr's tuning stays untouched and decoupled from trackpy's fallback.
 trackpy:
   search_range: 25
   memory: 5

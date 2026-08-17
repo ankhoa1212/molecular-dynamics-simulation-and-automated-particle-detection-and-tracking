@@ -11,7 +11,7 @@ class TestLoadTrackingConfig:
     def test_rfdetr_canonical_values_match_known_tuning(self):
         result = load_tracking_config("rf-detr", {}, _KEY_PATH_MAP)
 
-        assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
+        assert result == {"search_range": 25, "memory": 5, "stub_filter": 90}
 
     def test_lodestar_canonical_values_match_known_tuning(self):
         result = load_tracking_config("lodestar", {}, _KEY_PATH_MAP)
@@ -46,7 +46,7 @@ class TestLoadTrackingConfig:
 
         assert result["search_range"] == 15
         assert result["memory"] == 5  # not overridden, still canonical
-        assert result["stub_filter"] == 6
+        assert result["stub_filter"] == 90
 
     def test_unknown_model_type_with_no_fallback_match_returns_empty_when_key_path_missing(self):
         # An unmapped canonical key with no tool_config value and no default

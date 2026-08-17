@@ -53,7 +53,11 @@ def _load_real_frames(directory: Path) -> list[np.ndarray]:
     tif_paths = sorted(directory.glob("*.tif")) + sorted(directory.glob("*.tiff"))
     png_paths = sorted(directory.glob("*.png"))
     frames = [tifffile.imread(str(p)).astype(np.float32) for p in tif_paths]
-    frames += [cv2.imread(str(p), cv2.IMREAD_GRAYSCALE).astype(np.float32) for p in png_paths]
+    for p in png_paths:
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"failed to load {p}: not a valid image file")
+        frames.append(img.astype(np.float32))
     return frames
 
 
