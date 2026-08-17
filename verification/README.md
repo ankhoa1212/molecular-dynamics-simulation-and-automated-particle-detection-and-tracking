@@ -7,7 +7,7 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
-6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error across `benchmark.py`'s per-model-type outputs, for comparing detector performance side by side.
+6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector performance side by side.
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
 
 ## Setup
@@ -177,7 +177,7 @@ uv run python benchmark.py \
 ```
 
 Outputs (named per `--model-type` so a run of one model doesn't overwrite the other's results):
-- `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1
+- `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1/inference_time_ms, plus a printed mean/median inference-time summary line
 - `verification_output/tracking_metrics_{model_type}.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
 - `verification_output/tracking_visualization_{model_type}.mp4` — detection boxes and trajectory traces overlaid on every frame (when `--save-video` is passed)
 
@@ -286,10 +286,11 @@ verification_output/
 │   └── frame_NNNNN.png
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
-├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1 (from benchmark.py)
+├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1/inference_time_ms (from benchmark.py)
 ├── tracking_metrics_{model_type}.csv   # MOTA/IDF1/fragmentation (from benchmark.py)
 ├── tracking_visualization_{model_type}.mp4  # detection boxes + trajectory traces (from benchmark.py --save-video)
 ├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
+├── benchmark_summary.png       # run-level bar chart across model types (from plot_benchmark.py)
 ├── renders_comparison.png      # side-by-side strategy comparison (from compare_renders.py)
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
 ├── hexatic_order.png           # structural order comparison (from compare.py)
