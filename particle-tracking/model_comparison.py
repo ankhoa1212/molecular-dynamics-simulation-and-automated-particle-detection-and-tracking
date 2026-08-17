@@ -305,7 +305,8 @@ def _write_model_config(
         else {}
     )
     # Unlike checkpoint, all three writers accept dataset_profile -- it drives
-    # tile_size/nms_distance/search_range derivation for rf-detr, lodestar, and yolo alike.
+    # search_range derivation for all three, plus tile_size for rf-detr's tiling
+    # and box_size/nms_distance for lodestar's detection (yolo has neither yet).
     if dataset_profile is not None:
         writer_kwargs["dataset_profile"] = dataset_profile
     return writer(
