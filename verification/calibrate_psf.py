@@ -35,6 +35,61 @@ def _load_tifs(directory: Path) -> list[np.ndarray]:
     return [tifffile.imread(str(p)).astype(np.float32) for p in paths]
 
 
+def _load_real_frames(directory: Path) -> list[np.ndarray]:
+    """Load real reference frames from `directory`, auto-detecting format by
+    extension: .tif/.tiff via tifffile (same as _load_tifs), .png via
+    cv2.imread grayscale -- the LodeSTAR training crops
+    (data-setup/models/lodestar_model_*/crops/*.png) calibrate_brightfield's
+    z-range fit targets are stored as PNG, not TIFF. Both formats may
+    coexist in the same directory; format is determined per-file by
+    extension, not by directory-wide assumption.
+    """
+    import cv2  # noqa: PLC0415
+
+    tif_paths = sorted(directory.glob("*.tif")) + sorted(directory.glob("*.tiff"))
+    png_paths = sorted(directory.glob("*.png"))
+    frames = [tifffile.imread(str(p)).astype(np.float32) for p in tif_paths]
+    frames += [cv2.imread(str(p), cv2.IMREAD_GRAYSCALE).astype(np.float32) for p in png_paths]
+    return frames
+
+
+def _fit_to_canvas(frame: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Pad or center-crop `frame` to exactly (height, width).
+
+    LodeSTAR crops are smaller than and inconsistent in size with
+    calibrate_brightfield's candidate canvas (~64x65 to ~173x176px
+    measured, vs. the default 256x256 canvas), and
+    compare_renders.compute_psd_similarity requires matching array shapes.
+    Padding (not resizing) preserves the crop's true physical pixel scale
+    -- resizing would distort exactly the size relationship the z-range fit
+    is trying to calibrate. Center-crops instead on any axis where the
+    source frame is larger than the target canvas.
+    """
+    h, w = frame.shape
+    out = np.zeros((height, width), dtype=frame.dtype)
+
+    if h <= height:
+        pad_y = (height - h) // 2
+        src_y0, src_y1 = 0, h
+        dst_y0, dst_y1 = pad_y, pad_y + h
+    else:
+        crop_y = (h - height) // 2
+        src_y0, src_y1 = crop_y, crop_y + height
+        dst_y0, dst_y1 = 0, height
+
+    if w <= width:
+        pad_x = (width - w) // 2
+        src_x0, src_x1 = 0, w
+        dst_x0, dst_x1 = pad_x, pad_x + w
+    else:
+        crop_x = (w - width) // 2
+        src_x0, src_x1 = crop_x, crop_x + width
+        dst_x0, dst_x1 = 0, width
+
+    out[dst_y0:dst_y1, dst_x0:dst_x1] = frame[src_y0:src_y1, src_x0:src_x1]
+    return out
+
+
 def _detect_particle_centers(frame, min_area, max_area, percentile):
     """Detect candidate particle centers via connected-component labeling on
     a percentile-thresholded mask, filtered by component pixel-area.
@@ -342,8 +397,23 @@ def calibrate_brightfield(
         "radius": (0.3e-6, 0.8e-6),
         "refractive_index": (1.40, 1.60),
         "intensity_scale": (5000.0, 40000.0),
+        # z_min_px/z_max_px are sampled independently within this range
+        # (not mirrored like radius/refractive_index above, which
+        # intentionally produce one monodisperse value per candidate) --
+        # defocus needs a genuine spread for render_strategy: brightfield_fast's
+        # z-bucketing to have anything to exercise once this feeds production
+        # config. See docs/plans/2026-08-16-001-feat-brightfield-fast-
+        # render-path-plan.md's U4 KTD.
+        "z_range_px": (-15.0, 15.0),
     }
-    targets = list(mie_frames) + list(real_frames)
+    # LodeSTAR crops (this function's real-world real_frames target) are
+    # smaller than and inconsistent in size with the candidate canvas --
+    # compute_psd_similarity requires matching shapes, so fit every real
+    # frame to the candidate canvas once up front. mie_frames are already
+    # rendered at (image_height, image_width) by generate_mie_ground_truth,
+    # so they need no fitting.
+    fitted_real_frames = [_fit_to_canvas(f, image_height, image_width) for f in real_frames]
+    targets = list(mie_frames) + fitted_real_frames
 
     best_score = -np.inf
     best_params = None
@@ -351,6 +421,11 @@ def calibrate_brightfield(
     for _ in range(n_iterations):
         radius = float(rng.uniform(*bounds["radius"]))
         refractive_index = float(rng.uniform(*bounds["refractive_index"]))
+        # Independently sampled, then sorted -- a genuine [z_min, z_max]
+        # spread, not the mirrored-constant pattern radius/refractive_index
+        # use above (see the z_range_px bound's own comment).
+        z_a = float(rng.uniform(*bounds["z_range_px"]))
+        z_b = float(rng.uniform(*bounds["z_range_px"]))
         candidate = {
             "max_particles": max(len(positions_lj), 1),
             "intensity_scale": float(rng.uniform(*bounds["intensity_scale"])),
@@ -362,8 +437,8 @@ def calibrate_brightfield(
             "radius_max": radius,
             "refractive_index_min": refractive_index,
             "refractive_index_max": refractive_index,
-            "z_min_px": 0.0,
-            "z_max_px": 0.0,
+            "z_min_px": min(z_a, z_b),
+            "z_max_px": max(z_a, z_b),
         }
         cfg = {
             "image_height": image_height,
@@ -583,7 +658,7 @@ def _run_brightfield_calibration(args):
                 file=sys.stderr,
             )
             sys.exit(1)
-        real_frames = _load_tifs(real_dir)
+        real_frames = _load_real_frames(real_dir)
 
     positions_lj, box = None, None
     for block in parse_lammps_dump(args.lammps):

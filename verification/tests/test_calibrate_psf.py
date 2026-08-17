@@ -865,6 +865,156 @@ class TestCalibrateBrightfield:
                 )
 
 
+class TestCalibrateBrightfieldZRange:
+    """U4: z_min_px/z_max_px join calibrate_brightfield's search space
+    (previously hardcoded to 0.0/0.0 on every candidate)."""
+
+    def teardown_method(self):
+        sys.modules.pop("deeptrack", None)
+        for key in list(sys.modules):
+            if "render_brightfield" in key:
+                del sys.modules[key]
+
+    def test_search_samples_a_genuine_non_mirrored_z_spread(self):
+        """z_min_px/z_max_px are sampled independently (not the mirrored-
+        constant pattern radius/refractive_index use), so at least one
+        evaluated candidate has z_min_px != z_max_px."""
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((16, 16)))
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+
+        seen_z = []
+        import render_brightfield
+
+        original_resolve = render_brightfield._resolve_brightfield_intensity
+
+        def _spy_resolve(sample, bf_cfg, H, W):
+            seen_z.append((bf_cfg["z_min_px"], bf_cfg["z_max_px"]))
+            return original_resolve(sample, bf_cfg, H, W)
+
+        with mock.patch.object(render_brightfield, "_resolve_brightfield_intensity", _spy_resolve):
+            calibrate_psf.calibrate_brightfield(
+                real_frames, [], positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=8
+            )
+
+        assert len(seen_z) == 8
+        assert any(z_min != z_max for z_min, z_max in seen_z)
+        assert all(z_min <= z_max for z_min, z_max in seen_z)
+
+    def test_png_real_frames_smaller_than_canvas_score_without_shape_error(self):
+        """PNG-format real_frames (the LodeSTAR crop format), smaller than
+        and inconsistent in size with the candidate canvas, must load,
+        fit to the canvas, and score via compute_psd_similarity without a
+        shape-mismatch error."""
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((64, 64)))
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        # Deliberately smaller than, and inconsistently sized relative to,
+        # the 64x64 candidate canvas -- matching the real LodeSTAR crops.
+        real_frames = [
+            rng.integers(0, 65535, size=(30, 33)).astype(np.uint16),
+            rng.integers(0, 65535, size=(45, 40)).astype(np.uint16),
+        ]
+
+        result = calibrate_psf.calibrate_brightfield(
+            real_frames, [], positions, (0, 1, 0, 1), 64, 64, rng, n_iterations=2
+        )
+        assert "brightfield" in result
+        assert not np.isnan(result["_meta"]["psd_mid_score"])
+
+
+class TestLoadRealFrames:
+    """U4: _load_real_frames -- format auto-detection by extension, unlike
+    _load_tifs (TIFF-only), since the LodeSTAR crop target directories are
+    PNG."""
+
+    def test_loads_png_files(self, tmp_path):
+        import cv2
+
+        img = np.full((20, 24), 128, dtype=np.uint8)
+        cv2.imwrite(str(tmp_path / "crop_1.png"), img)
+
+        frames = calibrate_psf._load_real_frames(tmp_path)
+        assert len(frames) == 1
+        assert frames[0].shape == (20, 24)
+        assert frames[0].dtype == np.float32
+
+    def test_loads_tiff_files_unchanged(self, tmp_path):
+        """Regression: existing TIFF-only --real-frames usage still works."""
+        frame = np.full((18, 22), 500, dtype=np.uint16)
+        _write_tif(tmp_path / "real_1.tif", frame)
+
+        frames = calibrate_psf._load_real_frames(tmp_path)
+        assert len(frames) == 1
+        assert frames[0].shape == (18, 22)
+
+    def test_loads_both_formats_from_the_same_directory(self, tmp_path):
+        import cv2
+
+        cv2.imwrite(str(tmp_path / "crop.png"), np.full((20, 20), 100, dtype=np.uint8))
+        _write_tif(tmp_path / "real.tif", np.full((20, 20), 200, dtype=np.uint16))
+
+        frames = calibrate_psf._load_real_frames(tmp_path)
+        assert len(frames) == 2
+
+
+class TestFitToCanvas:
+    def test_pads_a_smaller_frame_centered(self):
+        frame = np.ones((10, 10), dtype=np.float32)
+        out = calibrate_psf._fit_to_canvas(frame, 20, 20)
+        assert out.shape == (20, 20)
+        assert out[5:15, 5:15].sum() == 100
+        assert out.sum() == 100  # nothing outside the centered region
+
+    def test_center_crops_a_larger_frame(self):
+        frame = np.zeros((30, 30), dtype=np.float32)
+        frame[10:20, 10:20] = 1.0  # centered 10x10 bright block
+        out = calibrate_psf._fit_to_canvas(frame, 20, 20)
+        assert out.shape == (20, 20)
+        assert out.sum() == 100
+
+    def test_mixed_axes_pad_one_crop_the_other(self):
+        frame = np.ones((10, 30), dtype=np.float32)
+        out = calibrate_psf._fit_to_canvas(frame, 20, 20)
+        assert out.shape == (20, 20)
+
+
+class TestCandidateParticleCountBoundedBySmallTrajectory:
+    """Regression (U4): --lammps pointed at a small/subsetted trajectory
+    keeps each search candidate's particle count bounded -- confirms the
+    calibration run itself doesn't reproduce the slow path's N^2.7 cost by
+    rendering every candidate at production density."""
+
+    def teardown_method(self):
+        sys.modules.pop("deeptrack", None)
+        for key in list(sys.modules):
+            if "render_brightfield" in key:
+                del sys.modules[key]
+
+    def test_candidate_max_particles_matches_small_position_count(self):
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((16, 16)))
+        small_positions = rng.uniform(0.1, 0.9, size=(5, 2))  # small trajectory, not ~1446
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+
+        seen_max_particles = []
+        import render_brightfield
+
+        original_resolve = render_brightfield._resolve_brightfield_intensity
+
+        def _spy_resolve(sample, bf_cfg, H, W):
+            seen_max_particles.append(bf_cfg["max_particles"])
+            return original_resolve(sample, bf_cfg, H, W)
+
+        with mock.patch.object(render_brightfield, "_resolve_brightfield_intensity", _spy_resolve):
+            calibrate_psf.calibrate_brightfield(
+                real_frames, [], small_positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=3
+            )
+
+        assert all(mp == 5 for mp in seen_max_particles)
+
+
 class TestMergeConfigBrightfieldSection:
     """Extends TestMergeConfig-style coverage for the flat brightfield
     section calibrate_brightfield produces -- _merge_params_into_config
