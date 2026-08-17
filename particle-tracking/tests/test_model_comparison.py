@@ -228,14 +228,19 @@ def _fake_lodestar_writer(
     return cfg_path
 
 
-def _fake_yolo_writer(name, input_path, output_dir, crop_w, crop_h, bridge_gap, script_dir):
+def _fake_yolo_writer(
+    name, input_path, output_dir, crop_w, crop_h, bridge_gap, script_dir, dataset_profile=None
+):
     """Stand-in for tracker_configs.write_yolo_config; mirrors its real
     stub_filter/search_range defaults (6 / 25 -- stub_filter independently
     measured, not inherited from rf-detr's 90; see
     trackers_common/tracker_defaults.yaml)."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     cfg_path = Path(output_dir) / f"{name}.yaml"
-    cfg_path.write_text(f'input: "{input_path}"\ntracking:\n  stub_filter: 6\n  search_range: 25\n')
+    profile_line = f'\ndataset_profile: "{dataset_profile}"' if dataset_profile else ""
+    cfg_path.write_text(
+        f'input: "{input_path}"\ntracking:\n  stub_filter: 6\n  search_range: 25\n{profile_line}'
+    )
     return cfg_path
 
 
@@ -715,6 +720,35 @@ class TestDatasetProfileFlag:
 
         with (
             patch("tracker_configs.write_lodestar_config", side_effect=_fake_lodestar_writer),
+            patch("subprocess.Popen") as mock_popen_cls,
+            patch("analyze_tracks.compute_track_stats") as mock_stats,
+        ):
+            mock_popen_cls.return_value = _mock_popen(0)
+            mock_stats.return_value = {"n_tracks": 1}
+
+            manifest_path, _ = run_full_comparison(args, parser)
+
+        config_path = json.loads(manifest_path.read_text())["models"][0]["config"]
+        parsed = yaml.safe_load(Path(config_path).read_text())
+        assert parsed["dataset_profile"] == str(profile_path)
+
+    def test_reaches_generated_config_for_yolo_too(self, tmp_path):
+        """Unlike checkpoint (rf-detr-only), dataset_profile must reach a yolo
+        spec's generated config as well -- it drives yolo's own tile_size/nms_distance
+        derivation just like rf-detr and lodestar."""
+        input_path = tmp_path / "video.tif"
+        input_path.write_bytes(b"fake")
+        profile_path = self._write_profile(tmp_path)
+
+        args, parser = _parse_full_run_args(
+            tmp_path,
+            input_path,
+            ["yolo:../yolov12/runs/detect/yolo12m-particles/weights/best.pt"],
+            extra_argv=["--dataset-profile", str(profile_path)],
+        )
+
+        with (
+            patch("tracker_configs.write_yolo_config", side_effect=_fake_yolo_writer),
             patch("subprocess.Popen") as mock_popen_cls,
             patch("analyze_tracks.compute_track_stats") as mock_stats,
         ):

@@ -212,6 +212,7 @@ def write_yolo_config(
     crop_h: int | None,
     bridge_gap: int | None,
     script_dir: Path,
+    dataset_profile: str | None = None,
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -221,6 +222,7 @@ def write_yolo_config(
 
     cfg = {
         "input": input_path,
+        **({"dataset_profile": dataset_profile} if dataset_profile is not None else {}),
         "model": {
             "type": "yolo",
             "checkpoint": "../yolov12/runs/detect/yolo12m-particles/weights/best.pt",
