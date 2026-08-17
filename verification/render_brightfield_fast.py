@@ -63,9 +63,11 @@ def _voxel_size_m(bf_cfg):
     deeptrack.optics.Optics.get_voxel_size broadcasts a scalar `resolution`
     equally across x/y/z as `ones((3,)) * resolution / magnification`.
     `Optics.__init__`'s own default `magnification` is 10 (confirmed
-    directly against the installed deeptrack==2.0.1 source), and
-    render_brightfield.py's dt.Brightfield(...) call never overrides it --
-    so voxel_size is resolution/10, not resolution, in every real render.
+    directly against the installed deeptrack==2.0.1 source); at that
+    default, this dataset's particles render ~10x too large (see
+    render_brightfield.py's _resolve_brightfield_intensity docstring), so
+    config.yaml sets magnification: 1.0 for the production dataset and
+    both render paths read that override through bf_cfg here.
     """
     resolution = float(bf_cfg.get("resolution", 100e-9))
     magnification = float(bf_cfg.get("magnification", 10.0))
