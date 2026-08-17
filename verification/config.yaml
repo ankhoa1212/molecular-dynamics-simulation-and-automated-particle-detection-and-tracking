@@ -11,7 +11,7 @@
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
-  render_strategy: procedural   # procedural | deeptrack | randomized | brightfield | brightfield_fast
+  render_strategy: brightfield_fast   # procedural | deeptrack | randomized | brightfield | brightfield_fast
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
@@ -308,6 +308,15 @@ synthetic:
     na: 1.0                       # numerical aperture
     wavelength: 550e-9            # illumination wavelength (metres)
     resolution: 100e-9            # pixel size (metres/pixel)
+    magnification: 1.0            # deeptrack.Brightfield's own default is 10, which combined
+                                   # with resolution/radius_min below renders each particle at
+                                   # 50px radius -- ~10x this dataset's own ~10.9px real
+                                   # interparticle spacing (see dataset-profiles/synthetic-
+                                   # default.yaml), invisible at small validation scales but
+                                   # catastrophic at production density (particles overlap
+                                   # dozens-deep, washing out all spatial structure). 1.0 makes
+                                   # voxel_size == resolution, giving 5px particle radius --
+                                   # matching every other render strategy's psf_sigma: 5.0 scale.
     refractive_index_medium: 1.33 # surrounding medium (water)
 
     # --- Per-particle physical properties (single particle type this
@@ -316,9 +325,20 @@ synthetic:
     radius_max: 0.5e-6
     refractive_index_min: 1.45      # polystyrene ~1.45-1.60 at visible
     refractive_index_max: 1.45      # wavelengths; starting point, not calibrated
-    z_min_px: 0.0                   # defocus range (deeptrack z units); 0/0
-    z_max_px: 0.0                   # means every particle renders in-focus
-                                     # until calibrated/configured
+    z_min_px: -13.0                 # defocus range (deeptrack z units), calibrated via
+    z_max_px: 13.0                  # calibrate_psf.py --brightfield --real-frames against
+                                     # both LodeSTAR crop directories (U4, re-run after the
+                                     # magnification fix above changed the voxel-size scale
+                                     # z units are expressed in): model_15 crops fit
+                                     # [-12.96, 9.00]px, model_10 crops fit [-14.44, -6.18]px.
+                                     # The positive bound was unstable across search seeds/
+                                     # directories (no clear signal for defocus sign in these
+                                     # crops) while the negative bound was consistently
+                                     # ~-13 to -14; using a symmetric +-13 range as the more
+                                     # defensible summary of an inherently noisy small-search
+                                     # fit -- starting point, not a precision calibration. See
+                                     # docs/plans/2026-08-16-001-feat-brightfield-fast-render-
+                                     # path-plan.md's U4.
 
     # --- Mie ground-truth tier (calibration only -- never used by the
     # routine render_strategy: brightfield path) ---

@@ -22,6 +22,8 @@ synthetic:
     na: 1.0
     wavelength: 550e-9
     resolution: 100e-9
+    magnification: 1.0   # see config.yaml's comment: default 10 renders particles ~10x
+                          # too large relative to this dataset's real particle spacing
     refractive_index_medium: 1.33
 
     radius_min: 0.5e-6

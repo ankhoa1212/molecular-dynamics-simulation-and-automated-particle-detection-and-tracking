@@ -432,6 +432,15 @@ def calibrate_brightfield(
             "na": float(rng.uniform(*bounds["na"])),
             "wavelength": float(rng.uniform(*bounds["wavelength"])),
             "resolution": float(rng.uniform(*bounds["resolution"])),
+            # Fixed, not searched: deeptrack.Brightfield's own default (10)
+            # renders this dataset's particles at ~10x its real interparticle
+            # spacing (invisible at small validation scales, catastrophic at
+            # production density -- see render_brightfield.py's
+            # _resolve_brightfield_intensity docstring). 1.0 matches every
+            # other render strategy's particle scale; not reopened as a
+            # search dimension since it's a fixed, decided value, not a
+            # free physical parameter to fit against reference imagery.
+            "magnification": 1.0,
             "refractive_index_medium": float(rng.uniform(*bounds["refractive_index_medium"])),
             "radius_min": radius,
             "radius_max": radius,

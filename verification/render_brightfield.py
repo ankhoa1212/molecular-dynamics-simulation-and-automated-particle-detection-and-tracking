@@ -118,6 +118,19 @@ def _build_sphere_sample(pixel_positions, radii, refractive_indices, z):
 def _resolve_brightfield_intensity(sample, bf_cfg, H, W):
     """Resolve one dt.Brightfield coherent solve over `sample` and return
     the real-valued intensity image (H, W), float64.
+
+    `magnification` is passed through explicitly (default 10.0, matching
+    dt.Brightfield's own default so omitting it from bf_cfg is a no-op) --
+    voxel_size = resolution/magnification determines each particle's
+    rendered radius in pixels (see render_brightfield_fast.py's
+    _voxel_size_m docstring). At the library default of 10, this dataset's
+    radius_min/max (0.5um) renders at 50px radius, ~10x this dataset's own
+    ~10.9px real interparticle spacing -- invisible at the small particle
+    counts/canvases the parent brightfield feature was validated at, but
+    catastrophic at real production density (particles overlap dozens-deep,
+    washing out essentially all spatial structure). config.yaml sets
+    magnification: 1.0 for the production dataset, matching every other
+    render strategy's ~5px particle scale.
     """
     dt = _import_deeptrack()
 
@@ -125,6 +138,7 @@ def _resolve_brightfield_intensity(sample, bf_cfg, H, W):
         NA=float(bf_cfg.get("na", 1.0)),
         wavelength=float(bf_cfg.get("wavelength", 550e-9)),
         resolution=float(bf_cfg.get("resolution", 100e-9)),
+        magnification=float(bf_cfg.get("magnification", 10.0)),
         refractive_index_medium=float(bf_cfg.get("refractive_index_medium", 1.33)),
         output_region=(0, 0, H, W),
     )

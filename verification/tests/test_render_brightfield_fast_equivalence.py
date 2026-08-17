@@ -7,32 +7,41 @@ in test time (N=1-45), via compare_renders.compute_ssim_similarity. Requires
 a real deeptrack install (pytest.importorskip below) -- there is no mocked
 path here, since the whole point is validating against genuine physics.
 
-SSIM threshold: this module pins **SSIM >= 0.25**, not the plan's original
+SSIM threshold: this module pins **SSIM >= 0.35**, not the plan's original
 placeholder 0.7. That number was set from a single-particle-only
-measurement; extending the same methodology to multi-particle scenes here
-found real, honest SSIM in the 0.32-0.46 range for realistic (non-touching,
-production-representative) multi-particle scenes, comfortably above 0.25,
-while single-particle scenes score 0.74-0.80 -- consistent with the
-plan's own KTD. The gap between single- and multi-particle SSIM is not a
-bug: direct visual inspection (see this module's own investigation) confirms
-multi-particle renders are structurally correct -- matching particle
-positions, ring radii, and interference-node locations -- with the same
-single documented approximation (the z-integrated thin-object footprint,
-see render_brightfield_fast.py's module docstring) compounding across more
-particles' worth of missing inner-ring contrast. SSIM's per-window
-luminance/contrast normalization is simply a harsh metric for this kind of
-dense ring/speckle imagery: it can weight a particle's dark ring more than
-its bright core (see this file's own peak-detection finding, applied as a
-fix to test_render_brightfield_fast.py), and has no tolerance for the small
-positional/contrast disagreements that a real approximation of this kind
-necessarily produces at higher particle density. 0.25 is set below every
-realistic measurement observed (including a deliberately adversarial dense
-touching-cluster case), so it stays a meaningful gate against genuine
-regressions (e.g. the FFT-padding bug this module's own validation run
-caught and fixed -- unpadded multi-particle scenes scored SSIM as low as
-0.24-0.27 and negative normalized cross-correlation) without demanding
-pixel-perfect coherent-speckle reproduction that even the slow path's own
-"maybe shouldn't be additive" volume model doesn't claim to guarantee.
+measurement; extending the same methodology to multi-particle scenes found
+two real, honest problems along the way, both now fixed (see
+render_brightfield_fast.py's module docstring and render_brightfield.py's
+_resolve_brightfield_intensity docstring for the full detail):
+
+1. FFT circular-convolution wraparound at the true canvas edge (fixed by
+   matching dt.Brightfield.get()'s own padding).
+2. deeptrack.Brightfield's default magnification (10) renders this
+   dataset's particles at 50px radius -- ~10x its own real ~10.9px
+   interparticle spacing -- invisible in small validation renders but
+   catastrophic (near-total loss of visible structure) at real production
+   density. Fixed by setting magnification: 1.0 (5px radius, matching every
+   other render strategy's scale) in config.yaml and this file's own _cfg,
+   and by making render_brightfield.py finally pass magnification through
+   to dt.Brightfield(...) at all (previously silently ignored).
+
+With both fixed, real measured SSIM is 0.80-0.91 for single particles and
+0.43-0.80 for realistic (non-touching, production-scale) multi-particle
+scenes -- direct visual inspection (see this module's own investigation)
+confirms multi-particle renders are structurally correct: matching particle
+positions, ring radii, and interference-node locations, individually
+distinguishable at production density, with the same single documented
+approximation (the z-integrated thin-object footprint) compounding into a
+slightly-softer look at higher local density, not a bug. SSIM's per-window
+luminance/contrast normalization is a harsh metric for this kind of dense
+ring/speckle imagery regardless -- it can weight a particle's dark ring
+more than its bright core (see this file's own peak-detection finding,
+applied as a fix to test_render_brightfield_fast.py) -- so 0.35 is set
+below the lowest realistic measurement (0.43, a deliberately adversarial
+dense touching-cluster case) rather than at the average, keeping the gate
+meaningful against genuine regressions without demanding pixel-perfect
+coherent-speckle reproduction that even the slow path's own "maybe
+shouldn't be additive" volume model doesn't claim to guarantee.
 
 Uniform-random positions are deliberately NOT used for the N=20 scenarios:
 coherent interference is chaotic near-degenerate configurations, and random
@@ -58,7 +67,7 @@ from compare_renders import compute_ssim_similarity  # noqa: E402
 from render_brightfield import render_frame_brightfield  # noqa: E402
 from render_brightfield_fast import render_frame_brightfield_fast  # noqa: E402
 
-SSIM_THRESHOLD = 0.25
+SSIM_THRESHOLD = 0.35
 
 _BOX = (0.0, 100.0, 0.0, 100.0)
 
@@ -71,6 +80,12 @@ def _cfg(image_size=256, z_min_px=0.0, z_max_px=0.0, n_z_slices=10):
             "na": 1.0,
             "wavelength": 550e-9,
             "resolution": 100e-9,
+            "magnification": 1.0,  # matches config.yaml's production value -- see
+            # render_brightfield.py's _resolve_brightfield_intensity docstring.
+            # The deeptrack library default (10) renders particles at 50px radius,
+            # ~10x this dataset's real interparticle spacing, so a comparison at
+            # that default scale wouldn't exercise a realistic, well-separated
+            # multi-particle scene at all.
             "refractive_index_medium": 1.33,
             "radius_min": 0.5e-6,
             "radius_max": 0.5e-6,
