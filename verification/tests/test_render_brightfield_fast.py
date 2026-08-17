@@ -149,11 +149,17 @@ class TestRenderFrameBrightfieldFast:
         frame = render_frame_brightfield_fast(
             np.array([[50.0, 50.0]]), _BOX, _cfg(image_size=256), rng
         ).astype(np.float64)
-        # True pixel position: (50/100*256, 50/100*256) = (128, 128).
-        deviation = np.abs(frame - frame.mean())
-        peak_row, peak_col = np.unravel_index(deviation.argmax(), deviation.shape)
-        assert abs(peak_row - 128) <= 3
-        assert abs(peak_col - 128) <= 3
+        # True pixel position: (50/100*256, 50/100*256) = (128, 128). Use
+        # the bright-core argmax directly, not |frame - mean()|.argmax() --
+        # this PSF also has a dark ring around the core whose deviation
+        # from the mean can exceed the core's, so an unsigned-deviation
+        # peak-finder isn't reliably core-seeking. Tolerance is wider than
+        # the noise-free position error (confirmed exactly 0px by direct
+        # inspection) to absorb Poisson shot-noise jitter in which pixel
+        # wins the argmax race within the near-saturated core.
+        peak_row, peak_col = np.unravel_index(frame.argmax(), frame.shape)
+        assert abs(peak_row - 128) <= 5
+        assert abs(peak_col - 128) <= 5
 
     def test_zero_particles_renders_plain_background_frame(self):
         frame = render_frame_brightfield_fast(

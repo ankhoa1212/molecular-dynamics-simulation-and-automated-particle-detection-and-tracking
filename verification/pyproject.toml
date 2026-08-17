@@ -13,6 +13,12 @@ dependencies = [
     "motmetrics>=1.4.0",
     "trackpy>=0.6",
     "opencv-python>=4.9.0",
+    # scikit-image's structural_similarity backs compare_renders.py's
+    # compute_ssim_similarity (render_brightfield_fast vs render_brightfield
+    # equivalence, R7). Previously only a transitive dependency via
+    # deeptrack -- pinned directly so R7's tests don't silently break if
+    # deeptrack's own pin ever drops scikit-image.
+    "scikit-image>=0.22",
     # deeptrack==2.0.1 provides scalar-diffraction PSF for render_strategy: deeptrack
     # May require build tools; tests mock the import so CI passes without it
     "deeptrack==2.0.1",

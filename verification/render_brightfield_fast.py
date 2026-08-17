@@ -38,6 +38,13 @@ both empirically checked by verification/tests/test_render_brightfield_fast_equi
    mathematically identical -- confirmed directly against
    deeptrack.optics.Optics._pupil's formula.
 
+The propagation also runs on a padded canvas (see _PAD's docstring below),
+matching dt.Brightfield.get()'s own padding -- not a simplification, a
+faithfulness fix found during R7 validation: without it, FFT circular-
+convolution wraparound lands directly at the true canvas edge and multi-
+particle scenes whose content reaches near the edges (which production
+density always does) diverge sharply from the real slow path.
+
 No deeptrack runtime dependency: reads the exact formulas from the installed
 deeptrack==2.0.1 source but does not import deeptrack itself.
 """
@@ -133,6 +140,37 @@ def _stamp_footprints(index_map, footprint, positions_px):
                 np.add.at(index_map, (iy[valid], ix[valid]), fval * wv[valid])
 
 
+_PAD = 10
+"""deeptrack.optics.Brightfield's own default `padding=(10, 10, 10, 10)`
+(left, right, top, bottom -- symmetric here since all four match). Real
+dt.Brightfield.get() pads the working canvas by this amount, then further
+pads up to the nearest FFT-fast size (_fft_fast_size below), runs the whole
+propagation on that larger padded canvas, and crops back down to (H, W) only
+at the very end. Skipping this (an earlier version of this module did)
+leaves the FFT's circular-convolution wraparound directly at the true
+canvas edge instead of pushed out into padding -- confirmed empirically:
+without padding, multi-particle in-focus renders develop a visible
+square/box artifact near the canvas boundary that dt.Brightfield's own
+output does not have, and equivalence collapses for any scene whose content
+reaches near the edges (which production density always does)."""
+
+
+def _fft_fast_size(n):
+    """Smallest integer >= n whose only prime factors are 2 and 3 --
+    matches deeptrack.image.pad_image_to_fft's own `_FASTEST_SIZES` table
+    (regenerated here, not imported, per this module's no-deeptrack-runtime-
+    dependency KTD)."""
+    x = max(int(n), 1)
+    while True:
+        y = x
+        for p in (2, 3):
+            while y % p == 0:
+                y //= p
+        if y == 1:
+            return x
+        x += 1
+
+
 def _pupil(shape, na, wavelength, refractive_index_medium, voxel_size_m, defocus):
     """Faithful port of deeptrack.optics.Optics._pupil, with no aberration
     term -- render_brightfield.py never configures a custom pupil/aberration
@@ -216,6 +254,15 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
         voxel_size_m = _voxel_size_m(bf_cfg)
         vx, _vy, _vz = voxel_size_m
 
+        # Work on a padded canvas -- see _PAD's docstring above for why.
+        # padding=(10,10,10,10) is symmetric, so the padded content region
+        # is simply (H + 2*_PAD, W + 2*_PAD); the extra FFT-fast padding
+        # below is appended at the bottom/right only (matching
+        # pad_image_to_fft, which pads at the end of each axis).
+        Hp, Wp = H + 2 * _PAD, W + 2 * _PAD
+        Hf, Wf = _fft_fast_size(Hp), _fft_fast_size(Wp)
+        pixel_positions = pixel_positions + _PAD
+
         # Bucket particles by z into n_z_slices bins spanning their actual
         # sampled range (collapses to one bucket when every particle shares
         # the same z, e.g. the default z_min_px == z_max_px == 0.0).
@@ -239,7 +286,7 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
                 )
             return footprint_cache[key]
 
-        light_in_fft = np.fft.fft2(np.ones((H, W), dtype=complex))
+        light_in_fft = np.fft.fft2(np.ones((Hf, Wf), dtype=complex))
         prev_bucket_z = 0.0
 
         present_buckets = sorted(np.unique(bucket_idx))
@@ -250,11 +297,11 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
             gap = bucket_z - prev_bucket_z
             if gap != 0.0:
                 pupil_step = _pupil(
-                    (H, W), na, wavelength, refractive_index_medium, voxel_size_m, gap
+                    (Hf, Wf), na, wavelength, refractive_index_medium, voxel_size_m, gap
                 )
                 light_in_fft = light_in_fft * pupil_step
 
-            index_map = np.zeros((H, W), dtype=np.float64)
+            index_map = np.zeros((Hf, Wf), dtype=np.float64)
             bucket_positions = pixel_positions[in_bucket]
             bucket_radii = radii[in_bucket]
             bucket_ri = refractive_indices[in_bucket]
@@ -275,15 +322,15 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
         # imaging pupil with its hard aperture mask -- matching
         # dt.Brightfield.get()'s post-loop steps exactly.
         refocus_pupil = _pupil(
-            (H, W), na, wavelength, refractive_index_medium, voxel_size_m, -prev_bucket_z
+            (Hf, Wf), na, wavelength, refractive_index_medium, voxel_size_m, -prev_bucket_z
         )
         light_in_focus = light_in_fft * refocus_pupil
-        imaging_pupil = _pupil((H, W), na, wavelength, refractive_index_medium, voxel_size_m, 0.0)
+        imaging_pupil = _pupil((Hf, Wf), na, wavelength, refractive_index_medium, voxel_size_m, 0.0)
         light_in_focus = light_in_focus * imaging_pupil
         mask = np.abs(imaging_pupil) > 0
         light_in_focus = light_in_focus * mask
 
-        field = np.fft.ifft2(light_in_focus)
+        field = np.fft.ifft2(light_in_focus)[:Hp, :Wp][_PAD : _PAD + H, _PAD : _PAD + W]
         frame = (np.abs(field) ** 2).astype(np.float64) * intensity_scale
 
     # --- Spatially varying background, sCMOS noise -----------------------
