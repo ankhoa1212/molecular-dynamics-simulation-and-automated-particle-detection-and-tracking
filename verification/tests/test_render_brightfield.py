@@ -80,6 +80,31 @@ def _cfg(**overrides):
     return cfg
 
 
+class TestApplyPartialCoherenceBlur:
+    def test_default_sigma_blurs_a_sharp_feature(self):
+        rbf = _import_with_mock_deeptrack()
+        frame = np.zeros((32, 32))
+        frame[16, 16] = 1000.0
+        blurred = rbf._apply_partial_coherence_blur(frame, {})
+        assert blurred[16, 16] < 1000.0  # peak spread out
+        assert blurred[16, 17] > 0.0  # energy spread to neighbors
+
+    def test_zero_sigma_disables_blur(self):
+        rbf = _import_with_mock_deeptrack()
+        frame = np.zeros((32, 32))
+        frame[16, 16] = 1000.0
+        blurred = rbf._apply_partial_coherence_blur(frame, {"coherence_blur_sigma_px": 0})
+        assert np.array_equal(blurred, frame)
+
+    def test_configured_sigma_overrides_default(self):
+        rbf = _import_with_mock_deeptrack()
+        frame = np.zeros((32, 32))
+        frame[16, 16] = 1000.0
+        light_blur = rbf._apply_partial_coherence_blur(frame, {"coherence_blur_sigma_px": 0.5})
+        heavy_blur = rbf._apply_partial_coherence_blur(frame, {"coherence_blur_sigma_px": 5.0})
+        assert heavy_blur[16, 16] < light_blur[16, 16]  # more blur, lower peak
+
+
 class TestRenderFrameBrightfieldGlue:
     def test_empty_positions_returns_zero_frame(self):
         rbf = _import_with_mock_deeptrack()
@@ -97,13 +122,35 @@ class TestRenderFrameBrightfieldGlue:
         assert frame.shape == (8, 8)
         assert frame.dtype == np.uint16
 
-    def test_atom_ids_argument_accepted_and_unused(self):
+    def test_atom_ids_without_state_does_not_raise(self):
         rbf = _import_with_mock_deeptrack()
         rng = np.random.default_rng(0)
         positions = np.array([[0.5, 0.5]])
-        # Must not raise even though atom_ids has no effect -- signature
-        # parity with the other render_frame_* strategies.
+        # atom_ids alone (no state) must not raise -- falls back to fresh
+        # random sampling, same as neither being passed at all.
         rbf.render_frame_brightfield(positions, (0, 1, 0, 1), _cfg(), rng, atom_ids=np.array([7]))
+
+    def test_atom_ids_and_state_keep_particle_properties_stable_across_frames(self):
+        """End-to-end version of the _sample_particle_properties persistence
+        test, through the full render_frame_brightfield entry point (the
+        frame-to-frame flicker fix)."""
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = np.array([[0.5, 0.5], [0.7, 0.7]])
+        atom_ids = np.array([1, 2])
+        state = {}
+
+        rbf.render_frame_brightfield(
+            positions, (0, 1, 0, 1), _cfg(), rng, atom_ids=atom_ids, state=state
+        )
+        cached_after_frame_1 = dict(state["particle_properties"])
+
+        rbf.render_frame_brightfield(
+            positions, (0, 1, 0, 1), _cfg(), rng, atom_ids=atom_ids, state=state
+        )
+        cached_after_frame_2 = dict(state["particle_properties"])
+
+        assert cached_after_frame_1 == cached_after_frame_2
 
     def test_particle_count_above_cap_warns_and_truncates(self):
         rbf = _import_with_mock_deeptrack()
@@ -141,6 +188,66 @@ class TestRenderFrameBrightfieldGlue:
         assert (radii >= 0.4e-6).all() and (radii <= 0.6e-6).all()
         assert (ri >= 1.40).all() and (ri <= 1.50).all()
         assert (z >= -3.0).all() and (z <= 3.0).all()
+
+    def test_atom_id_keyed_properties_stay_constant_across_calls(self):
+        """Frame-to-frame flicker fix: with atom_ids/state given, the same
+        physical particle's radius/refractive_index/z must be identical
+        across separate calls (separate frames), not resampled fresh each
+        time -- a real particle's depth/size doesn't randomly jump every
+        frame."""
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        bf_cfg = {
+            "radius_min": 0.4e-6,
+            "radius_max": 0.6e-6,
+            "refractive_index_min": 1.40,
+            "refractive_index_max": 1.50,
+            "z_min_px": -13.0,
+            "z_max_px": 13.0,
+        }
+        state = {}
+        atom_ids = np.array([10, 20, 30])
+
+        radii1, ri1, z1 = rbf._sample_particle_properties(
+            3, bf_cfg, rng, atom_ids=atom_ids, state=state
+        )
+        radii2, ri2, z2 = rbf._sample_particle_properties(
+            3, bf_cfg, rng, atom_ids=atom_ids, state=state
+        )
+
+        assert np.array_equal(radii1, radii2)
+        assert np.array_equal(ri1, ri2)
+        assert np.array_equal(z1, z2)
+
+    def test_new_atom_id_seen_later_gets_sampled_and_cached(self):
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        bf_cfg = {"z_min_px": -13.0, "z_max_px": 13.0}
+        state = {}
+
+        rbf._sample_particle_properties(2, bf_cfg, rng, atom_ids=np.array([1, 2]), state=state)
+        assert set(state["particle_properties"].keys()) == {1, 2}
+
+        _, _, z2 = rbf._sample_particle_properties(
+            3, bf_cfg, rng, atom_ids=np.array([1, 2, 3]), state=state
+        )
+        assert set(state["particle_properties"].keys()) == {1, 2, 3}
+        assert z2[2] == state["particle_properties"][3][2]
+
+    def test_without_atom_ids_or_state_falls_back_to_fresh_random_sampling(self):
+        """Preserves the original behavior for callers with no cross-frame
+        continuity to preserve (e.g. calibrate_psf.py's search loop)."""
+        rbf = _import_with_mock_deeptrack()
+        rng1 = np.random.default_rng(0)
+        rng2 = np.random.default_rng(0)
+        bf_cfg = {"z_min_px": -13.0, "z_max_px": 13.0}
+
+        _, _, z_a = rbf._sample_particle_properties(5, bf_cfg, rng1)
+        _, _, z_b = rbf._sample_particle_properties(5, bf_cfg, rng1)
+        _, _, z_c = rbf._sample_particle_properties(5, bf_cfg, rng2)
+
+        assert not np.array_equal(z_a, z_b)  # two independent fresh draws differ
+        assert np.array_equal(z_a, z_c)  # same rng seed/sequence position reproduces
 
     def test_missing_deeptrack_raises_import_hint(self):
         for key in list(sys.modules.keys()):
@@ -281,3 +388,66 @@ class TestRenderFrameBrightfieldRealPhysics:
 
         assert frame.shape == (48, 48)
         assert frame.max() > frame.min()  # not a uniform/blank frame
+
+    def test_single_particle_secondary_ring_suppressed_relative_to_primary_feature(self):
+        """Task: suppress the unrealistic outer diffraction ring. A single
+        in-focus particle's radially-averaged intensity profile has a
+        primary feature (core + first ring) near the particle center and,
+        without _apply_partial_coherence_blur, a real secondary bright-ring
+        bump well beyond it that real reference images
+        (data-setup/models/lodestar_model_15/, lodestar_model_10/ crops)
+        don't show. Asserts the outer secondary-ring deviation from
+        background stays small relative to the primary feature's own
+        deviation -- confirmed empirically to separate blurred (~0.11) from
+        unblurred (~0.29) at this dataset's particle scale."""
+        pytest.importorskip("deeptrack")
+        for key in list(sys.modules.keys()):
+            if "render_brightfield" in key:
+                del sys.modules[key]
+        sys.modules.pop("deeptrack", None)
+        import render_brightfield as rbf
+
+        cfg = {
+            "image_width": 64,
+            "image_height": 64,
+            "brightfield": {
+                "na": 1.0,
+                "wavelength": 550e-9,
+                "resolution": 100e-9,
+                "magnification": 1.0,
+                "refractive_index_medium": 1.33,
+                "radius_min": 0.5e-6,
+                "radius_max": 0.5e-6,
+                "refractive_index_min": 1.45,
+                "refractive_index_max": 1.45,
+                "z_min_px": 0.0,
+                "z_max_px": 0.0,
+                "intensity_scale": 20000.0,
+                "max_particles": 5,
+                "mie_max_particles": 5,
+                "mie_max_frames": 2,
+            },
+            "background": {"amplitude": 0},
+            "noise": {"gain_sigma": 0.0, "read_noise": 0.0},
+        }
+        rng = np.random.default_rng(0)
+        frame = rbf.render_frame_brightfield(
+            np.array([[0.5, 0.5]]), (0.0, 1.0, 0.0, 1.0), cfg, rng
+        ).astype(np.float64)
+
+        cy, cx = 32, 32
+        angles = np.linspace(0, 2 * np.pi, 32, endpoint=False)
+        profile = np.array(
+            [
+                frame[
+                    np.clip(np.round(cy + r * np.sin(angles)).astype(int), 0, 63),
+                    np.clip(np.round(cx + r * np.cos(angles)).astype(int), 0, 63),
+                ].mean()
+                for r in range(20)
+            ]
+        )
+        background = profile[-3:].mean()
+        primary_deviation = np.abs(profile[:8] - background).max()
+        secondary_deviation = np.abs(profile[10:18] - background).max()
+
+        assert secondary_deviation < 0.2 * primary_deviation

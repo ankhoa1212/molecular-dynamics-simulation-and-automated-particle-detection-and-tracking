@@ -49,12 +49,12 @@ class TestWriteRfdetrConfig:
         assert parsed["detection"]["threshold"] == 0.3
         assert parsed["tracking"]["search_range"] == 25
         assert parsed["tracking"]["memory"] == 5
-        # 90, rf-detr's own empirically-tuned value (dataset-profiles/
-        # stress-test-results.md). trackpy previously fell back to this
-        # value and got zeroed out entirely once trackpy started using the
-        # fallback (U6); trackpy now has its own dedicated stub_filter
-        # entry, so rf-detr's own tuning is untouched. See
-        # trackers-common/trackers_common/tracker_defaults.yaml.
+        # 90, the historical/only empirically-grounded value for rf-detr.
+        # Briefly lowered to 6 (U6) as a workaround for trackpy falling back
+        # to this value and getting zeroed out; trackpy has its own
+        # independent entry now instead, so rf-detr's value reverted back.
+        # See trackers-common/trackers_common/tracker_defaults.yaml's
+        # rf-detr entry.
         assert parsed["tracking"]["stub_filter"] == 90
         assert parsed["output"]["save_trajectory_image"] is True
         assert "tiling" in parsed  # no crop given -> tiling spatial config

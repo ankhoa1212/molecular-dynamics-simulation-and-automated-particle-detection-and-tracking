@@ -159,10 +159,14 @@ class TestRenderFrameBrightfieldFast:
         # peak-finder isn't reliably core-seeking. Tolerance is wider than
         # the noise-free position error (confirmed exactly 0px by direct
         # inspection) to absorb Poisson shot-noise jitter in which pixel
-        # wins the argmax race within the near-saturated core.
+        # wins the argmax race within the near-saturated core -- widened
+        # further (5 -> 8) after _apply_partial_coherence_blur broadened
+        # the core's near-flat top, giving shot noise more nearly-equal
+        # pixels to jitter the argmax between (measured up to 7px across
+        # 20 seeds at this test's particle scale).
         peak_row, peak_col = np.unravel_index(frame.argmax(), frame.shape)
-        assert abs(peak_row - 128) <= 5
-        assert abs(peak_col - 128) <= 5
+        assert abs(peak_row - 128) <= 8
+        assert abs(peak_col - 128) <= 8
 
     def test_zero_particles_renders_plain_background_frame(self):
         frame = render_frame_brightfield_fast(
@@ -198,6 +202,37 @@ class TestRenderFrameBrightfieldFast:
             np.random.default_rng(0),
         ).astype(np.float64)
         assert not np.allclose(in_focus, defocused)
+
+    def test_atom_ids_and_state_keep_particle_properties_stable_across_frames(self):
+        """Frame-to-frame flicker fix: with atom_ids/state given, the same
+        physical particle keeps the same rendered appearance (radius/
+        refractive_index/z) across separate render calls (separate frames)
+        instead of getting a fresh random z (and thus a randomly different
+        defocus blur) every single frame."""
+        positions = np.array([[50.0, 50.0], [30.0, 70.0]])
+        atom_ids = np.array([100, 200])
+        cfg = _cfg(image_size=128, z_min_px=-13.0, z_max_px=13.0)
+        state = {}
+
+        frame1 = render_frame_brightfield_fast(
+            positions, _BOX, cfg, np.random.default_rng(0), atom_ids=atom_ids, state=state
+        )
+        cached_after_frame_1 = dict(state["particle_properties"])
+        frame2 = render_frame_brightfield_fast(
+            positions, _BOX, cfg, np.random.default_rng(1), atom_ids=atom_ids, state=state
+        )
+        cached_after_frame_2 = dict(state["particle_properties"])
+
+        assert cached_after_frame_1 == cached_after_frame_2
+        # Different rng seeds only affect noise, not the cached particle
+        # properties, so the two frames' particle appearance (not pixel-
+        # identical noise) should be highly correlated rather than the
+        # near-zero correlation an independent-per-frame z-resample would
+        # produce.
+        assert (
+            np.corrcoef(frame1.astype(np.float64).ravel(), frame2.astype(np.float64).ravel())[0, 1]
+            > 0.9
+        )
 
     def test_dense_overlapping_cluster_renders_without_nan_or_overflow(self):
         rng = np.random.default_rng(1)

@@ -23,11 +23,15 @@
 rf-detr:
   search_range: 25
   memory: 5
-  stub_filter: 90  # dataset-profiles/stress-test-results.md: empirically tuned for
-                    # rf-detr's own long, dense tracks at full 151-frame production
-                    # scale. Left unchanged by U6 -- the zeroed-out-trajectories bug
-                    # was trackpy silently falling back to this value (see trackpy's
-                    # own entry below), not a problem with 90 for rf-detr itself.
+  stub_filter: 90  # briefly lowered to 6 (U6) to work around trackpy falling back to
+                    # this value and getting zeroed out completely -- trackpy now has
+                    # its own independent entry below instead (the actual fix), so
+                    # rf-detr's own value never needed to change. Reverted back to 90,
+                    # its only empirically-grounded value (see
+                    # dataset-profiles/stress-test-results.md): rf-detr's own detection
+                    # density (~900-1500/frame) sustains long unbroken tracks unlike
+                    # yolo/lodestar/trackpy's much shorter ones, so it doesn't need
+                    # (and shouldn't share) their much lower stub_filter.
   adaptive_stop: 12
   adaptive_step: 0.95
 

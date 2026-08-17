@@ -940,6 +940,52 @@ class TestMainModelTypeWiring:
         called_kwargs = mock_detect_trackpy.call_args.kwargs
         assert called_kwargs["diameter"] == 11
 
+    def test_accuracy_csv_includes_inference_time_per_frame(self, tmp_path, monkeypatch, capsys):
+        """Every model type gets a per-frame inference_time_ms column in its
+        accuracy_metrics CSV, and a mean/median summary line -- lets a
+        comparison across model types include speed, not just accuracy."""
+        monkeypatch.chdir(tmp_path)
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=2)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]], [[10.0, 10.0]]])
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        with mock.patch.object(
+            benchmark, "detect_trackpy", return_value=_sv_preload.Detections.empty()
+        ):
+            benchmark.main()
+
+        captured = capsys.readouterr()
+        assert "Inference time:" in captured.out
+        assert "ms/frame mean" in captured.out
+        assert "ms/frame median" in captured.out
+
+        csv_path = tmp_path / "verification_output" / "accuracy_metrics_trackpy.csv"
+        with open(csv_path) as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        for row in rows:
+            assert "inference_time_ms" in row
+            assert float(row["inference_time_ms"]) >= 0.0
+
     def test_trackpy_accumulates_detections_like_other_model_types(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
@@ -1637,6 +1683,7 @@ class TestLammpsInWiring:
     def test_lammps_in_without_ground_truth_tracks_warns_and_continues(
         self, tmp_path, monkeypatch, capsys
     ):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"
@@ -1672,6 +1719,7 @@ class TestLammpsInWiring:
         assert "--lammps-in has no effect without --ground-truth-tracks" in capsys.readouterr().out
 
     def test_lammps_in_derives_and_passes_override_to_tracking_metrics(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
         gt_path = tmp_path / "ground_truth.json"

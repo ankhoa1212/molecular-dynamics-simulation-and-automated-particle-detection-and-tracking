@@ -616,6 +616,49 @@ class TestRenderStrategyDispatch:
         assert frame.dtype == np.uint16
         assert frame.shape == (32, 32)
 
+    def test_brightfield_fast_strategy_threads_state_for_particle_persistence(self, render_module):
+        """Frame-to-frame flicker fix: _dispatch_render passes state/atom_ids
+        through to render_frame_brightfield_fast so the same atom_id's
+        particle properties (radius/refractive_index/z) stay constant
+        across separate dispatch calls (separate frames)."""
+        positions = np.array([[5.0, 5.0]])
+        box = (0.0, 10.0, 0.0, 10.0)
+        cfg = {
+            "image_height": 32,
+            "image_width": 32,
+            "brightfield": {
+                "na": 1.0,
+                "wavelength": 550e-9,
+                "resolution": 100e-9,
+                "refractive_index_medium": 1.33,
+                "radius_min": 0.5e-6,
+                "radius_max": 0.5e-6,
+                "refractive_index_min": 1.45,
+                "refractive_index_max": 1.45,
+                "z_min_px": -13.0,
+                "z_max_px": 13.0,
+                "intensity_scale": 20000.0,
+            },
+            "brightfield_fast": {"max_particles": 5000, "n_z_slices": 10},
+            "background": {"heterogeneity_scale": 50, "amplitude": 0},
+            "noise": {"gain_sigma": 0.0, "read_noise": 0.0},
+        }
+        rng = np.random.default_rng(42)
+        state = {}
+        atom_ids = np.array([7])
+
+        render_module._dispatch_render(
+            positions, box, cfg, rng, "brightfield_fast", state=state, atom_ids=atom_ids
+        )
+        cached_after_frame_1 = state["particle_properties"][7]
+
+        render_module._dispatch_render(
+            positions, box, cfg, rng, "brightfield_fast", state=state, atom_ids=atom_ids
+        )
+        cached_after_frame_2 = state["particle_properties"][7]
+
+        assert cached_after_frame_1 == cached_after_frame_2
+
     def test_brightfield_fast_strategy_missing_module_raises_clear_error(
         self, render_module, monkeypatch
     ):

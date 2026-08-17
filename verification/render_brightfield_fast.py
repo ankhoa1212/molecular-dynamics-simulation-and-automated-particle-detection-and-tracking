@@ -45,6 +45,13 @@ convolution wraparound lands directly at the true canvas edge and multi-
 particle scenes whose content reaches near the edges (which production
 density always does) diverge sharply from the real slow path.
 
+The resolved intensity also gets a small Gaussian blur before the noise
+tail (render_brightfield._apply_partial_coherence_blur, shared with the
+slow path) -- approximating partial spatial coherence, which suppresses
+the multi-ring Airy diffraction pattern a fully-coherent solve otherwise
+produces but real reference images don't show. See that function's own
+docstring for the full rationale.
+
 No deeptrack runtime dependency: reads the exact formulas from the installed
 deeptrack==2.0.1 source but does not import deeptrack itself.
 """
@@ -53,7 +60,7 @@ import warnings
 
 import numpy as np
 
-from render_brightfield import _sample_particle_properties
+from render_brightfield import _apply_partial_coherence_blur, _sample_particle_properties
 from render_deeptrack import _lj_to_pixels
 
 
@@ -210,7 +217,7 @@ def _pupil(shape, na, wavelength, refractive_index_medium, voxel_size_m, defocus
     return np.fft.fftshift(aperture * np.exp(1j * defocus * z_shift))
 
 
-def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
+def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None, state=None):
     """Render one synthetic brightfield microscopy frame via the fast path.
 
     Signature matches every other render_frame_* strategy. Physical optics
@@ -224,14 +231,18 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
         box: (x_lo, x_hi, y_lo, y_hi) simulation box bounds.
         cfg: synthetic config dict.
         rng: numpy.random.Generator instance.
-        atom_ids: unused -- accepted only so this function's signature
-            matches the other render_frame_* strategies _dispatch_render
-            calls uniformly.
+        atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
+            Passed through to _sample_particle_properties along with
+            `state` so each physical particle's radius/refractive_index/z
+            stays constant across frames instead of being re-sampled fresh
+            every call -- see that function's docstring.
+        state: optional dict owned by the caller for the lifetime of a
+            render run (render.py's per-frame loop creates one and reuses
+            it across every frame); see atom_ids above.
 
     Returns:
         uint16 numpy array of shape (H, W).
     """
-    del atom_ids  # unused; see docstring
     H = cfg["image_height"]
     W = cfg["image_width"]
     bf_cfg = cfg.get("brightfield", {})
@@ -248,6 +259,7 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
     else:
         pixel_positions = _lj_to_pixels(positions_lj, box, H, W)
         n = len(pixel_positions)
+        kept_atom_ids = atom_ids
         if n > max_particles:
             warnings.warn(
                 f"render_strategy: brightfield_fast -- frame has {n} particles, "
@@ -257,8 +269,9 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
             )
             keep = np.sort(rng.choice(n, size=max_particles, replace=False))
             pixel_positions = pixel_positions[keep]
+            kept_atom_ids = atom_ids[keep] if atom_ids is not None else None
         radii, refractive_indices, z = _sample_particle_properties(
-            len(pixel_positions), bf_cfg, rng
+            len(pixel_positions), bf_cfg, rng, atom_ids=kept_atom_ids, state=state
         )
 
         voxel_size_m = _voxel_size_m(bf_cfg)
@@ -342,6 +355,7 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None):
 
         field = np.fft.ifft2(light_in_focus)[:Hp, :Wp][_PAD : _PAD + H, _PAD : _PAD + W]
         frame = (np.abs(field) ** 2).astype(np.float64) * intensity_scale
+        frame = _apply_partial_coherence_blur(frame, bf_cfg)
 
     # --- Spatially varying background, sCMOS noise -----------------------
     # Identical to render_frame_brightfield's own tail -- see that module

@@ -308,6 +308,18 @@ synthetic:
                                 # this pipeline's 16-bit ADU convention. Starting
                                 # point, not calibrated -- see calibrate_psf.py's
                                 # brightfield entry point.
+    coherence_blur_sigma_px: 2.0   # Gaussian blur (px) applied to the resolved
+                                # intensity before background/noise, approximating
+                                # partial spatial coherence (real microscope
+                                # illumination is never perfectly coherent, unlike
+                                # this module's single-plane-wave model) -- without
+                                # it, particles render a multi-ring Airy diffraction
+                                # pattern real reference images
+                                # (data-setup/models/lodestar_model_15/crops/,
+                                # lodestar_model_10/crops/) don't show, just one
+                                # soft halo around the core. 2.0px picked by direct
+                                # comparison against those crops; 0 disables it. See
+                                # render_brightfield.py's _apply_partial_coherence_blur.
 
     # --- Optics params, passed directly to deeptrack.Brightfield ---
     na: 1.0                       # numerical aperture
@@ -330,18 +342,31 @@ synthetic:
     radius_max: 0.5e-6
     refractive_index_min: 1.45      # polystyrene ~1.45-1.60 at visible
     refractive_index_max: 1.45      # wavelengths; starting point, not calibrated
-    z_min_px: -13.0                 # defocus range (deeptrack z units), calibrated via
-    z_max_px: 13.0                  # calibrate_psf.py --brightfield --real-frames against
-                                     # both LodeSTAR crop directories (U4, re-run after the
-                                     # magnification fix above changed the voxel-size scale
-                                     # z units are expressed in): model_15 crops fit
-                                     # [-12.96, 9.00]px, model_10 crops fit [-14.44, -6.18]px.
-                                     # The positive bound was unstable across search seeds/
-                                     # directories (no clear signal for defocus sign in these
-                                     # crops) while the negative bound was consistently
-                                     # ~-13 to -14; using a symmetric +-13 range as the more
-                                     # defensible summary of an inherently noisy small-search
-                                     # fit -- starting point, not a precision calibration. See
+    z_min_px: -13.0                 # defocus range (deeptrack z units). Asymmetric, not the
+    z_max_px: 0.0                   # earlier +-13.0 -- direct measurement showed this dataset's
+                                     # coherent solve flips a particle's core from bright to dark
+                                     # (contrast-inverted) once z crosses roughly +0.4px, while
+                                     # negative z stays bright across the entire -13 to 0 range.
+                                     # All 10 real LodeSTAR reference crops (both model_15 and
+                                     # model_10 directories) show only bright-centered particles,
+                                     # none dark -- at the old +-13 range, ~91% of a real
+                                     # production frame's particles rendered dark-centered,
+                                     # contradicting every real reference image available. The
+                                     # earlier calibration search (compute_psd_similarity, a
+                                     # frequency-domain magnitude metric) couldn't have caught
+                                     # this: PSD is blind to contrast polarity, so it scored
+                                     # model_15's fitted z_max=+9.00 (deep in the dark-inverted
+                                     # region) no worse than model_10's z_max=-6.18 (bright) --
+                                     # "the average of the two" that produced +13.0 was silently
+                                     # averaging one good fit with one bad one. 0.0 keeps every
+                                     # sampled z on the bright side while preserving the full
+                                     # real defocus-blur variety the negative side already showed
+                                     # (from a faint bright core near z=0 to a strongly bright,
+                                     # heavily blurred core near z=-13).
+                                     # Earlier history: calibrate_psf.py --brightfield
+                                     # --real-frames fit model_15 crops to [-12.96, 9.00]px and
+                                     # model_10 crops to [-14.44, -6.18]px; "the average of the
+                                     # two, rounded" (+-13.0) was the prior value here. See
                                      # docs/plans/2026-08-16-001-feat-brightfield-fast-render-
                                      # path-plan.md's U4.
 
@@ -390,14 +415,12 @@ benchmark:
   checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
   variant: large            # nano | small | medium | large
   num_queries: 300
-  threshold: 0.08           # detection confidence threshold — re-swept (U6) against the
-                             # render_strategy: brightfield_fast dataset (151 frames @
-                             # ~1446 particles, replacing the procedural imagery the 0.2
-                             # value above was tuned against): F1 plateaus 0.6573-0.6598
-                             # across 0.02-0.1, peaking at 0.08 (F1=0.6598, P=0.6742,
-                             # R=0.6460); 0.1-0.4 declines monotonically (F1=0.6597 down
-                             # to 0.6445). See docs/plans/2026-08-16-001-feat-brightfield-
-                             # fast-render-path-plan.md's U6.
+  threshold: 0.08           # detection confidence threshold — re-swept against the
+                             # corrected imagery (flicker/ring/z-range fixes): F1 peaks at
+                             # 0.08 (F1=0.6698, P=0.8566, R=0.5499), a clean interior
+                             # optimum over 0.02-0.4 (0.02 -> 0.6397, 0.1 -> 0.6692,
+                             # 0.4 -> 0.6300) -- unchanged from the earlier (pre-fix-
+                             # imagery) sweep.
 
   tiling:
     enabled: true
@@ -426,20 +449,21 @@ benchmark:
   # --- model_type: lodestar (requires particle-tracking/.venv — run `uv sync` there first) ---
   lodestar:
     checkpoint: ../data-setup/models/lodestar_model_15/model.pt
-    threshold: 0.0005         # re-swept (U6) against render_strategy: brightfield_fast
-                               # (replacing the 0.01 procedural-imagery value): F1 stays
-                               # catastrophically low (0.02-0.05) across every threshold
-                               # tested (0.0005-0.1), with recall never exceeding ~0.03 --
-                               # not a threshold-sensitivity problem (nms_distance/box_size
-                               # already correctly derived via dataset_profile below,
-                               # confirmed). Reads as a genuine domain-mismatch: this
-                               # checkpoint's self-supervised feature detector, fit against
-                               # real photographic microscopy crops, does not generalize to
-                               # this coherent-brightfield concentric-ring appearance.
-                               # 0.0005 is this sweep's measured best (F1=0.0527), not a
-                               # value to trust as "tuned" in the sense the other three
-                               # detectors' values are. See docs/plans/2026-08-16-001-feat-
-                               # brightfield-fast-render-path-plan.md's U6.
+    threshold: 1.0e-20        # re-swept against the corrected imagery (flicker/ring/z-range
+                               # fixes): F1 kept climbing continuously as threshold dropped
+                               # across 13+ orders of magnitude (0.0005: F1=0.14 -> 1e-8:
+                               # F1=0.32 -> 1e-15: F1=0.37 -> 1e-20: F1=0.39), converging
+                               # (deltas shrinking to ~0.01 per further 10x drop) rather than
+                               # continuing to climb meaningfully -- effectively "keep every
+                               # local maximum regardless of confidence" (threshold=0.0 itself
+                               # raises a ValueError in skimage's h_maxima: "h = 0 is
+                               # ambiguous"). This is this checkpoint's real F1 ceiling on this
+                               # dataset, not an undertuned threshold: even at its best, ~0.39
+                               # is well below rf-detr (0.67), yolo (0.68), and trackpy (0.54)
+                               # -- a genuine detection-quality gap, most likely this
+                               # checkpoint's self-supervised feature detector (fit against
+                               # real photographic microscopy crops) not generalizing well to
+                               # this coherent-brightfield appearance, not a config problem.
     alpha: 0.9                # weight score exponent
     # nms_distance intentionally NOT set here -- leaving it unset lets benchmark.py
     # derive it from dataset_profile's size_px/spacing_px, falling back to today's
@@ -481,26 +505,25 @@ benchmark:
     # `uv run python train.py` under yolov12/config.yaml's current name: yolo12m-particles
     # would have produced natively.
     checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
-    threshold: 0.3             # re-swept (U6) against render_strategy: brightfield_fast
-                                # (replacing ultralytics' unswept 0.25 default): F1 peaks
-                                # at 0.3 (F1=0.6162, P=0.6957, R=0.5530) across 0.1-0.4
-                                # (0.6011-0.6162), a clean interior optimum. See
-                                # docs/plans/2026-08-16-001-feat-brightfield-fast-render-
-                                # path-plan.md's U6.
+    threshold: 0.01            # re-swept against the corrected imagery (flicker/ring/z-range
+                                # fixes): F1 peaks at 0.01 (F1=0.6819, P=0.7634, R=0.6160),
+                                # a clean interior optimum (0.005 -> 0.6772, 0.015 -> 0.6798)
+                                # -- found by extending the search down twice after the
+                                # optimum kept landing at the tested range's lower boundary
+                                # (0.3, then 0.1, before settling at 0.01).
     device: null                # used only when --device is not passed on the CLI; --device always wins
 
   # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
   # runs natively in verification/.venv, trackpy is already a dependency here) ---
   trackpy:
-    diameter: 7                # re-swept (U6) against render_strategy: brightfield_fast (must
-                                # be odd -- trackpy.locate raises otherwise). F1 peaks at 7
-                                # (F1=0.5671, P=0.6554, R=0.4998); a clean interior optimum
-                                # over 5-21 (F1 falls off in both directions: 5 -> 0.4768,
-                                # 9 -> 0.5234, 21 -> 0.1591). Smaller than the dataset_profile-
-                                # derived size_px (5.0 -> diameter 5) since trackpy.locate's
-                                # window needs to cover the particle's visible ring extent, not
-                                # just its core. See docs/plans/2026-08-16-001-feat-brightfield-
-                                # fast-render-path-plan.md's U6.
+    diameter: 7                # re-swept against the corrected imagery (flicker/ring/z-range
+                                # fixes): F1 peaks at 7 (F1=0.5439, P=0.6132, R=0.4888), a
+                                # clean interior optimum over 5-21 (falls off both directions:
+                                # 5 -> 0.4926, 9 -> 0.4850, 21 -> 0.1734) -- unchanged from the
+                                # earlier (pre-fix-imagery) sweep. Smaller than the
+                                # dataset_profile-derived size_px (5.0 -> diameter 5) since
+                                # trackpy.locate's window needs to cover the particle's visible
+                                # ring extent, not just its core.
     minmass: null               # minimum integrated brightness; null lets trackpy use its own default
                                  # (0 — no mass-based filtering; trackpy.locate's percentile filter,
                                  # default 64, still applies regardless of this value)

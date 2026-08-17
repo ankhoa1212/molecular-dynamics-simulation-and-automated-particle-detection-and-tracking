@@ -63,10 +63,10 @@ def compute_ssim_similarity(a: np.ndarray, b: np.ndarray) -> float:
     particle configuration rendered two different ways, where structural
     agreement is the more honest signal. See render_brightfield_fast.py's
     plan KTDs, and test_render_brightfield_fast_equivalence.py's own module
-    docstring, for the pinned threshold this feeds (SSIM >= 0.35 -- revised
-    from the plan's original placeholder once multi-particle scenes were
-    measured at the corrected particle scale, not just the single-particle
-    case the placeholder was set from).
+    docstring, for the pinned threshold this feeds (SSIM >= 0.7 -- back at
+    the plan's original placeholder value after a real accuracy
+    improvement, not just a re-measurement; see that module docstring's
+    threshold history).
     """
     from skimage.metrics import structural_similarity
 

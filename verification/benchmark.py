@@ -129,6 +129,7 @@ if __name__ == "__main__":
 import argparse
 import csv
 import json
+import time
 
 import matplotlib.image as mplimg
 import numpy as np
@@ -1398,6 +1399,7 @@ def main():
     rows = []
     all_tp = all_fp = all_fn = 0
     all_dists = []
+    all_inference_times_ms = []
     all_detections_by_frame = {}  # frame_idx → (N, 2) array of (x, y) centroids
     all_boxes_by_frame = (
         {}
@@ -1414,6 +1416,13 @@ def main():
 
         img_rgb = _load_frame_rgb(png_path)
 
+        # Times only the detector's own call -- not image loading or the
+        # matching/scoring below -- so this is comparable across model
+        # types regardless of how much of this loop's other work a given
+        # backend happens to share. GPU-backed detectors (rf-detr/yolo/
+        # lodestar) already block on their own result-materialization (numpy
+        # conversion), so no explicit CUDA sync is needed here.
+        inference_start = time.perf_counter()
         if model_type == "lodestar":
             dets = detect_lodestar(
                 model,
@@ -1437,6 +1446,7 @@ def main():
             dets = detect_with_tiling(model, img_rgb, threshold, tile_size, overlap, nms_threshold)
         else:
             dets = model.predict(img_rgb, threshold=threshold)
+        inference_time_ms = (time.perf_counter() - inference_start) * 1000.0
 
         if len(dets) > 0:
             pred_centers = ((dets.xyxy[:, :2] + dets.xyxy[:, 2:]) / 2).astype(np.float64)
@@ -1471,8 +1481,10 @@ def main():
                 "recall": round(rec, 4),
                 "f1": round(f1, 4),
                 "mean_pos_error_px": "" if np.isnan(mean_err) else round(mean_err, 2),
+                "inference_time_ms": round(inference_time_ms, 2),
             }
         )
+        all_inference_times_ms.append(inference_time_ms)
 
     # Write per-frame CSV. Named per model_type — a fixed filename would let a
     # later run of the other model type silently overwrite these results.
@@ -1501,6 +1513,16 @@ def main():
     print(f"F1:                  {overall_f1:.4f}")
     if not np.isnan(overall_err):
         print(f"Mean position error: {overall_err:.2f} px")
+    if all_inference_times_ms:
+        # Median alongside mean: GPU-backed detectors (rf-detr/yolo/lodestar)
+        # typically pay a one-time CUDA warm-up cost on their first inference
+        # call, which the mean absorbs into the whole run but the median
+        # (robust to a single outlier frame) does not -- both are reported so
+        # neither reading is silently misleading on its own.
+        print(
+            f"Inference time:      {np.mean(all_inference_times_ms):.2f} ms/frame mean, "
+            f"{np.median(all_inference_times_ms):.2f} ms/frame median"
+        )
     print(f"Per-frame metrics:   {csv_path}")
 
     # --- Tracking metrics (optional) ---

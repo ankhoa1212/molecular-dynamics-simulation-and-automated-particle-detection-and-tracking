@@ -833,9 +833,18 @@ class TestCalibrateBrightfield:
     def test_best_scoring_candidate_beats_a_fixed_worse_candidate(self):
         """The kept candidate's score is the actual best seen, not just the
         last or first evaluated -- a real selection, not a pass-through."""
+        import scipy.ndimage
+
         rng = np.random.default_rng(0)
         positions = rng.uniform(0.1, 0.9, size=(3, 2))
-        real_frame = rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)
+        raw_frame = rng.integers(0, 65535, size=(16, 16)).astype(np.float64)
+        # render_frame_brightfield now applies _apply_partial_coherence_blur
+        # (default sigma=2.0px) to every resolved candidate before scoring
+        # -- pre-blurring the target the same way so a resolve() that
+        # returns the pre-blur frame verbatim still produces a genuinely
+        # near-identical (not just similarly-random) post-blur result,
+        # preserving this test's original intent.
+        real_frame = scipy.ndimage.gaussian_filter(raw_frame, sigma=2.0).astype(np.uint16)
 
         # A resolve() that returns the real frame itself (as float) scores
         # near-perfectly against it; deeptrack's actual output is unrelated

@@ -52,13 +52,31 @@ def _import_deeptrack():
     return deeptrack
 
 
-def _sample_particle_properties(n, bf_cfg, rng):
+def _sample_particle_properties(n, bf_cfg, rng, atom_ids=None, state=None):
     """Sample per-particle radius/refractive_index/z from configured ranges.
 
     Returns three (n,) float arrays. Uniform sampling over each configured
     [min, max] range -- this iteration supports one particle type per
     experiment (see origin doc Scope Boundaries), so every particle draws
     from the same range rather than a per-type profile.
+
+    When `atom_ids` and `state` are both given (the render.py per-frame
+    loop's usage), each physical particle's properties are sampled once and
+    cached in `state["particle_properties"]` keyed by atom_id, then reused
+    verbatim on every later frame that particle appears in -- not
+    re-sampled fresh per frame. A real bead's radius/refractive_index never
+    change frame to frame, and z (this dataset's synthetic stand-in for a
+    2-D trajectory's missing depth coordinate) shouldn't either: resampling
+    z independently every frame made every particle's defocus jump
+    randomly across the whole configured range from one frame to the next,
+    an unrealistic flicker no real depth-stable particle would show. New
+    atom_ids encountered partway through a run (e.g. a particle entering
+    frame) are sampled fresh and cached the same way.
+
+    Without `atom_ids`/`state` (e.g. calibrate_psf.py's calibrate_brightfield
+    search loop, which renders independent single-frame candidates with no
+    cross-frame continuity to preserve), falls back to the original
+    fully-vectorized per-call random sampling.
     """
     radius_lo = float(bf_cfg.get("radius_min", 0.5e-6))
     radius_hi = float(bf_cfg.get("radius_max", 0.5e-6))
@@ -66,10 +84,60 @@ def _sample_particle_properties(n, bf_cfg, rng):
     ri_hi = float(bf_cfg.get("refractive_index_max", 1.45))
     z_lo = float(bf_cfg.get("z_min_px", 0.0))
     z_hi = float(bf_cfg.get("z_max_px", 0.0))
+
+    if atom_ids is not None and state is not None:
+        cache = state.setdefault("particle_properties", {})
+        radii = np.empty(n, dtype=np.float64)
+        refractive_indices = np.empty(n, dtype=np.float64)
+        z = np.empty(n, dtype=np.float64)
+        for i, aid in enumerate(atom_ids):
+            key = int(aid)
+            if key not in cache:
+                cache[key] = (
+                    float(rng.uniform(radius_lo, radius_hi)),
+                    float(rng.uniform(ri_lo, ri_hi)),
+                    float(rng.uniform(z_lo, z_hi)),
+                )
+            radii[i], refractive_indices[i], z[i] = cache[key]
+        return radii, refractive_indices, z
+
     radii = rng.uniform(radius_lo, radius_hi, size=n)
     refractive_indices = rng.uniform(ri_lo, ri_hi, size=n)
     z = rng.uniform(z_lo, z_hi, size=n)
     return radii, refractive_indices, z
+
+
+def _apply_partial_coherence_blur(frame, bf_cfg):
+    """Suppress high-order coherent diffraction fringes via a small Gaussian
+    blur of the resolved intensity, approximating the effect of partial
+    spatial coherence -- a finite illumination NA/source size, which every
+    real microscope has and this module's fully-coherent single-plane-wave
+    model doesn't capture.
+
+    A fully-coherent solve over-predicts fringe visibility relative to real
+    brightfield images: rendering a single in-focus particle through this
+    module's own coherent solve produces a multi-ring Airy pattern (bright
+    core, dark ring, a visible secondary bright ring, repeating outward),
+    but real reference crops (data-setup/models/lodestar_model_15/crops/
+    *.png, data-setup/models/lodestar_model_10/crops/*.png) show only one
+    soft halo around each particle's bright core -- confirmed directly by
+    comparison. Applied identically in render_frame_brightfield and
+    render_frame_brightfield_fast's shared post-processing tail so the two
+    strategies stay equivalent (R7); sigma=2.0px (roughly 40% of this
+    dataset's own ~5px particle radius) was picked by rendering a single
+    particle at several candidate sigmas and comparing against the real
+    crops directly -- large enough to erase the secondary/tertiary ring
+    structure, small enough that individual particles stay visually
+    distinct at production density (confirmed against a dense multi-
+    particle crop). Configurable via `coherence_blur_sigma_px`; 0 disables
+    it entirely.
+    """
+    sigma = float(bf_cfg.get("coherence_blur_sigma_px", 2.0))
+    if sigma <= 0:
+        return frame
+    import scipy.ndimage  # noqa: PLC0415
+
+    return scipy.ndimage.gaussian_filter(frame, sigma=sigma)
 
 
 def _cap_particle_count(pixel_positions, max_particles, rng):
@@ -146,7 +214,7 @@ def _resolve_brightfield_intensity(sample, bf_cfg, H, W):
     return np.abs(np.array(image, dtype=np.complex128)).squeeze()
 
 
-def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None):
+def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None, state=None):
     """Render one synthetic brightfield microscopy frame.
 
     Unlike render_frame/render_frame_deeptrack, this is not a per-particle
@@ -163,14 +231,18 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None):
             'noise' sections for the shared sCMOS camera-noise tail, the
             same convention render_frame_deeptrack uses).
         rng: numpy.random.Generator instance.
-        atom_ids: unused -- accepted only so this function's signature
-            matches the other render_frame_* strategies _dispatch_render
-            calls uniformly.
+        atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
+            Passed through to _sample_particle_properties along with
+            `state` so each physical particle's radius/refractive_index/z
+            stays constant across frames instead of being re-sampled fresh
+            every call -- see that function's docstring.
+        state: optional dict owned by the caller for the lifetime of a
+            render run (render.py's per-frame loop creates one and reuses
+            it across every frame); see atom_ids above.
 
     Returns:
         uint16 numpy array of shape (H, W).
     """
-    del atom_ids  # unused; see docstring
     H = cfg["image_height"]
     W = cfg["image_width"]
     bf_cfg = cfg.get("brightfield", {})
@@ -183,12 +255,14 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None):
         pixel_positions = _lj_to_pixels(positions_lj, box, H, W)
         keep = _cap_particle_count(pixel_positions, max_particles, rng)
         pixel_positions = pixel_positions[keep]
+        kept_atom_ids = atom_ids[keep] if atom_ids is not None else None
         radii, refractive_indices, z = _sample_particle_properties(
-            len(pixel_positions), bf_cfg, rng
+            len(pixel_positions), bf_cfg, rng, atom_ids=kept_atom_ids, state=state
         )
         sample = _build_sphere_sample(pixel_positions, radii, refractive_indices, z)
         intensity = _resolve_brightfield_intensity(sample, bf_cfg, H, W)
         frame = intensity.astype(np.float64) * intensity_scale
+        frame = _apply_partial_coherence_blur(frame, bf_cfg)
 
     # --- Spatially varying background, sCMOS noise -----------------------
     # Reuses the same top-level synthetic.background/synthetic.noise blocks
