@@ -19,7 +19,8 @@ dependencies = [
     # deeptrack -- pinned directly so R7's tests don't silently break if
     # deeptrack's own pin ever drops scikit-image.
     "scikit-image>=0.22",
-    # deeptrack==2.0.1 provides scalar-diffraction PSF for render_strategy: deeptrack
+    # deeptrack==2.0.1 provides coherent optics for render_strategy: brightfield
+    # (render_strategy: deeptrack has no deeptrack dependency; see render_deeptrack.py)
     # May require build tools; tests mock the import so CI passes without it
     "deeptrack==2.0.1",
     "trackers-common",

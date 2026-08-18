@@ -30,7 +30,8 @@ only patches flat ``key: value`` lines per section) can write calibrated
 values into it without any changes.
 
 Requires deeptrack==2.0.1 (already a verification/ dependency; see
-render_deeptrack.py).
+pyproject.toml). render_deeptrack.py's crop_source: real path does NOT need
+deeptrack despite the similarly named module.
 """
 
 import warnings
