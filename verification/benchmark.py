@@ -295,9 +295,11 @@ def resolve_tile_size(explicit_value, profile, frame_width, frame_height, hardco
 
 def detect_trackpy(frame, diameter, minmass=None, separation=None):
     """Locate particles with trackpy's classical brightness-thresholding
-    algorithm and return an sv.Detections object shaped like the other two
-    detectors' output (xyxy boxes, confidence left unset — see plan KTDs on
-    why trackpy's `mass` isn't surfaced as a confidence score)."""
+    algorithm and return an sv.Detections object shaped like the other
+    detectors' output (xyxy boxes, confidence a constant 1.0 -- see plan KTDs
+    on why trackpy's `mass` isn't surfaced as a confidence score instead; the
+    constant is needed so ByteTrack, which requires confidence to be set, can
+    run against trackpy's detections)."""
     import trackpy as tp
     import supervision as sv
 
@@ -307,11 +309,15 @@ def detect_trackpy(frame, diameter, minmass=None, separation=None):
     if features.empty:
         return sv.Detections.empty()
 
+    from detectors_common.point_to_box import points_to_xyxy
+
     xs = features["x"].to_numpy()
     ys = features["y"].to_numpy()
-    half = diameter / 2.0
-    xyxy = np.stack([xs - half, ys - half, xs + half, ys + half], axis=1).astype(np.float32)
-    return sv.Detections(xyxy=xyxy, class_id=np.zeros(len(xyxy), dtype=int))
+    centers = np.stack([xs, ys], axis=1)
+    xyxy = points_to_xyxy(centers, diameter)
+    return sv.Detections(
+        xyxy=xyxy, class_id=np.zeros(len(xyxy), dtype=int), confidence=np.ones(len(xyxy))
+    )
 
 
 def _load_lodestar_defaults(cfg):
