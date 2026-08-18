@@ -34,6 +34,7 @@ from detectors_common.dataset_profile import load_dataset_profile as load_detect
 # detectors_common, verification/benchmark.py imports it the same way, no lazy
 # wrapper needed there either — see that package's README).
 from trackers_common.linking import bridge_track_gaps, link_and_filter_tracks
+from trackers_common.bytetrack import run_bytetrack
 from trackers_common.defaults import load_tracking_config, DEFAULT_KEY_PATH_MAP
 from trackers_common.scale_derivation import resolve_search_range, resolve_memory
 from trackers_common.dataset_profile import load_dataset_profile as load_tracking_profile
@@ -1312,17 +1313,14 @@ def main():
 
         elif tracker == "bytetrack":
             print("Applying ByteTrack (online)...")
-            byte_tracker = sv.ByteTrack(
-                track_activation_threshold=track_activation_threshold,
+            tracked_frames_detections = run_bytetrack(
+                all_detections,
                 lost_track_buffer=lost_track_buffer,
                 minimum_consecutive_frames=minimum_consecutive_frames,
+                track_activation_threshold=track_activation_threshold,
             )
-            tracked_frames_detections = []
 
-            for i, detections in enumerate(tqdm(all_detections, desc="Tracking")):
-                detections = byte_tracker.update_with_detections(detections)
-                tracked_frames_detections.append(detections)
-
+            for i, detections in enumerate(tracked_frames_detections):
                 if detections.tracker_id is not None:
                     for j in range(len(detections.tracker_id)):
                         x1, y1, x2, y2 = detections.xyxy[j]
@@ -1341,8 +1339,6 @@ def main():
                                 ),
                             }
                         )
-                else:
-                    tracked_frames_detections[-1] = sv.Detections.empty()
 
         # 3. Visualization phase
         if save_video:
