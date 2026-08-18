@@ -1089,13 +1089,13 @@ class TestRandomizedStrategySmoothing:
 
 
 # ---------------------------------------------------------------------------
-# U4: crop_source (physics | real | procedural)
+# U4: crop_source (real is the only supported value)
 # ---------------------------------------------------------------------------
 
 
 def _import_deeptrack_with_mock(fake_kernel):
-    """Same stub pattern as TestDeeptrackStrategy._import_with_mock_deeptrack,
-    factored out for reuse by crop_source tests that don't subclass it."""
+    """Same stub pattern used by the crop_source tests below, factored out
+    for reuse across test classes that don't subclass one another."""
     import types
 
     for key in list(sys.modules.keys()):
@@ -1377,6 +1377,37 @@ class TestCropSourceDispatchIntegration:
 
         assert frame_real.dtype == np.uint16
         assert frame_real.shape == (H, W)
+
+
+class TestShippedConfigYamlCropSource:
+    """Regression coverage for the bug the adversarial plan review caught
+    before this branch's deeptrack physics/procedural removal landed:
+    config.yaml's synthetic.crop_source was still literally 'physics', which
+    would have made render_strategy: deeptrack raise on first use. Exercises
+    the actual shipped verification/config.yaml through render_frame_deeptrack
+    so a future revert of crop_source fails this test, not just a manual
+    check."""
+
+    def test_shipped_config_yaml_renders_via_crop_source_real(self, monkeypatch):
+        import yaml
+
+        rdt = _import_deeptrack_with_mock(_make_fake_kernel(16, 16))
+
+        import render_crop_templates as rct
+
+        templates = _fake_template_library(n=3, size=9)
+        monkeypatch.setattr(rct, "load_template_library", lambda path: templates)
+
+        config_path = Path(__file__).parent.parent / "config.yaml"
+        full_cfg = yaml.safe_load(config_path.read_text())
+        cfg = full_cfg["synthetic"]
+
+        frame = rdt.render_frame_deeptrack(
+            np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0), cfg, np.random.default_rng(0)
+        )
+
+        assert frame.dtype == np.uint16
+        assert frame.shape == (cfg["image_height"], cfg["image_width"])
 
 
 # ---------------------------------------------------------------------------

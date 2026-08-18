@@ -69,15 +69,6 @@ synthetic:
     intensity_sigma: 1.015
     peak_mean: 987.4
   peak_intensity: 40000
-  procedural_shape:
-    ring_A0: 0.9407
-    ring_A1: 0.8997
-    ring_B: 0.0288
-    ring_r1: 47.56
-    ring_s0: 9.5
-    ring_s1: 11.05
-    sigma: 5.0
-    size: 41
   psf:
     defocus: 0.0
     na: 1.4

@@ -18,7 +18,8 @@ Assumptions:
 
 Render strategies (set via synthetic.render_strategy in config.yaml):
     procedural  — flat 2D Gaussian PSF (default; unchanged from original)
-    deeptrack   — physics-accurate scalar-diffraction PSF via DeepTrack2
+    deeptrack   — empirical crop-template compositing (crop_source: real);
+                  no deeptrack dependency despite the module's historical name
     randomized  — procedural with per-frame stochastic parameter sampling
     brightfield — coherent whole-frame optical-field solve via DeepTrack2's
                   Brightfield optics; particles placed at real trajectory
@@ -449,8 +450,8 @@ def _dispatch_render(
             return render_frame_deeptrack(positions_lj, box, cfg, rng)
         except ImportError:
             raise ImportError(
-                "DeepTrack2 rendering requires 'deeptrack==2.0.1'. "
-                "Run 'uv add deeptrack==2.0.1' inside verification/. "
+                "render_strategy: deeptrack (crop_source: real) requires scipy. "
+                "Run 'uv add scipy' inside verification/. "
             )
     elif strategy == "brightfield":
         try:
