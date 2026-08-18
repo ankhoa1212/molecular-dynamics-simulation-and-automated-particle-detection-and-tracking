@@ -134,8 +134,6 @@ def main():
             "brightfield",
             "brightfield_fast",
             "deeptrack-real",
-            "deeptrack-procedural",
-            "deeptrack-physics",
         ],
     )
     parser.add_argument("--output-dir", default="verification_output/")
@@ -168,27 +166,25 @@ def main():
                 stacklevel=2,
             )
 
-    # "deeptrack-real"/"deeptrack-procedural"/"deeptrack-physics" all dispatch
-    # through the plain "deeptrack" strategy string with crop_source
-    # overridden on a copy of synth_cfg — _dispatch_render only recognizes
-    # literal "deeptrack" (see render.py:_dispatch_render), so these
-    # suffixed names can't be passed through directly. "deeptrack-physics"
-    # names crop_source: physics explicitly rather than relying on bare
-    # "deeptrack" to mean physics, which only holds while config.yaml's own
-    # crop_source default happens to still be "physics".
+    # "deeptrack-real" dispatches through the plain "deeptrack" strategy
+    # string with crop_source overridden on a copy of synth_cfg --
+    # _dispatch_render only recognizes literal "deeptrack" (see
+    # render.py:_dispatch_render), so this suffixed name can't be passed
+    # through directly. "real" is the only crop_source render_deeptrack.py
+    # still supports (crop_source: physics/procedural were removed once
+    # render_strategy: brightfield_fast superseded both on realism).
     _CROP_SOURCE_BY_STRATEGY = {
         "deeptrack-real": "real",
-        "deeptrack-procedural": "procedural",
-        "deeptrack-physics": "physics",
     }
 
-    # Every strategy backed by the deeptrack package (not just literal
-    # "deeptrack") needs the same missing-import skip guard below --
-    # "brightfield" hits the exact same ImportError deep inside
-    # _dispatch_render if deeptrack isn't installed, and without this guard
-    # covering it too, that ImportError would crash this whole script
-    # instead of skipping just that one strategy.
-    _DEEPTRACK_BACKED_STRATEGIES = {"deeptrack", "brightfield"}
+    # "brightfield" hits an ImportError deep inside _dispatch_render if
+    # deeptrack isn't installed -- this guard skips it with a friendly
+    # warning instead of crashing the whole script. "deeptrack" (bare or
+    # -real) is deliberately NOT in this set: render_deeptrack.py's
+    # crop_source: real path is pure numpy/scipy with no deeptrack
+    # dependency at all, so gating it on deeptrack's presence would
+    # incorrectly skip a strategy that doesn't actually need it.
+    _DEEPTRACK_BACKED_STRATEGIES = {"brightfield"}
 
     rendered = {}
     for strategy in args.strategies:
