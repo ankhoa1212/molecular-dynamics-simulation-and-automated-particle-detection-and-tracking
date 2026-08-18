@@ -52,8 +52,7 @@ synthetic:
   # --- Dark ring for the procedural PSF stamp (render_strategy: procedural) ---
   # Self-contained difference-of-Gaussians ring, parameterized as factors of
   # psf_sigma (radius/width) and peak_intensity (depth) -- deliberately NOT
-  # fit against reference data, unlike crop_source: procedural's fitted
-  # ring_* params below, since keeping the procedural strategy self-
+  # fit against reference data, since keeping the procedural strategy self-
   # contained (no curve-fit step, no dependency on real reference data) is
   # the point of this code path.
   #
@@ -131,12 +130,9 @@ synthetic:
 
   # --- Spatially varying background (render_strategy: deeptrack) ---
   # Calibrated (2026-07-22) via calibrate_psf.py --merge-config against 512x512
-  # crops of particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
-  # -- the same source dataset procedural_shape's ring_* params below are
-  # fitted from, so background/noise and ring shape describe the same real
-  # imaging conditions. Previously hand-set defaults, never calibrated
-  # against real data at all -- see docs/plans/2026-07-22-001-fix-procedural-
-  # particle-realism-plan.md U3.
+  # crops of particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif.
+  # Previously hand-set defaults, never calibrated against real data at all --
+  # see docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U3.
   background:
     heterogeneity_scale: 203.1  # spatial scale of background variation (px)
     amplitude: 705.0  # max background variation (ADU)
@@ -145,11 +141,10 @@ synthetic:
   particle:
     intensity_distribution: lognormal   # fixed | lognormal
     peak_mean: 987.4  # mean peak intensity (ADU). Represents each particle's own peak
-                                 # brightness (before background/noise), consistently across all
-                                 # crop_source values (physics/real/procedural) — each source's
-                                 # template/kernel is peak-normalized (max value 1) rather than
+                                 # brightness (before background/noise) -- crop_source: real's
+                                 # template is peak-normalized (max value 1) rather than
                                  # sum-normalized, so peak_mean's meaning doesn't drift with template
-                                 # spatial extent or PSF optical spread. See docs/plans/2026-07-21-001-
+                                 # spatial extent. See docs/plans/2026-07-21-001-
                                  # fix-peak-normalized-particle-brightness-plan.md.
     intensity_sigma: 1.015  # log-normal sigma
 
@@ -193,10 +188,12 @@ synthetic:
                                  # or too static (lower).
 
   # --- Particle appearance source (render_strategy: deeptrack) ---
-  crop_source: physics   # physics | real | procedural — physics keeps the single-kernel PSF above.
-                          # All three peak-normalize their template/kernel (max value 1, not sum 1),
-                          # so peak_mean means the same thing (particle's own peak brightness)
-                          # regardless of which source is selected.
+  crop_source: real   # real is the only supported value -- crop_source: physics and
+                       # crop_source: procedural were removed once render_strategy:
+                       # brightfield_fast superseded both on realism at production scale.
+                       # Requires crop_template.cache_path below to point at a prebuilt
+                       # template library (build one via
+                       # render_crop_templates.build_template_library() first).
 
   # --- Empirical crop-template library (crop_source: real) ---
   # Built once via render_crop_templates.build_template_library(), then cached; see
@@ -253,31 +250,6 @@ synthetic:
     transition_width: 10.0         # (ring_method: hybrid only) width (px) of the crossfade band centered
                                     # on core_radius
     cache_path: crop_templates.npz   # cached template library (.npz)
-
-  # --- Procedural particle shape generator (crop_source: procedural) ---
-  procedural_shape:
-    size: 41                       # fallback shape side length (px), used only when no
-                                    # ring_* keys below are set (plain circular Gaussian)
-    sigma: 5.0                     # base sigma (px) for the fallback circular Gaussian
-    # ring_B / ring_A0 / ring_s0 / ring_A1 / ring_r1 / ring_s1 -- fitted
-    # _ring_model parameters (see verification/render_crop_templates.py's
-    # _ring_model/fit_ring_model). When all six are set, generate_procedural_
-    # shape renders a circular core + dark ring sized to fit ring_r1 without
-    # clipping, instead of the fallback Gaussian above. Fitted (2026-07-22)
-    # from crop_template's harvested library (see above -- min_area/max_area/
-    # max_sigma retuned for this dataset's particle scale first; an initial
-    # fit against the old 20/400/15.0 values was contaminated by noise-level
-    # candidates and got reverted, see git history) via:
-    #   uv run python fit_procedural_ring.py --merge-config config.yaml
-    # (physics's own PSF kernel has no meaningful ring to fit at this
-    # config's optics -- see docs/plans/2026-07-22-001-fix-procedural-
-    # particle-realism-plan.md.)
-    ring_B: 0.0288
-    ring_A0: 0.9407
-    ring_s0: 9.5
-    ring_A1: 0.8997
-    ring_r1: 47.56
-    ring_s1: 11.05
 
   # --- render_strategy: brightfield ---
   # Whole-frame coherent optical-field solve (DeepTrack2's Brightfield

@@ -40,7 +40,6 @@ synthetic:
     amplitude: 705.0
     heterogeneity_scale: 203.1
   background_fraction: 0.25
-  crop_source: physics
   crop_template:
     cache_path: crop_templates.npz
     core_radius: 20.0

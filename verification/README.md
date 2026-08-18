@@ -38,12 +38,14 @@ Ready-to-use configs for each strategy live in `configs/`:
 | Config | Strategy | Description |
 |--------|----------|-------------|
 | `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
-| `configs/render_deeptrack.yaml` | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
+| *(none -- see note below)* | `deeptrack` | Empirical crop-template compositing (`crop_source: real`, the only supported value); spatially varying background; log-normal per-particle intensity; sCMOS noise model |
 | `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
 | `configs/render_brightfield.yaml` | `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; particles placed at the real trajectory's own x/y positions, not stamped independently. Small-batch/reference-quality by design (see `render_brightfield.py`'s module docstring for real per-frame cost data), not a bulk generator like the other three strategies |
 | `configs/render_brightfield_fast.yaml` | `brightfield_fast` | FFT-based reimplementation of `brightfield`'s coherent optics directly in numpy/scipy (no deeptrack dependency), independent of particle count. Default strategy (`config.yaml`'s `render_strategy`), used for bulk/production-density rendering. See `render_brightfield_fast.py`'s module docstring for the algorithm and its validated equivalence to `brightfield` |
 
 Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
+
+**Note on `deeptrack`:** there is no ready-made example config for this strategy. It requires `synthetic.crop_source: real` and a prebuilt empirical template library (`synthetic.crop_template.cache_path`, built via `render_crop_templates.build_template_library()`) -- neither is self-contained enough to ship as a standalone example without also documenting that build step. Set `render_strategy: deeptrack` and `crop_source: real` in a copy of `config.yaml` (which already has `crop_template` configured) to use it directly.
 
 `config.yaml` is the full reference config used by `benchmark.py`, `compare.py`, and `calibrate_psf.py --merge-config`.
 
@@ -99,7 +101,6 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 # Pick a specific strategy
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_procedural.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
-uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_deeptrack.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield_fast.yaml
 ```

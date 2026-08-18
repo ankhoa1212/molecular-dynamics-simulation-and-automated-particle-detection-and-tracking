@@ -11,11 +11,10 @@
 
 synthetic:
   render_strategy: brightfield
-  # Smaller than render_deeptrack.yaml's 3200x2200 -- max_particles below
-  # caps how much of a real trajectory frame renders, so a full-size real-
-  # footage canvas would mostly be empty space at this iteration's practical
-  # per-frame cost. Revisit once calibration has real timing data at a
-  # larger canvas.
+  # max_particles below caps how much of a real trajectory frame renders,
+  # so a full-size real-footage canvas would mostly be empty space at this
+  # iteration's practical per-frame cost. Revisit once calibration has real
+  # timing data at a larger canvas.
   image_width: 256
   image_height: 256
   output_dir: verification_output/synthetic_frames_brightfield/
@@ -41,8 +40,8 @@ synthetic:
     mie_max_particles: 10
     mie_max_frames: 3
 
-  # Spatially varying background + sCMOS noise -- shared convention with
-  # render_deeptrack.yaml
+  # Spatially varying background + sCMOS noise -- same model as
+  # render_strategy: deeptrack's background/noise steps.
   background:
     heterogeneity_scale: 50
     amplitude: 500
