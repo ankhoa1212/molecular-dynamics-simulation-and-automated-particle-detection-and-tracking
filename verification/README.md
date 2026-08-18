@@ -139,6 +139,7 @@ Key settings in `config.yaml` under `synthetic:`:
 | `brightfield.na` / `.wavelength` / `.resolution` / `.refractive_index_medium` | `brightfield` optics params, passed to `deeptrack.Brightfield` |
 | `brightfield.radius_min`/`.radius_max`, `.refractive_index_min`/`.refractive_index_max`, `.z_min_px`/`.z_max_px` | `brightfield` per-particle physical property ranges (single particle type this iteration) |
 | `brightfield.mie_max_particles` / `.mie_max_frames` | Caps on `brightfield`'s Mie ground-truth calibration tier |
+| `brightfield.coherence_blur_sigma_px` | Gaussian blur (px) applied to resolved intensity to approximate partial spatial coherence, suppressing the unrealistic secondary diffraction ring a fully-coherent solve otherwise produces; `0` disables it. Shared by `brightfield` and `brightfield_fast` |
 | `brightfield_fast.max_particles` | Safety cap on particles rendered per `brightfield_fast` frame; above this, a random subset is rendered and a warning is raised (see `render_brightfield_fast.py`) |
 | `brightfield_fast.n_z_slices` | Number of z-buckets particles are grouped into for `brightfield_fast`'s combined-defocus pupil propagation (see `render_brightfield_fast.py`'s module docstring) |
 
