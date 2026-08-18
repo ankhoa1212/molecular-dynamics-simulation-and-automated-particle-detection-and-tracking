@@ -2,7 +2,8 @@
 
 Glue-logic tests (dispatch, capping, sampling ranges, error handling) use
 the repo's established deeptrack-stub mocking convention (see
-test_render_deeptrack.py) so they run without deeptrack installed. A
+test_render.py's _import_deeptrack_with_mock) so they run without deeptrack
+installed. A
 handful of tests assert genuine physical behavior (interference, defocus)
 that a mock can't demonstrate -- those use pytest.importorskip("deeptrack")
 so they run for real when deeptrack is available and skip (not fail) in CI
