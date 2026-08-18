@@ -1,23 +1,19 @@
-"""Empirical PSF template harvesting and a procedural shape generator for
-render_deeptrack.py's ``crop_source: real`` / ``crop_source: procedural`` paths.
+"""Empirical PSF template harvesting for render_deeptrack.py's
+``crop_source: real`` path.
 
-Pipeline (real): harvest_crops -> register_crop -> cluster_crops ->
+Pipeline: harvest_crops -> register_crop -> cluster_crops ->
 average_cluster -> build_template_library (orchestrates + caches) ->
 load_template_library.
 
-Pipeline (procedural): generate_procedural_shape (no harvesting dependency).
-
-All templates (harvested-and-averaged or procedurally generated) share one
-output contract: a 2-D float32 array normalised so the array's maximum value
-is 1, matching render_deeptrack._build_psf_kernel's convention. This decouples
-rendered peak brightness from template spatial extent -- a template's total
-integrated intensity may differ from another's at the same peak brightness.
+All templates share one output contract: a 2-D float32 array normalised so
+the array's maximum value is 1. This decouples rendered peak brightness from
+template spatial extent -- a template's total integrated intensity may
+differ from another's at the same peak brightness.
 """
 
 import hashlib
 import sys
 import warnings
-from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -312,8 +308,7 @@ def _edge_taper(H: int, W: int, taper_frac: float = 0.15) -> np.ndarray:
 
 def _finalize_template(template: np.ndarray) -> np.ndarray:
     """Shared finishing step for every ring_method: edge-taper then
-    peak-normalize so the template's maximum value is 1, matching
-    render_deeptrack._build_psf_kernel's convention. Peak-normalizing
+    peak-normalize so the template's maximum value is 1. Peak-normalizing
     (rather than sum-normalizing) decouples rendered brightness from
     template spatial extent -- a wide template and a tight one at the same
     peak value render the same brightness, even though their total
@@ -558,8 +553,7 @@ def build_template_library(video_paths, cfg: dict) -> np.ndarray:
 
     Returns:
         (n_templates, 2*target_half+1, 2*target_half+1) float32 array, each
-        template peak-normalized so its maximum value is 1 (matching
-        render_deeptrack._build_psf_kernel's convention).
+        template peak-normalized so its maximum value is 1.
     """
     cache_path = Path(cfg["cache_path"])
     cfg_hash = _config_hash(cfg, video_paths)
@@ -640,84 +634,3 @@ def radial_profile_from_crops(crops: list, n_bins: int):
         sums_per_bin, counts_per_bin, out=np.zeros(n_bins), where=counts_per_bin > 0
     )
     return radii, profile
-
-
-# ---------------------------------------------------------------------------
-# U3: procedural shape generator
-# ---------------------------------------------------------------------------
-
-# _ring_model's parameter names, in its positional order (B, A0, s0, A1, r1,
-# s1). Shared by fit_procedural_ring.py and render_deeptrack.py so the two
-# don't carry independent copies of this tuple to keep in sync by hand.
-RING_PARAM_NAMES = ("ring_B", "ring_A0", "ring_s0", "ring_A1", "ring_r1", "ring_s1")
-
-
-def _ring_window_size(ring_params: tuple, min_size: int = 5) -> int:
-    """Compute an odd window side length large enough to contain a
-    `_ring_model` ring (radius `r1`, width `s1`) without clipping, per the
-    2026-07-20 harvest-quality plan's window-size-coupling incident this
-    helper exists to avoid repeating. Clamped to `min_size` so degenerate
-    (near-zero) fitted parameters can't produce a non-positive or
-    unreasonably small window.
-
-    Margin is 3 sigma past the ring, not more: `_ring_model`'s ring term is
-    already ~1% of its peak amplitude by `r1 + 3*s1`, and `_finalize_template`
-    unconditionally tapers the outer edge of whatever window it's given to
-    zero regardless of margin, so a wider margin only adds compositing cost
-    (every particle stamp runs a cubic-spline `scipy.ndimage.shift` over the
-    full window) without changing the rendered result.
-    """
-    _, _, s0, _, r1, s1 = ring_params
-    radius = max(abs(r1), abs(s0)) + 3.0 * max(abs(s1), 1.0)
-    size = 2 * int(np.ceil(radius)) + 1
-    return max(size, min_size)
-
-
-@lru_cache(maxsize=8)
-def generate_procedural_shape(size: int, sigma: float, ring_params=None) -> np.ndarray:
-    """Generate a parametric particle shape as a no-real-data alternative to
-    the empirical template library.
-
-    Cached: `procedural_shape` config is static for a whole render run, and
-    a render loop calls this once per frame (`_composite_crop_templates`
-    builds the shape once per call, not once per particle, but a multi-frame
-    render still calls it once per frame with identical arguments) --
-    `ring_params` must be a hashable tuple (or None), not a list. Callers
-    must treat the returned array as read-only -- lru_cache returns the same
-    array object on every cache hit, so mutating it in place would corrupt
-    the cache for all subsequent calls.
-
-    With no ring parameters, builds a plain circular Gaussian -- real
-    diffraction-limited particles are circularly symmetric, so this no
-    longer randomizes ellipticity or rotation the way earlier versions did.
-    With `ring_params` (the six-value `(B, A0, s0, A1, r1, s1)` tuple
-    `_ring_model`/`fit_ring_model` use), evaluates that same
-    difference-of-Gaussians ring model radially via `generate_ring_template`,
-    sized by `_ring_window_size` to contain the ring without clipping, then
-    applies `_finalize_template`'s edge-taper + peak-normalize -- the ring's
-    additive dark-ring term means the raw evaluation no longer peaks at
-    exactly 1 by construction, unlike the plain-Gaussian branch below.
-
-    Args:
-        size: fallback output side length used only when `ring_params` is
-            None (odd recommended, for a centered peak).
-        sigma: base sigma in pixels for the no-ring circular Gaussian.
-        ring_params: optional `(B, A0, s0, A1, r1, s1)` tuple. When given,
-            the window is sized from the ring radius (`r1`) plus a margin
-            derived from the ring width (`s1`), overriding `size`.
-
-    Returns:
-        (N, N) float32 array, peak-normalized so its maximum is 1.
-    """
-    if ring_params is not None:
-        window = _ring_window_size(tuple(ring_params))
-        return _finalize_template(generate_ring_template(window, tuple(ring_params)))
-
-    center = (size - 1) / 2.0
-    ys, xs = np.mgrid[0:size, 0:size].astype(np.float64)
-    dx, dy = xs - center, ys - center
-
-    # dx == dy == 0 at the center pixel, so the raw circular Gaussian already
-    # peaks at exactly 1.0 there -- no division needed.
-    shape = np.exp(-(dx**2 + dy**2) / (2 * sigma**2))
-    return shape.astype(np.float32)
