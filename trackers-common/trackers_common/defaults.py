@@ -35,6 +35,9 @@ DEFAULT_KEY_PATH_MAP = {
     "adaptive_stop": "tracking.adaptive_stop",
     "adaptive_step": "tracking.adaptive_step",
     "link_strategy": "tracking.link_strategy",
+    "lost_track_buffer": "tracking.lost_track_buffer",
+    "minimum_consecutive_frames": "tracking.minimum_consecutive_frames",
+    "track_activation_threshold": "tracking.track_activation_threshold",
 }
 
 
