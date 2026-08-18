@@ -50,7 +50,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # PR: only lint changed files
-            FILES=$(git diff --name-only origin/${{ github.base_ref }} -- '*.py' | tr '\n' ' ')
+            FILES=$(git diff --name-only --diff-filter=d origin/${{ github.base_ref }} -- '*.py' | tr '\n' ' ')
             echo "scope=PR (changed files only)" >> $GITHUB_OUTPUT
           else
             # Push or manual: lint all tracked files
