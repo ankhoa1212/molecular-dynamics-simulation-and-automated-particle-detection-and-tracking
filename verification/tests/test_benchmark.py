@@ -454,23 +454,28 @@ class TestRunBytetrackMetrics:
         assert result["psf_sigma_px"] == pytest.approx(9.25)
         assert result["match_threshold_px"] == pytest.approx(0.5 * 9.25)
 
-    def test_high_raw_density_skips_before_running_bytetrack(self, tmp_path):
-        """Density pre-check must fire on RAW per-frame box count, before
-        run_bytetrack is ever called -- not only after tracking completes,
-        which would waste the full timeout window on input already known to
-        exceed the safe threshold (found during review: performance)."""
+    def test_high_raw_density_still_runs_bytetrack_not_skipped(self, tmp_path):
+        """No raw-density pre-check gates run_bytetrack -- an earlier version
+        of this function skipped above 400 det/frame, copied unvalidated from
+        trackpy's own accumulator-protection threshold. Measured directly
+        against this repo's real dataset (~1167-1446 det/frame, temporally
+        coherent), run_bytetrack completes in ~18s, nowhere near the 90s
+        timeout budget -- the pre-check was blocking the feature from ever
+        running on this project's actual data. This guards against
+        reintroducing that regression: 401 detections/frame (would have
+        tripped the old 400 threshold) must still reach run_bytetrack."""
         gt_path = tmp_path / "gt.csv"
         _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 100.0, "y": 100.0}])
-        # 401 detections in a single frame -- over the 400/frame threshold.
         centers = [(100.0 + i, 100.0) for i in range(401)]
         all_boxes = _boxes_from_centers({0: centers})
         cfg = _make_cfg()
 
-        with mock.patch("trackers_common.bytetrack.run_bytetrack") as mock_run_bytetrack:
-            result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+        with mock.patch(
+            "trackers_common.bytetrack.run_bytetrack", wraps=lambda *a, **kw: []
+        ) as mock_run_bytetrack:
+            benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
 
-        assert result is None
-        mock_run_bytetrack.assert_not_called()
+        mock_run_bytetrack.assert_called_once()
 
     def test_memory_error_from_run_bytetrack_degrades_to_none(self, tmp_path):
         """A MemoryError from the in-process, unisolated ByteTrack call must

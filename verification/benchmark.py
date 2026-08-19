@@ -1221,25 +1221,19 @@ def _run_bytetrack_metrics(
     # that can produce exactly this shape.
     present_frame_indices = sorted(all_boxes_by_frame.keys())
 
-    # Pre-check raw detection density BEFORE running ByteTrack (which can take
-    # up to _run_bytetrack_with_timeout's full timeout window) rather than
-    # only after -- at this repo's default dataset density (~1446/frame,
-    # already ~3.6x over this threshold), every default --tracker bytetrack
-    # run would otherwise pay for a full, unverified-cost tracking pass only
-    # to discard the result via the identical check below. Raw density alone
-    # (not n_distinct_tracks, which only exists post-tracking) is available
-    # this early -- the post-tracking check further down still catches
-    # fragmentation the raw count can't predict.
-    raw_avg_det_per_frame = sum(
-        len(all_boxes_by_frame[fi]["xyxy"]) for fi in present_frame_indices
-    ) / max(1, len(present_frame_indices))
-    if raw_avg_det_per_frame > 400:
-        print(
-            f"Warning: raw detection density ({raw_avg_det_per_frame:.0f}/frame) is too high "
-            "to safely run ByteTrack tracking in-process. Skipping tracking metrics."
-        )
-        return None
-
+    # No raw-density pre-check here (unlike the accumulator-building step
+    # below, which is subprocess/RLIMIT-isolated the same way trackpy's is).
+    # An earlier version of this function had one at 400 det/frame, copied
+    # from trackpy's own accumulator-protection threshold -- but that number
+    # was never validated against ByteTrack's actual cost, and measuring it
+    # directly against this repo's real dataset (~1167-1446 det/frame,
+    # temporally coherent) showed run_bytetrack completing in ~18s, nowhere
+    # near _run_bytetrack_with_timeout's 90s budget. A synthetic worst-case
+    # test with fully random (temporally-incoherent) positions did take ~99s
+    # at the same density, but that's an adversarial case IoU-based
+    # association is inherently bad at, not representative of real slowly-
+    # moving particles -- and the timeout+MemoryError catch already degrades
+    # gracefully if a genuinely pathological input ever hits it.
     full_frame_range = list(range(present_frame_indices[0], present_frame_indices[-1] + 1))
     detections_list = []
     for frame_idx in full_frame_range:
