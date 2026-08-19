@@ -520,9 +520,9 @@ class TestBytetrackTuningDefaults:
 
         tuning = self._captured_tuning(all_boxes, gt_path, cfg)
 
-        assert tuning["lost_track_buffer"] == 60
+        assert tuning["lost_track_buffer"] == 30
         assert tuning["minimum_consecutive_frames"] == 1
-        assert tuning["track_activation_threshold"] == pytest.approx(0.1)
+        assert tuning["track_activation_threshold"] == pytest.approx(0.3)
 
     def test_config_yaml_override_wins_over_canonical_default(self, tmp_path):
         gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
@@ -547,9 +547,9 @@ class TestBytetrackTuningDefaults:
 
         tuning = self._captured_tuning(all_boxes, gt_path, cfg, model_type="trackpy")
 
-        assert tuning["lost_track_buffer"] == 60
+        assert tuning["lost_track_buffer"] == 30
         assert tuning["minimum_consecutive_frames"] == 1
-        assert tuning["track_activation_threshold"] == pytest.approx(0.1)
+        assert tuning["track_activation_threshold"] == pytest.approx(0.3)
 
 
 class TestBytetrackFrameGapOrdering:
@@ -909,6 +909,35 @@ def _make_gaussian_blob_frame(size=64, center=(32, 32), sigma=3.0, peak=200.0):
     gray = peak * np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma**2)))
     gray = gray.clip(0, 255).astype(np.uint8)
     return np.stack([gray, gray, gray], axis=-1)
+
+
+class TestResolveMatchDistance:
+    """Accuracy's match_distance must derive from the same
+    tracking.matching_threshold_radii x psf_sigma_px formula the tracking
+    metrics use -- not a disconnected literal (found while investigating
+    real benchmark results: a detection could count as accurate under a
+    loose radius while failing tracking's stricter identity match purely
+    from normal localization jitter, not a real disagreement)."""
+
+    def test_derives_from_threshold_radii_times_psf_sigma(self):
+        full_cfg = {"tracking": {"matching_threshold_radii": 0.5}, "synthetic": {"psf_sigma": 5.0}}
+        assert benchmark._resolve_match_distance({}, full_cfg) == pytest.approx(2.5)
+
+    def test_explicit_config_value_wins_over_derived(self):
+        full_cfg = {"tracking": {"matching_threshold_radii": 0.5}, "synthetic": {"psf_sigma": 5.0}}
+        cfg = {"match_distance": 12}
+        assert benchmark._resolve_match_distance(cfg, full_cfg) == 12
+
+    def test_missing_threshold_radii_falls_back_to_default_0_5(self):
+        full_cfg = {"synthetic": {"psf_sigma": 4.0}}
+        assert benchmark._resolve_match_distance({}, full_cfg) == pytest.approx(2.0)
+
+    def test_deeptrack_psf_sigma_px_path_also_used(self):
+        full_cfg = {
+            "tracking": {"matching_threshold_radii": 1.0},
+            "synthetic": {"psf": {"sigma_px": 3.0}},
+        }
+        assert benchmark._resolve_match_distance({}, full_cfg) == pytest.approx(3.0)
 
 
 class TestDetectTrackpy:

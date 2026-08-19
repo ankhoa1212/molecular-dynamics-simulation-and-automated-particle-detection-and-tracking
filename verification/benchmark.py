@@ -384,6 +384,28 @@ def _resolve_psf_sigma_px(cfg):
     return psf_sigma_px
 
 
+def _resolve_match_distance(cfg, full_cfg):
+    """Accuracy metrics' (precision/recall/F1) match_distance, derived from
+    the SAME tracking.matching_threshold_radii x psf_sigma_px formula the
+    tracking metrics (MOTA/IDF1) already use -- not a disconnected hardcoded
+    literal. Without this, a detection can count as a correct match for
+    accuracy (a loose radius) while failing the tracking metrics' stricter
+    identity match (a tighter, unrelated radius) purely from normal
+    localization jitter, not a real accuracy-vs-tracking disagreement --
+    confirmed directly: rf-detr's own mean position error (~2.2px) sits close
+    to the derived ~2.5px default, so a meaningful fraction of genuinely
+    correct detections were failing the old disconnected 10px-vs-2.5px split.
+
+    `benchmark.match_distance` in config.yaml, when explicitly set, still
+    wins over this derived value, matching this file's established
+    explicit-value-always-wins override convention.
+    """
+    threshold_radii = _cfg_get(full_cfg, "tracking", "matching_threshold_radii", default=0.5)
+    return _cfg_get(
+        cfg, "match_distance", default=threshold_radii * _resolve_psf_sigma_px(full_cfg)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Detection matching
 # ---------------------------------------------------------------------------
@@ -1543,7 +1565,7 @@ def main():
     # Sourced from the same _MODEL_VENV_DIRS/_DEFAULT_MODEL_TYPE as the
     # module-level _resolve_model_type pre-parse, so the two can't drift.
     model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
-    match_distance = _cfg_get(cfg, "match_distance", default=10)
+    match_distance = _resolve_match_distance(cfg, full_cfg)
 
     # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
     # nms_distance/tile_size/diameter/search_range/memory each derive from it

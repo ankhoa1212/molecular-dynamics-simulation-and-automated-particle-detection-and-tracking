@@ -376,7 +376,17 @@ synthetic:
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
   model_type: rf-detr       # rf-detr | lodestar | yolo | trackpy — overridden by --model-type
-  match_distance: 10        # pixels — max center-to-center dist to count a detection as TP; shared across model types
+  # match_distance intentionally NOT set here -- leaving it unset derives it from
+  # tracking.matching_threshold_radii x synthetic.psf_sigma (same formula the
+  # MOTA/IDF1 tracking metrics already use), so a detection means the same thing
+  # for accuracy and tracking purposes. Previously a disconnected hardcoded 10px
+  # here let a detection count as a correct match for precision/recall/F1 while
+  # still failing tracking's stricter identity match purely from normal
+  # localization jitter (rf-detr's own mean position error is ~2.2px, close to
+  # the derived ~2.5px threshold) -- not a real accuracy-vs-tracking
+  # disagreement. Set match_distance here only to override the derived value
+  # for a specific investigation -- any value set here always wins.
+  # match_distance: 10
 
   # --- model_type: rf-detr ---
   # checkpoints/checkpoint_best_ema.pth (May) is an undertrained/stale run —
