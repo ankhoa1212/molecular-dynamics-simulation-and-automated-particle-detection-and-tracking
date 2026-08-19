@@ -386,7 +386,9 @@ class TestMainEndToEnd:
         )
         # benchmark_summary.png's tracking panels use each model's trackpy
         # result specifically -- see _plot_summary_bars's own docstring.
-        _write_tracking_csv(out_dir, "rf-detr", "trackpy", mota=0.5, idf1=0.6, num_fragmentations=12)
+        _write_tracking_csv(
+            out_dir, "rf-detr", "trackpy", mota=0.5, idf1=0.6, num_fragmentations=12
+        )
 
         monkeypatch.setattr(sys, "argv", ["plot_benchmark.py", "--output-dir", str(out_dir)])
         pb.main()

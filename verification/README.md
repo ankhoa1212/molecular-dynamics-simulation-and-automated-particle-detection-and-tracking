@@ -3,11 +3,11 @@
 End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering.
 
 1. **`render.py`** — converts a LAMMPS trajectory into synthetic microscopy TIFFs with known particle positions; writes `ground_truth.json` (per-frame positions) and `ground_truth_tracks.csv` (per-particle track ground truth for MOTA/IDF1).
-2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, YOLOv12, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
+2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, YOLOv12, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy or ByteTrack linking (`--tracker`) and computes MOTA/IDF1/fragmentation via motmetrics.
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
-6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector performance side by side.
+6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a grouped MOTA/IDF1/fragmentations bar panel by (model, tracker) and a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector and tracker performance side by side.
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
 
 ## Setup
@@ -224,6 +224,7 @@ Options:
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
 | `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, `yolo`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
+| `--tracker` | `trackpy` | `trackpy` or `bytetrack` — which `trackers_common` linker computes tracking metrics; no `config.yaml` equivalent to `benchmark.model_type` yet |
 | `--device` | `0` | CUDA device index or `cpu` |
 | `--save-video` | off | Write `tracking_visualization_{model_type}.mp4` with detection boxes and trajectory traces overlaid. Uses `tracking.search_range`/`memory` from `--config` to link detections, independent of `--ground-truth-tracks` (only needed for MOTA/IDF1) |
 | `--video-fps` | `10.0` | Frame rate for `--save-video` output |
@@ -238,6 +239,7 @@ Key settings in `config.yaml` under `tracking:`:
 | `memory` | Frames a particle can be absent before track ends |
 | `matching_threshold_radii` | motmetrics GT↔pred match threshold (× `psf_sigma_px`) |
 | `adaptive_stop` / `adaptive_step` | Opt-in trackpy per-subnet shrinking (off by default: `null`) — see `config.yaml`'s own comment before enabling against a dense dataset |
+| `lost_track_buffer` / `minimum_consecutive_frames` / `track_activation_threshold` | ByteTrack (`--tracker bytetrack`) tuning — like `search_range`/`memory`/`stub_filter`, left unset by default to resolve from the per-model canonical default in `trackers_common/tracker_defaults.yaml` |
 
 ## Step 3 — Compare physics observables
 
@@ -296,8 +298,8 @@ verification_output/
 ├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1/inference_time_ms (from benchmark.py)
 ├── tracking_metrics_{model_type}_{tracker}.csv   # MOTA/IDF1/fragmentation, tracker=trackpy|bytetrack (from benchmark.py)
 ├── tracking_visualization_{model_type}.mp4  # detection boxes + trajectory traces (from benchmark.py --save-video)
-├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
-├── benchmark_summary.png       # run-level bar chart across model types (from plot_benchmark.py)
+├── benchmark_comparison.png    # per-frame metrics across model types, plus a MOTA/IDF1/fragmentations bar panel by (model, tracker) (from plot_benchmark.py)
+├── benchmark_summary.png       # run-level bar chart across model types, using each model's trackpy tracking result (from plot_benchmark.py)
 ├── renders_comparison.png      # side-by-side strategy comparison (from compare_renders.py)
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
 ├── hexatic_order.png           # structural order comparison (from compare.py)

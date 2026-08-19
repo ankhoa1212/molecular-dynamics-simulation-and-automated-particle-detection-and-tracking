@@ -505,14 +505,16 @@ benchmark:
 # --- benchmark.py: tracking metrics (requires ground_truth_tracks.csv from render.py) ---
 tracking:
   enabled: true
-  # search_range/memory/stub_filter are intentionally NOT set here -- leaving
-  # them unset lets benchmark.py resolve each --model-type's real
-  # production-tuned values from trackers_common's canonical tracker_defaults.yaml
-  # (the same values particle-tracking/tracker_configs.py generates for real
-  # per-model production runs), instead of one generic value across all
-  # detectors. Set search_range/memory/stub_filter here only to deliberately
-  # override the canonical per-model default for a specific investigation --
-  # any value set here always wins over the canonical default.
+  # search_range/memory/stub_filter (--tracker trackpy) and
+  # lost_track_buffer/minimum_consecutive_frames/track_activation_threshold
+  # (--tracker bytetrack) are intentionally NOT set here -- leaving them unset
+  # lets benchmark.py resolve each --model-type's real production-tuned
+  # values from trackers_common's canonical tracker_defaults.yaml (the same
+  # values particle-tracking/tracker_configs.py generates for real per-model
+  # production runs), instead of one generic value across all detectors. Set
+  # any of these here only to deliberately override the canonical per-model
+  # default for a specific investigation -- any value set here always wins
+  # over the canonical default.
   matching_threshold_radii: 0.5 # motmetrics GT↔pred match threshold (× psf_sigma_px)
   # trackpy.link_df's recursive subnet solver raises SubnetOversizeException
   # when too many candidate particles are mutually within search_range of
