@@ -335,6 +335,240 @@ class TestPerModelTrackingDefaults:
 
 
 # ---------------------------------------------------------------------------
+# _run_bytetrack_metrics — U5: --tracker bytetrack tracking-metrics path
+# ---------------------------------------------------------------------------
+
+
+def _boxes_from_centers(centers_by_frame, box_size=6.0, confidence=1.0):
+    """Build all_boxes_by_frame's {"xyxy", "confidence"} dict shape from a
+    dict of frame_idx -> list of (x, y) centers, for _run_bytetrack_metrics
+    test fixtures. Mirrors main()'s own detection-loop construction."""
+    result = {}
+    r = box_size / 2
+    for frame_idx, centers in centers_by_frame.items():
+        if not centers:
+            result[frame_idx] = {"xyxy": np.zeros((0, 4)), "confidence": np.zeros(0)}
+            continue
+        xyxy = np.array([[cx - r, cy - r, cx + r, cy + r] for cx, cy in centers])
+        result[frame_idx] = {
+            "xyxy": xyxy,
+            "confidence": np.full(len(centers), confidence, dtype=np.float64),
+        }
+    return result
+
+
+def _single_stationary_particle_gt_and_boxes(n_frames, x=100.0, y=100.0, box_size=6.0):
+    gt_rows = [{"frame": f, "particle_id": 1, "x": x, "y": y} for f in range(n_frames)]
+    all_boxes = _boxes_from_centers({f: [(x, y)] for f in range(n_frames)}, box_size=box_size)
+    return gt_rows, all_boxes
+
+
+class TestRunBytetrackMetrics:
+    """Parallel coverage to TestRunTrackingMetrics, for the --tracker
+    bytetrack path. Deliberately avoids asserting on ByteTrack's exact
+    confirmation-frame arithmetic (which differs by installed supervision
+    version -- see trackers-common's own U4 fix) -- assertions here stay
+    structural (non-null metrics, correct skip/degrade behavior), not tied
+    to a specific frame-by-frame confirmation timing."""
+
+    def test_stationary_particle_produces_real_metrics(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(10)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg()
+
+        result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert isinstance(result["mota"], float)
+        assert isinstance(result["idf1"], float)
+        assert "num_fragmentations" in result
+
+    def test_tracking_disabled_returns_none(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg(enabled=False)
+
+        result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+        assert result is None
+
+    def test_missing_gt_tracks_file_returns_none(self, tmp_path):
+        _, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        absent = str(tmp_path / "nonexistent.csv")
+        cfg = _make_cfg()
+
+        result = benchmark._run_bytetrack_metrics(all_boxes, absent, cfg, "rf-detr")
+        assert result is None
+
+    def test_missing_motmetrics_returns_none(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg()
+
+        with mock.patch.dict(sys.modules, {"motmetrics": None}):
+            result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+        assert result is None
+
+    def test_missing_supervision_returns_none(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg()
+
+        with mock.patch.dict(sys.modules, {"supervision": None}):
+            result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+        assert result is None
+
+    def test_no_detections_returns_none(self, tmp_path):
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 50.0, "y": 50.0}])
+        cfg = _make_cfg()
+
+        result = benchmark._run_bytetrack_metrics({}, str(gt_path), cfg, "rf-detr")
+        assert result is None
+
+    def test_tracking_metrics_csv_includes_threshold(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(5, x=100.0, y=100.0)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg(threshold_radii=0.75)
+
+        result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert result["matching_threshold_radii"] == pytest.approx(0.75)
+
+    def test_derived_psf_sigma_px_overrides_config_value(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(5, x=100.0, y=100.0)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg(psf_sigma=5.0, threshold_radii=0.5)
+
+        result = benchmark._run_bytetrack_metrics(
+            all_boxes, str(gt_path), cfg, "rf-detr", derived_psf_sigma_px=9.25
+        )
+
+        assert result is not None
+        assert result["psf_sigma_px"] == pytest.approx(9.25)
+        assert result["match_threshold_px"] == pytest.approx(0.5 * 9.25)
+
+
+class TestBytetrackTuningDefaults:
+    """R5/R9: ByteTrack's lost_track_buffer/minimum_consecutive_frames/
+    track_activation_threshold resolve through trackers_common.defaults the
+    same way trackpy's search_range/memory/stub_filter already do."""
+
+    def _captured_tuning(self, all_boxes, gt_path, cfg, model_type="rf-detr"):
+        import trackers_common.bytetrack as bytetrack_module
+
+        with mock.patch.object(
+            bytetrack_module, "run_bytetrack", wraps=bytetrack_module.run_bytetrack
+        ) as mock_run_bytetrack:
+            benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, model_type)
+        args = mock_run_bytetrack.call_args.args
+        return {
+            "lost_track_buffer": args[1],
+            "minimum_consecutive_frames": args[2],
+            "track_activation_threshold": args[3],
+        }
+
+    def test_no_override_resolves_to_canonical_values(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        tuning = self._captured_tuning(all_boxes, gt_path, cfg)
+
+        assert tuning["lost_track_buffer"] == 60
+        assert tuning["minimum_consecutive_frames"] == 1
+        assert tuning["track_activation_threshold"] == pytest.approx(0.1)
+
+    def test_config_yaml_override_wins_over_canonical_default(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+        cfg["tracking"]["lost_track_buffer"] = 5
+        cfg["tracking"]["minimum_consecutive_frames"] = 2
+        cfg["tracking"]["track_activation_threshold"] = 0.4
+
+        tuning = self._captured_tuning(all_boxes, gt_path, cfg)
+
+        assert tuning["lost_track_buffer"] == 5
+        assert tuning["minimum_consecutive_frames"] == 2
+        assert tuning["track_activation_threshold"] == pytest.approx(0.4)
+
+    def test_trackpy_model_type_falls_back_to_rf_detr_tuning(self, tmp_path):
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        tuning = self._captured_tuning(all_boxes, gt_path, cfg, model_type="trackpy")
+
+        assert tuning["lost_track_buffer"] == 60
+        assert tuning["minimum_consecutive_frames"] == 1
+        assert tuning["track_activation_threshold"] == pytest.approx(0.1)
+
+
+class TestBytetrackFrameGapOrdering:
+    """Guards against the frame-position-vs-frame-index mismatch found during
+    review: main()'s detection loop can skip a frame_idx entirely (`if
+    frame_idx not in gt_by_frame: continue`), and run_bytetrack's
+    lost_track_buffer/minimum_consecutive_frames timing counts LIST
+    POSITIONS, not real frame_idx values -- so a missing frame_idx must
+    still occupy its own list position (an empty placeholder), not be
+    silently compacted into list-adjacency with its neighbors."""
+
+    def test_missing_frame_preserves_real_spacing_not_list_adjacency(self, tmp_path):
+        # frames 0, 1, 3 present; frame 2 entirely absent from
+        # all_boxes_by_frame (never accumulated, e.g. because it wasn't in
+        # ground_truth.json).
+        all_boxes = _boxes_from_centers({0: [(15.0, 15.0)], 1: [(15.0, 15.0)], 3: [(15.0, 15.0)]})
+        gt_rows = [{"frame": f, "particle_id": 1, "x": 15.0, "y": 15.0} for f in (0, 1, 3)]
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        import trackers_common.bytetrack as bytetrack_module
+
+        with mock.patch.object(
+            bytetrack_module, "run_bytetrack", wraps=bytetrack_module.run_bytetrack
+        ) as mock_run_bytetrack:
+            benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+
+        detections_list = mock_run_bytetrack.call_args.args[0]
+        # 4 list entries (frame_idx 0, 1, 2, 3) -- not 3, which would put
+        # frame 3's detections immediately after frame 1's.
+        assert len(detections_list) == 4
+        assert len(detections_list[0]) == 1
+        assert len(detections_list[1]) == 1
+        assert len(detections_list[2]) == 0  # frame 2's empty placeholder
+        assert len(detections_list[3]) == 1
+
+    def test_no_gap_produces_one_entry_per_present_frame(self, tmp_path):
+        all_boxes = _boxes_from_centers({0: [(15.0, 15.0)], 1: [(15.0, 15.0)], 2: [(15.0, 15.0)]})
+        gt_rows = [{"frame": f, "particle_id": 1, "x": 15.0, "y": 15.0} for f in (0, 1, 2)]
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _cfg_no_tracking_overrides()
+
+        import trackers_common.bytetrack as bytetrack_module
+
+        with mock.patch.object(
+            bytetrack_module, "run_bytetrack", wraps=bytetrack_module.run_bytetrack
+        ) as mock_run_bytetrack:
+            benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+
+        detections_list = mock_run_bytetrack.call_args.args[0]
+        assert len(detections_list) == 3
+        assert all(len(d) == 1 for d in detections_list)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_model_type — U1: pre-argparse model-type sniffing
 # ---------------------------------------------------------------------------
 
@@ -1080,6 +1314,279 @@ class TestMainModelTypeWiring:
 
         with pytest.raises(SystemExit):
             benchmark.main()
+
+
+# ---------------------------------------------------------------------------
+# main() — U5: --tracker {trackpy,bytetrack} dispatch and output filenames
+# ---------------------------------------------------------------------------
+
+
+def _fixed_result_dict(mota):
+    return {
+        "mota": mota,
+        "idf1": mota,
+        "num_fragmentations": 0,
+        "num_switches": 0,
+        "num_misses": 0,
+        "num_false_positives": 0,
+        "matching_threshold_radii": 0.5,
+        "psf_sigma_px": 5.0,
+        "match_threshold_px": 2.5,
+    }
+
+
+class TestMainTrackerDispatch:
+    """--tracker {trackpy,bytetrack} routing in main() -- R6/R7/AE1-AE3."""
+
+    def _rf_detr_argv(self, tmp_path, monkeypatch, tracker):
+        frames_dir = tmp_path / "frames"
+        if not frames_dir.exists():
+            _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        if not gt_path.exists():
+            _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        gt_tracks_path = tmp_path / "ground_truth_tracks.csv"
+        if not gt_tracks_path.exists():
+            gt_tracks_path.write_text("frame,particle_id,x,y\n0,1,10.0,10.0\n")
+        checkpoint = tmp_path / "rfdetr_model.pth"
+        if not checkpoint.exists():
+            checkpoint.write_bytes(b"")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"benchmark:\n  checkpoint: {checkpoint}\n  tiling:\n    enabled: false\n"
+        )
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--ground-truth-tracks",
+            str(gt_tracks_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "rf-detr",
+            "--tracker",
+            tracker,
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        fake_rfdetr_model = mock.Mock()
+        fake_rfdetr_model.predict.return_value = _sv_preload.Detections(
+            xyxy=np.array([[5.0, 5.0, 15.0, 15.0]], dtype=np.float32),
+            confidence=np.array([0.9], dtype=np.float32),
+            class_id=np.zeros(1, dtype=int),
+        )
+        return fake_rfdetr_model
+
+    def test_bytetrack_tracker_writes_suffixed_csv_with_real_metrics(self, tmp_path, monkeypatch):
+        """AE1: --tracker bytetrack --model-type rf-detr writes
+        tracking_metrics_rf-detr_bytetrack.csv with non-null MOTA/IDF1."""
+        monkeypatch.chdir(tmp_path)
+        fake_rfdetr_model = self._rf_detr_argv(tmp_path, monkeypatch, "bytetrack")
+
+        with mock.patch.object(benchmark, "get_rfdetr_model", return_value=fake_rfdetr_model):
+            benchmark.main()
+
+        csv_path = tmp_path / "verification_output" / "tracking_metrics_rf-detr_bytetrack.csv"
+        assert csv_path.exists()
+        with open(csv_path) as f:
+            row = next(csv.DictReader(f))
+        assert row["mota"] not in (None, "")
+        assert row["idf1"] not in (None, "")
+
+    def test_both_trackers_coexist_for_same_model(self, tmp_path, monkeypatch):
+        """AE2: a prior --tracker trackpy run's output file must still exist,
+        unmodified in name, after a subsequent --tracker bytetrack run for the
+        same --model-type -- neither overwrites the other."""
+        monkeypatch.chdir(tmp_path)
+
+        fake_rfdetr_model = self._rf_detr_argv(tmp_path, monkeypatch, "trackpy")
+        with mock.patch.object(
+            benchmark, "get_rfdetr_model", return_value=fake_rfdetr_model
+        ), mock.patch.object(
+            benchmark, "_run_tracking_metrics", return_value=_fixed_result_dict(1.0)
+        ):
+            benchmark.main()
+
+        fake_rfdetr_model = self._rf_detr_argv(tmp_path, monkeypatch, "bytetrack")
+        with mock.patch.object(
+            benchmark, "get_rfdetr_model", return_value=fake_rfdetr_model
+        ), mock.patch.object(
+            benchmark, "_run_bytetrack_metrics", return_value=_fixed_result_dict(0.5)
+        ):
+            benchmark.main()
+
+        trackpy_csv = tmp_path / "verification_output" / "tracking_metrics_rf-detr_trackpy.csv"
+        bytetrack_csv = tmp_path / "verification_output" / "tracking_metrics_rf-detr_bytetrack.csv"
+        assert trackpy_csv.exists()
+        assert bytetrack_csv.exists()
+        with open(trackpy_csv) as f:
+            trackpy_row = next(csv.DictReader(f))
+        with open(bytetrack_csv) as f:
+            bytetrack_row = next(csv.DictReader(f))
+        assert trackpy_row["mota"] != bytetrack_row["mota"]
+
+    def test_trackpy_detector_with_bytetrack_tracker_completes_without_raising(
+        self, tmp_path, monkeypatch
+    ):
+        """AE3: --model-type trackpy --tracker bytetrack previously raised
+        ValueError: Detections confidence must be provided for tracking. --
+        depends on U1's confidence fix already being in place."""
+        monkeypatch.chdir(tmp_path)
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        gt_tracks_path = tmp_path / "ground_truth_tracks.csv"
+        gt_tracks_path.write_text("frame,particle_id,x,y\n0,1,10.0,10.0\n")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--ground-truth-tracks",
+            str(gt_tracks_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+            "--tracker",
+            "bytetrack",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+        # Matches detect_trackpy's own U1 default shape (confidence always set).
+        fake_detections = _sv_preload.Detections(
+            xyxy=np.array([[5.0, 5.0, 15.0, 15.0]], dtype=np.float64),
+            class_id=np.zeros(1, dtype=int),
+            confidence=np.ones(1),
+        )
+
+        with mock.patch.object(benchmark, "detect_trackpy", return_value=fake_detections):
+            benchmark.main()  # must not raise
+
+        csv_path = tmp_path / "verification_output" / "tracking_metrics_trackpy_bytetrack.csv"
+        assert csv_path.exists()
+
+    def test_default_tracker_is_trackpy_and_filename_carries_suffix(self, tmp_path, monkeypatch):
+        """R6 default preserves current behavior; filename gains the
+        deliberate one-time _trackpy suffix (KTD: uniform naming scheme for
+        both trackers)."""
+        monkeypatch.chdir(tmp_path)
+        frames_dir = tmp_path / "frames"
+        _write_frames(frames_dir, n=1)
+        gt_path = tmp_path / "ground_truth.json"
+        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        gt_tracks_path = tmp_path / "ground_truth_tracks.csv"
+        gt_tracks_path.write_text("frame,particle_id,x,y\n0,1,10.0,10.0\n")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+        argv = [
+            "benchmark.py",
+            "--frames",
+            str(frames_dir),
+            "--ground-truth",
+            str(gt_path),
+            "--ground-truth-tracks",
+            str(gt_tracks_path),
+            "--config",
+            str(config_path),
+            "--model-type",
+            "trackpy",
+            # --tracker intentionally omitted -- must default to trackpy
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(
+            benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        with mock.patch.object(
+            benchmark, "detect_trackpy", return_value=_sv_preload.Detections.empty()
+        ), mock.patch.object(
+            benchmark, "_run_tracking_metrics", return_value=_fixed_result_dict(1.0)
+        ) as mock_tracking_metrics, mock.patch.object(
+            benchmark, "_run_bytetrack_metrics"
+        ) as mock_bytetrack_metrics:
+            benchmark.main()
+
+        mock_tracking_metrics.assert_called_once()
+        mock_bytetrack_metrics.assert_not_called()
+        assert (tmp_path / "verification_output" / "tracking_metrics_trackpy_trackpy.csv").exists()
+
+    def test_accuracy_metrics_unaffected_by_tracker_choice(self, tmp_path, monkeypatch):
+        """Regression guard for U5's all_boxes_by_frame extension (Risks
+        section): accuracy_metrics_*.csv content must be identical
+        regardless of --tracker, since the detection-accuracy computation
+        that writes it is untouched by this unit except for the additive
+        all_boxes_by_frame accumulation running alongside it."""
+
+        def _run(tracker, subdir):
+            out_dir = tmp_path / subdir
+            out_dir.mkdir()
+            monkeypatch.chdir(out_dir)
+            frames_dir = out_dir / "frames"
+            _write_frames(frames_dir, n=3)
+            gt_path = out_dir / "ground_truth.json"
+            _write_ground_truth(gt_path, [[[10.0, 10.0]], [[11.0, 11.0]], [[12.0, 12.0]]])
+            gt_tracks_path = out_dir / "ground_truth_tracks.csv"
+            gt_tracks_path.write_text(
+                "frame,particle_id,x,y\n0,1,10.0,10.0\n1,1,11.0,11.0\n2,1,12.0,12.0\n"
+            )
+            config_path = out_dir / "config.yaml"
+            config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
+
+            argv = [
+                "benchmark.py",
+                "--frames",
+                str(frames_dir),
+                "--ground-truth",
+                str(gt_path),
+                "--ground-truth-tracks",
+                str(gt_tracks_path),
+                "--config",
+                str(config_path),
+                "--model-type",
+                "trackpy",
+                "--tracker",
+                tracker,
+            ]
+            monkeypatch.setattr(sys, "argv", argv)
+            monkeypatch.setattr(
+                benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
+            )
+            fake_detections = _sv_preload.Detections(
+                xyxy=np.array([[5.0, 5.0, 15.0, 15.0]], dtype=np.float64),
+                class_id=np.zeros(1, dtype=int),
+                confidence=np.ones(1),
+            )
+            with mock.patch.object(
+                benchmark, "detect_trackpy", return_value=fake_detections
+            ), mock.patch.object(
+                benchmark, "_run_tracking_metrics", return_value=None
+            ), mock.patch.object(
+                benchmark, "_run_bytetrack_metrics", return_value=None
+            ):
+                benchmark.main()
+
+            return (out_dir / "verification_output" / "accuracy_metrics_trackpy.csv").read_text()
+
+        trackpy_output = _run("trackpy", "run_trackpy")
+        bytetrack_output = _run("bytetrack", "run_bytetrack")
+
+        assert trackpy_output == bytetrack_output
 
 
 class TestLodestarBoxSizeDerivation:
