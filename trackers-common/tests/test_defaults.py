@@ -13,9 +13,9 @@ _BYTETRACK_KEY_PATH_MAP = {
 }
 
 _BYTETRACK_CANONICAL_VALUES = {
-    "lost_track_buffer": 60,
+    "lost_track_buffer": 30,
     "minimum_consecutive_frames": 1,
-    "track_activation_threshold": 0.1,
+    "track_activation_threshold": 0.3,
 }
 
 
@@ -109,10 +109,13 @@ class TestLoadTrackingConfigBytetrack:
         assert result == _BYTETRACK_CANONICAL_VALUES
 
     def test_caller_supplied_bytetrack_override_wins_over_canonical_default(self):
-        tool_config = {"tracking": {"lost_track_buffer": 30}}
+        # 45 is deliberately different from the canonical lost_track_buffer
+        # (30) so this test actually proves override-wins, not just that the
+        # override happens to match the canonical value.
+        tool_config = {"tracking": {"lost_track_buffer": 45}}
 
         result = load_tracking_config("rf-detr", tool_config, _BYTETRACK_KEY_PATH_MAP)
 
-        assert result["lost_track_buffer"] == 30
+        assert result["lost_track_buffer"] == 45
         assert result["minimum_consecutive_frames"] == 1  # not overridden, still canonical
-        assert result["track_activation_threshold"] == 0.1  # not overridden, still canonical
+        assert result["track_activation_threshold"] == 0.3  # not overridden, still canonical

@@ -20,13 +20,28 @@
 # scenes (confirmed on the ~1446-particle/frame continuous-force benchmark
 # dataset) instead of falling back to a smaller search_range.
 
-# lost_track_buffer/minimum_consecutive_frames/track_activation_threshold (ByteTrack's
-# tuning, not trackpy's) are, like adaptive_stop/adaptive_step above, NOT
-# independently per-model-tuned -- another pre-existing gap, not something to
-# imitate blindly. They're carried forward unchanged from
-# particle-tracking/config.yaml's existing global tracking: block, which every
-# model type shares identically today. Every model-type block below repeats the
-# same three values for that reason.
+# lost_track_buffer/minimum_consecutive_frames/track_activation_threshold
+# (ByteTrack's tuning, not trackpy's) were swept directly against this repo's
+# real dataset (continuous_force_1500_5.0.lammpstrj, 151 frames, ~1446
+# particles/frame, ~11px nearest-neighbor spacing -- see
+# docs/plans/2026-08-18-001-feat-bytetrack-tracking-support-plan.md), not
+# carried forward unmeasured. A 3x2x2 grid (lost_track_buffer in
+# {30,60,120}, minimum_consecutive_frames in {1,3}, track_activation_threshold
+# in {0.1,0.3}) was run against rf-detr's and yolo's real detections
+# independently; both converged on the identical optimum
+# (lost_track_buffer=30, minimum_consecutive_frames=1,
+# track_activation_threshold=0.3) -- rf-detr: MOTA 0.397->0.400, IDF1
+# 0.373->0.389; yolo: MOTA 0.359->0.371, IDF1 0.313->0.354 vs. the prior
+# unmeasured 60/1/0.1 defaults. That two independently-swept detectors landed
+# on the same optimum suggests it's primarily a property of this scene's
+# density, not detector-specific -- a lower lost_track_buffer and higher
+# track_activation_threshold both reduce identity confusion in this crowded
+# a scene (holding a lost track too long, or accepting low-confidence
+# detections, both increase the chance of associating the wrong nearby
+# particle). Not independently swept for lodestar/trackpy given time
+# constraints; applied here too as the best available evidence rather than
+# guessing, matching this file's own adaptive_stop/adaptive_step precedent
+# for values carried across models without per-model measurement.
 
 rf-detr:
   search_range: 25
@@ -42,9 +57,9 @@ rf-detr:
                     # (and shouldn't share) their much lower stub_filter.
   adaptive_stop: 12
   adaptive_step: 0.95
-  lost_track_buffer: 60
+  lost_track_buffer: 30
   minimum_consecutive_frames: 1
-  track_activation_threshold: 0.1
+  track_activation_threshold: 0.3
 
 lodestar:
   search_range: 20
@@ -52,9 +67,9 @@ lodestar:
   stub_filter: 6
   adaptive_stop: 12
   adaptive_step: 0.95
-  lost_track_buffer: 60
+  lost_track_buffer: 30
   minimum_consecutive_frames: 1
-  track_activation_threshold: 0.1
+  track_activation_threshold: 0.3
 
 # search_range/memory/adaptive_stop/adaptive_step started from rf-detr's
 # tuning (both are box-based deep detectors with internal NMS, unlike
@@ -79,9 +94,9 @@ yolo:
   stub_filter: 6
   adaptive_stop: 12
   adaptive_step: 0.95
-  lost_track_buffer: 60
+  lost_track_buffer: 30
   minimum_consecutive_frames: 1
-  track_activation_threshold: 0.1
+  track_activation_threshold: 0.3
 
 # trackpy previously had no entry here (fell back to rf-detr's tuning above,
 # per this file's header comment). Before this entry existed, falling back to
@@ -96,6 +111,6 @@ trackpy:
   stub_filter: 6
   adaptive_stop: 12
   adaptive_step: 0.95
-  lost_track_buffer: 60
+  lost_track_buffer: 30
   minimum_consecutive_frames: 1
-  track_activation_threshold: 0.1
+  track_activation_threshold: 0.3

@@ -1194,7 +1194,7 @@ class TestOverrideCliWiring:
         # not silently fall back to main()'s hardcoded defaults.
         cfg = track.load_config(PARTICLE_TRACKING_DIR / "lodestar_config.yaml")
         assert cfg["tracking"]["stub_filter"] == 6
-        assert cfg["tracking"]["lost_track_buffer"] == 60
+        assert cfg["tracking"]["lost_track_buffer"] == 30
         assert cfg["output"]["save_video"] is True
         assert cfg["output"]["trace_length"] == 60
         assert cfg["tiling"]["enabled"] is False
