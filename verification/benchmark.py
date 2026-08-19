@@ -1155,14 +1155,13 @@ def _run_bytetrack_metrics(
             for --save-video).
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", or "trackpy")
-            — resolves lost_track_buffer/minimum_consecutive_frames/
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo", or
+            "trackpy") — resolves lost_track_buffer/minimum_consecutive_frames/
             track_activation_threshold from trackers_common's canonical
-            per-model tuning (trackers_common.tracker_defaults.yaml).
-            "trackpy" has no track.py-side model_type of its own and falls
-            back to the rf-detr tuning (trackers_common.defaults.
-            FALLBACK_MODEL_TYPE) — a documented default, not a claim of
-            measured trackpy-detector parity.
+            per-model tuning (trackers_common.tracker_defaults.yaml), each
+            independently swept against real data. rf-detr/yolo converge on
+            minimum_consecutive_frames=1; lodestar/trackpy (noisier per-frame
+            confidence) converge on minimum_consecutive_frames=3 instead.
         derived_psf_sigma_px: if given, overrides cfg's synthetic.psf_sigma /
             synthetic.psf.sigma_px for the match-threshold calculation — same
             semantics as _run_tracking_metrics's own parameter.

@@ -18,6 +18,12 @@ _BYTETRACK_CANONICAL_VALUES = {
     "track_activation_threshold": 0.3,
 }
 
+_BYTETRACK_NOISY_DETECTOR_VALUES = {
+    "lost_track_buffer": 30,
+    "minimum_consecutive_frames": 3,
+    "track_activation_threshold": 0.3,
+}
+
 
 class TestLoadTrackingConfig:
     def test_rfdetr_canonical_values_match_known_tuning(self):
@@ -75,10 +81,11 @@ class TestLoadTrackingConfig:
 
 
 class TestLoadTrackingConfigBytetrack:
-    """ByteTrack's three tuning values (R5/U3): identical, unmeasured defaults
-    carried forward from particle-tracking/config.yaml's existing global
-    tracking: block, now resolved through the same canonical-defaults
-    mechanism as trackpy's linking tuning above.
+    """ByteTrack's three tuning values (R5/U3), independently swept per
+    detector against real data (see tracker_defaults.yaml's header comment).
+    rf-detr and yolo converge on minimum_consecutive_frames=1; lodestar and
+    trackpy (noisier per-frame confidence) converge on minimum_consecutive_
+    frames=3 instead -- a real, measured divergence, not a shared default.
     """
 
     def test_rfdetr_bytetrack_values_match_known_tuning(self):
@@ -86,27 +93,29 @@ class TestLoadTrackingConfigBytetrack:
 
         assert result == _BYTETRACK_CANONICAL_VALUES
 
-    def test_lodestar_bytetrack_values_match_known_tuning(self):
-        result = load_tracking_config("lodestar", {}, _BYTETRACK_KEY_PATH_MAP)
-
-        assert result == _BYTETRACK_CANONICAL_VALUES
-
-    def test_trackpy_bytetrack_values_fall_back_to_rfdetr_values(self):
-        result = load_tracking_config("trackpy", {}, _BYTETRACK_KEY_PATH_MAP)
-
-        assert result == _BYTETRACK_CANONICAL_VALUES
-
     def test_yolo_bytetrack_values_match_known_tuning(self):
-        # tracker_defaults.yaml has no "yolo" model-type block on this branch
-        # yet (it lands separately, on fix/rfdetr-yolov12-training-config,
-        # not yet merged here) -- "yolo" therefore resolves via
-        # FALLBACK_MODEL_TYPE today, same mechanism as "trackpy" above. Since
-        # the three bytetrack values are identical across every model type
-        # (see tracker_defaults.yaml's comment), this assertion holds
-        # regardless of whether "yolo" has its own explicit block.
         result = load_tracking_config("yolo", {}, _BYTETRACK_KEY_PATH_MAP)
 
         assert result == _BYTETRACK_CANONICAL_VALUES
+
+    def test_lodestar_bytetrack_values_use_higher_consecutive_frames(self):
+        # lodestar's own sweep (2026-08-19) found minimum_consecutive_frames=3
+        # measurably better than rf-detr/yolo's mcf=1 optimum -- MOTA
+        # -0.680 -> -0.566 -- despite lodestar's tracking staying deeply
+        # negative overall (its own detection quality, not tracker tuning, is
+        # the bottleneck). Proves lodestar has its own explicit divergent
+        # entry rather than silently inheriting rf-detr's mcf=1.
+        result = load_tracking_config("lodestar", {}, _BYTETRACK_KEY_PATH_MAP)
+
+        assert result == _BYTETRACK_NOISY_DETECTOR_VALUES
+
+    def test_trackpy_bytetrack_values_use_higher_consecutive_frames(self):
+        # trackpy's own sweep (2026-08-19) found minimum_consecutive_frames=3
+        # measurably better than rf-detr/yolo's mcf=1 optimum -- MOTA
+        # 0.135 -> 0.165, IDF1 0.306 -> 0.315.
+        result = load_tracking_config("trackpy", {}, _BYTETRACK_KEY_PATH_MAP)
+
+        assert result == _BYTETRACK_NOISY_DETECTOR_VALUES
 
     def test_caller_supplied_bytetrack_override_wins_over_canonical_default(self):
         # 45 is deliberately different from the canonical lost_track_buffer

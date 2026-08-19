@@ -539,7 +539,10 @@ class TestBytetrackTuningDefaults:
         assert tuning["minimum_consecutive_frames"] == 2
         assert tuning["track_activation_threshold"] == pytest.approx(0.4)
 
-    def test_trackpy_model_type_falls_back_to_rf_detr_tuning(self, tmp_path):
+    def test_trackpy_model_type_uses_own_divergent_tuning(self, tmp_path):
+        # trackpy's own sweep (2026-08-19) found minimum_consecutive_frames=3
+        # measurably better than rf-detr/yolo's mcf=1 optimum -- it has its
+        # own explicit tracker_defaults.yaml entry now, not a fallback.
         gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
         gt_path = tmp_path / "gt.csv"
         _write_gt_tracks(gt_path, gt_rows)
@@ -548,7 +551,7 @@ class TestBytetrackTuningDefaults:
         tuning = self._captured_tuning(all_boxes, gt_path, cfg, model_type="trackpy")
 
         assert tuning["lost_track_buffer"] == 30
-        assert tuning["minimum_consecutive_frames"] == 1
+        assert tuning["minimum_consecutive_frames"] == 3
         assert tuning["track_activation_threshold"] == pytest.approx(0.3)
 
 
@@ -1504,14 +1507,28 @@ class TestMainTrackerDispatch:
     ):
         """AE3: --model-type trackpy --tracker bytetrack previously raised
         ValueError: Detections confidence must be provided for tracking. --
-        depends on U1's confidence fix already being in place."""
+        depends on U1's confidence fix already being in place. Uses 5 frames
+        (empty frame 0, then 4 consecutive detections) because trackpy's own
+        tuning now requires minimum_consecutive_frames=3 before ByteTrack
+        confirms a track (see tracker_defaults.yaml): a detection on the
+        tracker's very first-ever frame confirms immediately regardless of
+        minimum_consecutive_frames, so frame 0 must be empty to actually
+        exercise the 3-consecutive-frame requirement. verification's pinned
+        supervision (0.30.0) confirms one frame later than trackers-common's
+        pinned supervision (0.29.0) for the same minimum_consecutive_frames
+        -- confirmed empirically confirms at the 4th consecutive present
+        frame here, not the 3rd as trackers-common's own characterization
+        test shows for its own (older) pinned version -- so this needs one
+        more present frame than a same-package equivalent would."""
         monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
-        _write_frames(frames_dir, n=1)
+        _write_frames(frames_dir, n=5)
         gt_path = tmp_path / "ground_truth.json"
-        _write_ground_truth(gt_path, [[[10.0, 10.0]]])
+        _write_ground_truth(gt_path, [[]] + [[[10.0, 10.0]]] * 4)
         gt_tracks_path = tmp_path / "ground_truth_tracks.csv"
-        gt_tracks_path.write_text("frame,particle_id,x,y\n0,1,10.0,10.0\n")
+        gt_tracks_path.write_text(
+            "frame,particle_id,x,y\n1,1,10.0,10.0\n2,1,10.0,10.0\n3,1,10.0,10.0\n4,1,10.0,10.0\n"
+        )
         config_path = tmp_path / "config.yaml"
         config_path.write_text("benchmark:\n  trackpy:\n    diameter: 11\n")
 
@@ -1540,8 +1557,17 @@ class TestMainTrackerDispatch:
             class_id=np.zeros(1, dtype=int),
             confidence=np.ones(1),
         )
+        # Frame 0 empty, frames 1-4 detect -- see docstring for why frame 0
+        # must be empty and why 4 (not 3) consecutive detections are needed.
+        detections_by_frame = [
+            _sv_preload.Detections.empty(),
+            fake_detections,
+            fake_detections,
+            fake_detections,
+            fake_detections,
+        ]
 
-        with mock.patch.object(benchmark, "detect_trackpy", return_value=fake_detections):
+        with mock.patch.object(benchmark, "detect_trackpy", side_effect=detections_by_frame):
             benchmark.main()  # must not raise
 
         csv_path = tmp_path / "verification_output" / "tracking_metrics_trackpy_bytetrack.csv"
