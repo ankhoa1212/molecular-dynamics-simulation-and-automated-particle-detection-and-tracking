@@ -247,8 +247,10 @@ uv sync
 | Strategy | Description |
 |----------|-------------|
 | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
-| `deeptrack` | Physics-accurate scalar-diffraction PSF; spatially varying background; log-normal intensity; sCMOS noise |
+| `deeptrack` | Empirical crop-template compositing (`crop_source: real`, the only supported value); spatially varying background; log-normal intensity; sCMOS noise |
 | `randomized` | Procedural renderer with per-frame stochastic PSF/intensity/noise sampling |
+| `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; small-batch/reference-quality, not a bulk generator |
+| `brightfield_fast` | FFT-based reimplementation of the same coherent optics, independent of particle count; default strategy, used for bulk/production-density rendering (see `configs/render_brightfield_fast.yaml`) |
 
 **Calibrate from real frames (run once):**
 

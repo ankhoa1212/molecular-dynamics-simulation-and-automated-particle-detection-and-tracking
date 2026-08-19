@@ -18,10 +18,26 @@ class TestLoadTrackingConfig:
 
         assert result == {"search_range": 20, "memory": 10, "stub_filter": 6}
 
-    def test_trackpy_falls_back_to_rfdetr_values(self):
+    def test_yolo_canonical_values_match_known_tuning(self):
+        # search_range/memory inherited from rf-detr's tuning (both are
+        # box-based deep detectors); stub_filter=6 (not rf-detr's 90) is
+        # independently measured -- see tracker_defaults.yaml's comment: at
+        # rf-detr's stub_filter=90, every yolo trajectory on the verification
+        # benchmark got filtered out (max measured track length was 77
+        # frames), so this proves stub_filter resolves its own real value
+        # rather than blindly inheriting rf-detr's.
+        result = load_tracking_config("yolo", {}, _KEY_PATH_MAP)
+
+        assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
+
+    def test_trackpy_has_its_own_tuned_entry(self):
+        # trackpy previously fell back to rf-detr's tuning (no dedicated
+        # entry); it has its own explicit entry now (U6) so rf-detr's
+        # stub_filter can be tuned independently without silently changing
+        # trackpy's behavior too.
         result = load_tracking_config("trackpy", {}, _KEY_PATH_MAP)
 
-        assert result == {"search_range": 25, "memory": 5, "stub_filter": 90}
+        assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
 
     def test_caller_supplied_value_overrides_canonical_default(self):
         tool_config = {"tracking": {"search_range": 15}}

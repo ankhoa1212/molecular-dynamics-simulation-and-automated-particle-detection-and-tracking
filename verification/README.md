@@ -3,11 +3,11 @@
 End-to-end pipeline for validating the simulation → detection → tracking chain with realistic synthetic rendering.
 
 1. **`render.py`** — converts a LAMMPS trajectory into synthetic microscopy TIFFs with known particle positions; writes `ground_truth.json` (per-frame positions) and `ground_truth_tracks.csv` (per-particle track ground truth for MOTA/IDF1).
-2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
+2. **`benchmark.py`** — runs RF-DETR, LodeSTAR, YOLOv12, or trackpy (`--model-type`) on synthetic frames and measures detection precision/recall/F1; optionally runs trackpy linking and computes MOTA/IDF1/fragmentation via motmetrics.
 3. **`compare.py`** — compares physics observables (hexatic order, MSD, velocity distributions) between the LAMMPS simulation and real particle tracks.
 4. **`calibrate_psf.py`** — fits PSF, background, intensity, and noise parameters from real `.tif` microscopy frames; prints calibrated values ready to paste into `config.yaml`.
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
-6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error across `benchmark.py`'s per-model-type outputs, for comparing detector performance side by side.
+6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector performance side by side.
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
 
 ## Setup
@@ -17,11 +17,11 @@ cd verification/
 uv sync
 ```
 
-`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default) and LodeSTAR each pull their compiled dependencies (torch, and either `rfdetr` or `deeplay`/`supervision`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv. `trackpy` needs no sibling-project venv — it's a classical, non-CUDA algorithm and already a native dependency of `verification/`'s own venv (installed by the `uv sync` above):
+`benchmark.py` also needs a venv for whichever model type you benchmark — RF-DETR (default), LodeSTAR, and YOLOv12 each pull their compiled dependencies (torch, and either `rfdetr`, `deeplay`/`supervision`, or `ultralytics`) from a sibling project's venv, since those aren't installed in `verification/`'s own venv. `trackpy` needs no sibling-project venv — it's a classical, non-CUDA algorithm and already a native dependency of `verification/`'s own venv (installed by the `uv sync` above):
 
 ```bash
 cd ../rf-detr && uv sync             # --model-type rf-detr (default)
-cd ../particle-tracking && uv sync   # --model-type lodestar
+cd ../particle-tracking && uv sync   # --model-type lodestar or yolo
 # --model-type trackpy needs nothing further — runs natively in verification/.venv
 ```
 
@@ -38,10 +38,14 @@ Ready-to-use configs for each strategy live in `configs/`:
 | Config | Strategy | Description |
 |--------|----------|-------------|
 | `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
-| `configs/render_deeptrack.yaml` | `deeptrack` | Physics-accurate scalar-diffraction PSF via DeepTrack2; spatially varying background; log-normal per-particle intensity; sCMOS noise model |
+| *(none -- see note below)* | `deeptrack` | Empirical crop-template compositing (`crop_source: real`, the only supported value); spatially varying background; log-normal per-particle intensity; sCMOS noise model |
 | `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
+| `configs/render_brightfield.yaml` | `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; particles placed at the real trajectory's own x/y positions, not stamped independently. Small-batch/reference-quality by design (see `render_brightfield.py`'s module docstring for real per-frame cost data), not a bulk generator like the other three strategies |
+| `configs/render_brightfield_fast.yaml` | `brightfield_fast` | FFT-based reimplementation of `brightfield`'s coherent optics directly in numpy/scipy (no deeptrack dependency), independent of particle count. Default strategy (`config.yaml`'s `render_strategy`), used for bulk/production-density rendering. See `render_brightfield_fast.py`'s module docstring for the algorithm and its validated equivalence to `brightfield` |
 
 Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
+
+**Note on `deeptrack`:** there is no ready-made example config for this strategy. It requires `synthetic.crop_source: real` and a prebuilt empirical template library (`synthetic.crop_template.cache_path`, built via `render_crop_templates.build_template_library()`) -- neither is self-contained enough to ship as a standalone example without also documenting that build step. Set `render_strategy: deeptrack` and `crop_source: real` in a copy of `config.yaml` (which already has `crop_template` configured) to use it directly.
 
 `config.yaml` is the full reference config used by `benchmark.py`, `compare.py`, and `calibrate_psf.py --merge-config`.
 
@@ -70,6 +74,24 @@ uv run python compare_renders.py \
 
 **Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between a calibrated render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
 
+### Calibrating `brightfield`
+
+The `brightfield` strategy has its own calibration entry point — a bounded random search over `synthetic.brightfield`'s optics/particle parameters, scored against real footage and/or a small set of physically rigorous Mie-scattering ground-truth frames generated on the fly, since `calibrate_from_frames`'s isolated-spot Gaussian fit doesn't apply to this strategy's dense, ring-shaped output:
+
+```bash
+uv run python calibrate_psf.py \
+    --brightfield \
+    --lammps ../lammps-scripts/results/sim.lammpstrj \
+    --real-frames /path/to/real/tifs/ \
+    --mie-frames 3 --mie-frames-particles 10 \
+    --n-iterations 15 \
+    --merge-config config.yaml
+```
+
+`--real-frames` is optional here (unlike the default mode above) as long as `--mie-frames` is greater than 0 — at least one of the two fitting targets is required. `--merge-config` writes the result under `synthetic.brightfield` the same way the default mode writes `synthetic.psf`/etc.; the same PSD mid-band similarity ≥ 0.85 acceptance criterion applies, checked via `compare_renders.py --strategies brightfield`.
+
+`brightfield_fast` reuses `synthetic.brightfield`'s physical optics/particle parameters (na, wavelength, resolution, magnification, radius, refractive index, z range) unchanged — the same `--brightfield` calibration above applies to it too. `synthetic.brightfield_fast.max_particles`/`.n_z_slices` (bulk-rendering and z-bucketing knobs specific to the fast path — see `render_brightfield_fast.py`) are set directly in config, not fit by `calibrate_psf.py`.
+
 ## Step 1 — Render synthetic frames
 
 ```bash
@@ -79,7 +101,8 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 # Pick a specific strategy
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_procedural.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
-uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_deeptrack.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield.yaml
+uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield_fast.yaml
 ```
 
 Outputs:
@@ -102,7 +125,7 @@ Key settings in `config.yaml` under `synthetic:`:
 
 | Key | Description |
 |-----|-------------|
-| `render_strategy` | `procedural` / `deeptrack` / `randomized` |
+| `render_strategy` | `procedural` / `deeptrack` / `randomized` / `brightfield` / `brightfield_fast` (default) |
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
@@ -113,6 +136,13 @@ Key settings in `config.yaml` under `synthetic:`:
 | `particle.peak_mean` / `particle.intensity_sigma` | Log-normal intensity distribution |
 | `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params |
 | `randomization.psf_sigma_range` / `.peak_range` / `.readout_noise_range` | Per-frame sampling ranges for `randomized` strategy |
+| `brightfield.max_particles` | Safety cap on particles rendered per `brightfield` frame (real per-frame cost is highly variable; see `render_brightfield.py`) |
+| `brightfield.na` / `.wavelength` / `.resolution` / `.refractive_index_medium` | `brightfield` optics params, passed to `deeptrack.Brightfield` |
+| `brightfield.radius_min`/`.radius_max`, `.refractive_index_min`/`.refractive_index_max`, `.z_min_px`/`.z_max_px` | `brightfield` per-particle physical property ranges (single particle type this iteration) |
+| `brightfield.mie_max_particles` / `.mie_max_frames` | Caps on `brightfield`'s Mie ground-truth calibration tier |
+| `brightfield.coherence_blur_sigma_px` | Gaussian blur (px) applied to resolved intensity to approximate partial spatial coherence, suppressing the unrealistic secondary diffraction ring a fully-coherent solve otherwise produces; `0` disables it. Shared by `brightfield` and `brightfield_fast` |
+| `brightfield_fast.max_particles` | Safety cap on particles rendered per `brightfield_fast` frame; above this, a random subset is rendered and a warning is raised (see `render_brightfield_fast.py`) |
+| `brightfield_fast.n_z_slices` | Number of z-buckets particles are grouped into for `brightfield_fast`'s combined-defocus pupil propagation (see `render_brightfield_fast.py`'s module docstring) |
 
 
 ## Step 2 — Benchmark detection and tracking accuracy
@@ -129,6 +159,12 @@ uv run python benchmark.py \
     --ground-truth verification_output/ground_truth.json \
     --model-type lodestar
 
+# Detection only, YOLOv12
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type yolo
+
 # Detection only, trackpy (classical baseline, no venv/checkpoint needed)
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
@@ -143,7 +179,7 @@ uv run python benchmark.py \
 ```
 
 Outputs (named per `--model-type` so a run of one model doesn't overwrite the other's results):
-- `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1
+- `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1/inference_time_ms, plus a printed mean/median inference-time summary line
 - `verification_output/tracking_metrics_{model_type}.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
 - `verification_output/tracking_visualization_{model_type}.mp4` — detection boxes and trajectory traces overlaid on every frame (when `--save-video` is passed)
 
@@ -169,9 +205,10 @@ synthetic dataset; a real dataset's `size_px`/`spacing_px` come from `calibrate_
 |----------------|-------------------|----------------|-------|
 | `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
 | `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
+| `yolo` | `benchmark.yolo.*` (`checkpoint`, `threshold`, `device`) | `particle-tracking/.venv` | Always runs full-frame — ultralytics applies its own internal NMS/detection cap (`max_det=5000`), so tiling doesn't apply |
 | `trackpy` | `benchmark.trackpy.*` (`diameter`, `minmass`, `separation`) | none — runs natively in `verification/.venv` | Classical brightness-thresholding baseline (`trackpy.locate`), not a learned model; no checkpoint file, no loaded model object |
 
-`--device` is shared across model types; `benchmark.lodestar.device` overrides it for LodeSTAR specifically when set. `trackpy` is CPU-only and ignores `--device`.
+`--device` is shared across model types; `benchmark.lodestar.device`/`benchmark.yolo.device` override it for LodeSTAR/YOLOv12 specifically when set. `trackpy` is CPU-only and ignores `--device`.
 
 Options:
 
@@ -181,7 +218,7 @@ Options:
 | `--ground-truth` | *(required)* | `ground_truth.json` from render.py |
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
-| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
+| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, `yolo`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--device` | `0` | CUDA device index or `cpu` |
 | `--save-video` | off | Write `tracking_visualization_{model_type}.mp4` with detection boxes and trajectory traces overlaid. Uses `tracking.search_range`/`memory` from `--config` to link detections, independent of `--ground-truth-tracks` (only needed for MOTA/IDF1) |
 | `--video-fps` | `10.0` | Frame rate for `--save-video` output |
@@ -251,10 +288,11 @@ verification_output/
 │   └── frame_NNNNN.png
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
-├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1 (from benchmark.py)
+├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1/inference_time_ms (from benchmark.py)
 ├── tracking_metrics_{model_type}.csv   # MOTA/IDF1/fragmentation (from benchmark.py)
 ├── tracking_visualization_{model_type}.mp4  # detection boxes + trajectory traces (from benchmark.py --save-video)
 ├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
+├── benchmark_summary.png       # run-level bar chart across model types (from plot_benchmark.py)
 ├── renders_comparison.png      # side-by-side strategy comparison (from compare_renders.py)
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
 ├── hexatic_order.png           # structural order comparison (from compare.py)

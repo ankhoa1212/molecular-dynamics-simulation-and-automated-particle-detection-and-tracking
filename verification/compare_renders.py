@@ -53,6 +53,34 @@ def _band_slice(profile: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return profile[i0:i1]
 
 
+def compute_ssim_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Structural similarity between two renders of the *same* scene.
+
+    Unlike compute_psd_similarity (a frequency-domain statistical metric
+    for comparing different-but-similar-style images against a 0.85
+    threshold), this is a direct pixel/structural agreement check meant for
+    render_brightfield_fast vs render_frame_brightfield -- the same
+    particle configuration rendered two different ways, where structural
+    agreement is the more honest signal. See render_brightfield_fast.py's
+    plan KTDs, and test_render_brightfield_fast_equivalence.py's own module
+    docstring, for the pinned threshold this feeds (SSIM >= 0.7 -- back at
+    the plan's original placeholder value after a real accuracy
+    improvement, not just a re-measurement; see that module docstring's
+    threshold history).
+    """
+    from skimage.metrics import structural_similarity
+
+    a64, b64 = a.astype(np.float64), b.astype(np.float64)
+    # Both renders already share the same absolute ADU scale (intensity_scale
+    # in synthetic.brightfield) -- normalizing each image independently to
+    # [0, 1] would rescale away real amplitude differences and distort the
+    # comparison. Use the pair's shared value range instead.
+    data_range = max(a64.max(), b64.max()) - min(a64.min(), b64.min())
+    if data_range < 1e-12:
+        return 1.0 if np.array_equal(a64, b64) else 0.0
+    return float(structural_similarity(a64, b64, data_range=data_range))
+
+
 def compute_psd_similarity(synth: np.ndarray, real: np.ndarray) -> tuple:
     """Normalized cross-correlation of radially averaged PSD per band.
 
@@ -103,9 +131,9 @@ def main():
             "procedural",
             "deeptrack",
             "randomized",
+            "brightfield",
+            "brightfield_fast",
             "deeptrack-real",
-            "deeptrack-procedural",
-            "deeptrack-physics",
         ],
     )
     parser.add_argument("--output-dir", default="verification_output/")
@@ -138,27 +166,33 @@ def main():
                 stacklevel=2,
             )
 
-    # "deeptrack-real"/"deeptrack-procedural"/"deeptrack-physics" all dispatch
-    # through the plain "deeptrack" strategy string with crop_source
-    # overridden on a copy of synth_cfg — _dispatch_render only recognizes
-    # literal "deeptrack" (see render.py:_dispatch_render), so these
-    # suffixed names can't be passed through directly. "deeptrack-physics"
-    # names crop_source: physics explicitly rather than relying on bare
-    # "deeptrack" to mean physics, which only holds while config.yaml's own
-    # crop_source default happens to still be "physics".
+    # "deeptrack-real" dispatches through the plain "deeptrack" strategy
+    # string with crop_source overridden on a copy of synth_cfg --
+    # _dispatch_render only recognizes literal "deeptrack" (see
+    # render.py:_dispatch_render), so this suffixed name can't be passed
+    # through directly. "real" is the only crop_source render_deeptrack.py
+    # still supports (crop_source: physics/procedural were removed once
+    # render_strategy: brightfield_fast superseded both on realism).
     _CROP_SOURCE_BY_STRATEGY = {
         "deeptrack-real": "real",
-        "deeptrack-procedural": "procedural",
-        "deeptrack-physics": "physics",
     }
+
+    # "brightfield" hits an ImportError deep inside _dispatch_render if
+    # deeptrack isn't installed -- this guard skips it with a friendly
+    # warning instead of crashing the whole script. "deeptrack" (bare or
+    # -real) is deliberately NOT in this set: render_deeptrack.py's
+    # crop_source: real path is pure numpy/scipy with no deeptrack
+    # dependency at all, so gating it on deeptrack's presence would
+    # incorrectly skip a strategy that doesn't actually need it.
+    _DEEPTRACK_BACKED_STRATEGIES = {"brightfield"}
 
     rendered = {}
     for strategy in args.strategies:
         crop_source = _CROP_SOURCE_BY_STRATEGY.get(strategy)
         dispatch_strategy = "deeptrack" if crop_source else strategy
-        if dispatch_strategy == "deeptrack":
+        if dispatch_strategy in _DEEPTRACK_BACKED_STRATEGIES:
             try:
-                import render_deeptrack  # noqa: F401
+                import deeptrack  # noqa: F401
             except ImportError:
                 print(f"WARNING: deeptrack not installed — skipping '{strategy}'.")
                 continue

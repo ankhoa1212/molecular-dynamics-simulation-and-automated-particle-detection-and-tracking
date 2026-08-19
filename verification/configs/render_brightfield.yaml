@@ -1,0 +1,51 @@
+# render.py config — brightfield strategy
+# Coherent whole-frame optical-field solve via DeepTrack2's Brightfield
+# optics -- particles placed at the real trajectory positions, not stamped
+# independently. Small-batch/reference-quality by design; see
+# render_brightfield.py's module docstring for the per-frame cost data
+# behind max_particles below.
+# Requires: uv add deeptrack==2.0.1  (inside verification/)
+#
+# Usage:
+#   uv run python render.py --lammps <path> --config configs/render_brightfield.yaml
+
+synthetic:
+  render_strategy: brightfield
+  # max_particles below caps how much of a real trajectory frame renders,
+  # so a full-size real-footage canvas would mostly be empty space at this
+  # iteration's practical per-frame cost. Revisit once calibration has real
+  # timing data at a larger canvas.
+  image_width: 256
+  image_height: 256
+  output_dir: verification_output/synthetic_frames_brightfield/
+
+  brightfield:
+    max_particles: 20
+    intensity_scale: 20000.0
+
+    na: 1.0
+    wavelength: 550e-9
+    resolution: 100e-9
+    magnification: 1.0   # see config.yaml's comment: default 10 renders particles ~10x
+                          # too large relative to this dataset's real particle spacing
+    refractive_index_medium: 1.33
+
+    radius_min: 0.5e-6
+    radius_max: 0.5e-6
+    refractive_index_min: 1.45
+    refractive_index_max: 1.45
+    z_min_px: 0.0
+    z_max_px: 0.0
+
+    mie_max_particles: 10
+    mie_max_frames: 3
+
+  # Spatially varying background + sCMOS noise -- same model as
+  # render_strategy: deeptrack's background/noise steps.
+  background:
+    heterogeneity_scale: 50
+    amplitude: 500
+
+  noise:
+    gain_sigma: 0.02
+    read_noise: 15.0

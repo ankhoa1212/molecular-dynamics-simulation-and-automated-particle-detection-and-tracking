@@ -202,3 +202,41 @@ def write_lodestar_config(
     }
 
     return _write_config(cfg, "lodestar", name, script_dir)
+
+
+def write_yolo_config(
+    name: str,
+    input_path: str,
+    output_dir: str,
+    crop_w: int | None,
+    crop_h: int | None,
+    bridge_gap: int | None,
+    script_dir: Path,
+    dataset_profile: str | None = None,
+) -> Path:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    tracking = {"tracker": "trackpy", **load_tracking_config("yolo", {}, DEFAULT_KEY_PATH_MAP)}
+    if bridge_gap is not None:
+        tracking["bridge_gap"] = bridge_gap
+
+    cfg = {
+        "input": input_path,
+        **({"dataset_profile": dataset_profile} if dataset_profile is not None else {}),
+        "model": {
+            "type": "yolo",
+            "checkpoint": "../yolov12/runs/detect/yolo12m-particles/weights/best.pt",
+            "device": "0",
+        },
+        **_spatial_config(crop_w, crop_h, default_tiling=False),
+        "detection": {"threshold": 0.25},
+        "tracking": tracking,
+        "output": {
+            "dir": output_dir,
+            "save_video": True,
+            "fps": 30,
+            "trace_length": 60,
+        },
+    }
+
+    return _write_config(cfg, "yolo", name, script_dir)

@@ -17,6 +17,7 @@ class ModelSpec(NamedTuple):
 
 class _TrackHelpers(NamedTuple):
     detect_lodestar: object
+    detect_yolo: object
     get_lodestar_model: object
     get_rfdetr_model: object
     get_yolo_model: object
@@ -51,6 +52,7 @@ def _load_track_helpers() -> _TrackHelpers:
     """Lazily import heavy helpers from track.py to avoid loading at module level."""
     from track import (
         detect_lodestar,
+        detect_yolo,
         get_lodestar_model,
         get_rfdetr_model,
         get_yolo_model,
@@ -59,6 +61,7 @@ def _load_track_helpers() -> _TrackHelpers:
 
     return _TrackHelpers(
         detect_lodestar=detect_lodestar,
+        detect_yolo=detect_yolo,
         get_lodestar_model=get_lodestar_model,
         get_rfdetr_model=get_rfdetr_model,
         get_yolo_model=get_yolo_model,
@@ -211,8 +214,8 @@ def run_detection(
     import supervision as sv
 
     if model_type == "yolo":
-        results = model.predict(frame, conf=threshold, device=device, verbose=False)[0]
-        return sv.Detections.from_ultralytics(results)
+        helpers = _load_track_helpers()
+        return helpers.detect_yolo(model, frame, threshold, device)
     elif model_type == "lodestar":
         helpers = _load_track_helpers()
         return helpers.detect_lodestar(model, frame, threshold, device, box_size=lodestar_box_size)
@@ -231,17 +234,14 @@ def run_detection(
 # models sharing this interpreter. Do not "simplify" this into an
 # in-process loop.
 
-# Maps model_type -> tracker_configs.py writer function name. No writer
-# exists yet for "yolo" (a pre-existing gap in tracker_configs.py, see U6 of
-# docs/plans/2026-07-13-001-feat-multi-model-comparison-preview-metrics-plan.md).
-# Rather than inventing a yolo writer here — which would immediately
-# reintroduce the config-drift risk U6's extraction into a shared module was
-# meant to prevent — a yolo request raises a clear, catchable error naming
-# the gap; the caller records it as a per-model failure and the remaining
-# models still run to completion.
+# Maps model_type -> tracker_configs.py writer function name. Closes the gap
+# noted in U6 of
+# docs/plans/2026-07-13-001-feat-multi-model-comparison-preview-metrics-plan.md
+# (yolo previously had no writer here).
 _CONFIG_WRITER_NAMES = {
     "rf-detr": "write_rfdetr_config",
     "lodestar": "write_lodestar_config",
+    "yolo": "write_yolo_config",
 }
 
 
@@ -292,9 +292,8 @@ def _write_model_config(
     if writer_name is None:
         raise ValueError(
             f"No config writer available for model type {model_type!r} in "
-            "tracker_configs.py — only rf-detr and lodestar are currently supported "
-            "for full-run comparison (pre-existing gap; see U6 scope note in "
-            "docs/plans/2026-07-13-001-feat-multi-model-comparison-preview-metrics-plan.md)."
+            f"tracker_configs.py — only {', '.join(_CONFIG_WRITER_NAMES)} are currently "
+            "supported for full-run comparison."
         )
     writer = getattr(tracker_configs, writer_name)
     # Only write_rfdetr_config currently accepts an explicit checkpoint override
@@ -305,8 +304,9 @@ def _write_model_config(
         if model_type == "rf-detr" and checkpoint is not None
         else {}
     )
-    # Unlike checkpoint, both writers accept dataset_profile -- it drives
-    # tile_size for rf-detr and box_size/nms_distance/search_range for lodestar.
+    # Unlike checkpoint, all three writers accept dataset_profile -- it drives
+    # search_range derivation for all three, plus tile_size for rf-detr's tiling
+    # and box_size/nms_distance for lodestar's detection (yolo has neither yet).
     if dataset_profile is not None:
         writer_kwargs["dataset_profile"] = dataset_profile
     return writer(

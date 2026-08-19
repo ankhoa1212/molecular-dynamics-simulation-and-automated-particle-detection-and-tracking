@@ -5,8 +5,10 @@
 # tracker_configs.py and verification/benchmark.py -- see this package's README.
 #
 # trackpy (verification's classical blob detector) has no track.py-side model_type
-# of its own, so it has no tuned entry here -- callers fall back to the rf-detr
-# values as a documented default, not a claim of measured trackpy-detector parity.
+# of its own -- unlike rf-detr/lodestar/yolo, tracker_configs.py's writers never
+# generate a config for it. It has its own tuned entry below anyway (U6), keyed
+# by the same "trackpy" model_type string benchmark.py already uses, so its
+# tracking-linkage tuning isn't silently coupled to rf-detr's.
 #
 # adaptive_stop/adaptive_step are NOT per-model-tuned in tracker_configs.py's
 # writers (a pre-existing gap -- direct track.py runs against
@@ -21,13 +23,59 @@
 rf-detr:
   search_range: 25
   memory: 5
-  stub_filter: 90
+  stub_filter: 90  # briefly lowered to 6 (U6) to work around trackpy falling back to
+                    # this value and getting zeroed out completely -- trackpy now has
+                    # its own independent entry below instead (the actual fix), so
+                    # rf-detr's own value never needed to change. Reverted back to 90,
+                    # its only empirically-grounded value (see
+                    # dataset-profiles/stress-test-results.md): rf-detr's own detection
+                    # density (~900-1500/frame) sustains long unbroken tracks unlike
+                    # yolo/lodestar/trackpy's much shorter ones, so it doesn't need
+                    # (and shouldn't share) their much lower stub_filter.
   adaptive_stop: 12
   adaptive_step: 0.95
 
 lodestar:
   search_range: 20
   memory: 10
+  stub_filter: 6
+  adaptive_stop: 12
+  adaptive_step: 0.95
+
+# search_range/memory/adaptive_stop/adaptive_step started from rf-detr's
+# tuning (both are box-based deep detectors with internal NMS, unlike
+# LodeSTAR's point detections) and haven't been independently swept.
+# stub_filter=90 (rf-detr's value) was tried first and measured directly
+# against this dataset (verification/verification_output/synthetic_frames,
+# 151 frames) with the yolo12m-particles checkpoint at threshold=0.25: it
+# filtered out every single trajectory. rf-detr's own detection density
+# (~900-1500/frame) sustains long unbroken tracks; this checkpoint's much
+# lower recall on this benchmark (~0.21, vs ~0.56 on its own real-data val
+# split -- see yolov12/config.yaml) means frequent per-frame misses that
+# constantly break trajectories -- confirmed directly: with search_range=
+# 3.125 (this run's actual collapsed value, see adaptive_stop/adaptive_step
+# above), pre-stub-filter track lengths had max=77 frames (out of 151),
+# median=2, p95=15 -- no track ever reaches 90. stub_filter=6 (matching
+# lodestar's value, the other detector whose tracks are similarly short-
+# lived) keeps 2328 of the 10419 raw tracks rather than zero, while still
+# discarding single/double-frame noise blips.
+yolo:
+  search_range: 25
+  memory: 5
+  stub_filter: 6
+  adaptive_stop: 12
+  adaptive_step: 0.95
+
+# trackpy previously had no entry here (fell back to rf-detr's tuning above,
+# per this file's header comment). Before this entry existed, falling back to
+# rf-detr's stub_filter=90 zeroed out every trackpy trajectory (MOTA/IDF1
+# both 0.0, 0 fragmentations) -- trackpy's own tracks are much shorter-lived
+# than rf-detr's, so rf-detr's value was never appropriate for it. Given its
+# own explicit entry now (U6), matching lodestar/yolo's stub_filter=6, so
+# rf-detr's tuning stays untouched and decoupled from trackpy's fallback.
+trackpy:
+  search_range: 25
+  memory: 5
   stub_filter: 6
   adaptive_stop: 12
   adaptive_step: 0.95

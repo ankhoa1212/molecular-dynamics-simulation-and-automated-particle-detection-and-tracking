@@ -3,8 +3,12 @@
 
 Usage:
     uv run python calibrate_psf.py --real-frames <dir> [--output-config <path>] [--dark-frames <dir>]
+    uv run python calibrate_psf.py --brightfield --lammps <path> [--real-frames <dir>] [--mie-frames <n>] ...
 
 Prints a YAML fragment ready to paste into config.yaml under synthetic:.
+--brightfield switches to calibrate_brightfield, a separate search over
+synthetic.brightfield for render_strategy: brightfield (see that function's
+docstring).
 
 Real saturated bright-field data should tune --min-area/--max-area/--percentile
 away from the small-particle-friendly defaults -- start from this repo's
@@ -33,6 +37,65 @@ _CROP_HALF = 16  # 32×32 crop
 def _load_tifs(directory: Path) -> list[np.ndarray]:
     paths = sorted(directory.glob("*.tif")) + sorted(directory.glob("*.tiff"))
     return [tifffile.imread(str(p)).astype(np.float32) for p in paths]
+
+
+def _load_real_frames(directory: Path) -> list[np.ndarray]:
+    """Load real reference frames from `directory`, auto-detecting format by
+    extension: .tif/.tiff via tifffile (same as _load_tifs), .png via
+    cv2.imread grayscale -- the LodeSTAR training crops
+    (data-setup/models/lodestar_model_*/crops/*.png) calibrate_brightfield's
+    z-range fit targets are stored as PNG, not TIFF. Both formats may
+    coexist in the same directory; format is determined per-file by
+    extension, not by directory-wide assumption.
+    """
+    import cv2  # noqa: PLC0415
+
+    tif_paths = sorted(directory.glob("*.tif")) + sorted(directory.glob("*.tiff"))
+    png_paths = sorted(directory.glob("*.png"))
+    frames = [tifffile.imread(str(p)).astype(np.float32) for p in tif_paths]
+    for p in png_paths:
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"failed to load {p}: not a valid image file")
+        frames.append(img.astype(np.float32))
+    return frames
+
+
+def _fit_to_canvas(frame: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Pad or center-crop `frame` to exactly (height, width).
+
+    LodeSTAR crops are smaller than and inconsistent in size with
+    calibrate_brightfield's candidate canvas (~64x65 to ~173x176px
+    measured, vs. the default 256x256 canvas), and
+    compare_renders.compute_psd_similarity requires matching array shapes.
+    Padding (not resizing) preserves the crop's true physical pixel scale
+    -- resizing would distort exactly the size relationship the z-range fit
+    is trying to calibrate. Center-crops instead on any axis where the
+    source frame is larger than the target canvas.
+    """
+    h, w = frame.shape
+    out = np.zeros((height, width), dtype=frame.dtype)
+
+    if h <= height:
+        pad_y = (height - h) // 2
+        src_y0, src_y1 = 0, h
+        dst_y0, dst_y1 = pad_y, pad_y + h
+    else:
+        crop_y = (h - height) // 2
+        src_y0, src_y1 = crop_y, crop_y + height
+        dst_y0, dst_y1 = 0, height
+
+    if w <= width:
+        pad_x = (width - w) // 2
+        src_x0, src_x1 = 0, w
+        dst_x0, dst_x1 = pad_x, pad_x + w
+    else:
+        crop_x = (w - width) // 2
+        src_x0, src_x1 = crop_x, crop_x + width
+        dst_x0, dst_x1 = 0, width
+
+    out[dst_y0:dst_y1, dst_x0:dst_x1] = frame[src_y0:src_y1, src_x0:src_x1]
+    return out
 
 
 def _detect_particle_centers(frame, min_area, max_area, percentile):
@@ -271,6 +334,162 @@ def calibrate_from_frames(
     }
 
 
+def calibrate_brightfield(
+    real_frames: list[np.ndarray],
+    mie_frames: list[np.ndarray],
+    positions_lj: np.ndarray,
+    box: tuple,
+    image_height: int,
+    image_width: int,
+    rng,
+    n_iterations: int = 15,
+    param_bounds: dict | None = None,
+) -> dict:
+    """Bounded coarse search over render_strategy: brightfield's
+    synthetic.brightfield parameters, scored against real_frames and/or
+    mie_frames.
+
+    calibrate_from_frames' isolated-spot Gaussian-fit method doesn't apply
+    here -- this strategy's output is dense, touching, and ring-shaped, not
+    isolated bright spots -- so this is new fitting logic, not a reuse of
+    that method. It IS a coarse random search over a bounded parameter
+    range, not a gradient-based or exhaustive optimizer, per this plan's
+    scope: each iteration renders one candidate config via
+    render_brightfield.render_frame_brightfield (one real Brightfield
+    solve -- the expensive part; see that module's docstring for the
+    per-frame cost data behind n_iterations' small default) and scores it
+    with compare_renders.compute_psd_similarity's mid-band value against
+    every supplied target frame, keeping the best-scoring candidate.
+
+    Args:
+        real_frames: real brightfield reference frames (may be empty if
+            mie_frames alone are supplied).
+        mie_frames: Mie ground-truth frames from
+            render_brightfield.generate_mie_ground_truth (may be empty if
+            real_frames alone are supplied). At least one of real_frames/
+            mie_frames must be non-empty.
+        positions_lj: (N, 2) float array of particle positions (LJ units)
+            to render each candidate with -- typically the same trajectory
+            frame generate_mie_ground_truth drew its subset from.
+        box: (x_lo, x_hi, y_lo, y_hi) simulation box bounds.
+        image_height, image_width: canvas size to render candidates at.
+        rng: numpy.random.Generator instance.
+        n_iterations: number of random candidates to evaluate.
+        param_bounds: optional override of the search space; see the
+            default bounds in this function's body for the expected keys.
+
+    Returns:
+        {"brightfield": {...}} shaped for _merge_params_into_config, plus
+        an internal-only "_meta" key (best PSD score, iteration count) that
+        _merge_params_into_config skips.
+
+    Raises:
+        ValueError: if both real_frames and mie_frames are empty, or if no
+            candidate produced a valid PSD similarity score against the
+            given targets.
+    """
+    if not real_frames and not mie_frames:
+        raise ValueError(
+            "calibrate_brightfield requires at least one of real_frames or "
+            "mie_frames as a fitting target."
+        )
+
+    from compare_renders import compute_psd_similarity
+    from render_brightfield import render_frame_brightfield
+
+    bounds = param_bounds or {
+        "na": (0.7, 1.4),
+        "wavelength": (450e-9, 650e-9),
+        "resolution": (65e-9, 150e-9),
+        "refractive_index_medium": (1.33, 1.40),
+        "radius": (0.3e-6, 0.8e-6),
+        "refractive_index": (1.40, 1.60),
+        "intensity_scale": (5000.0, 40000.0),
+        # z_min_px/z_max_px are sampled independently within this range
+        # (not mirrored like radius/refractive_index above, which
+        # intentionally produce one monodisperse value per candidate) --
+        # defocus needs a genuine spread for render_strategy: brightfield_fast's
+        # z-bucketing to have anything to exercise once this feeds production
+        # config. See docs/plans/2026-08-16-001-feat-brightfield-fast-
+        # render-path-plan.md's U4 KTD.
+        "z_range_px": (-15.0, 15.0),
+    }
+    # LodeSTAR crops (this function's real-world real_frames target) are
+    # smaller than and inconsistent in size with the candidate canvas --
+    # compute_psd_similarity requires matching shapes, so fit every real
+    # frame to the candidate canvas once up front. mie_frames are already
+    # rendered at (image_height, image_width) by generate_mie_ground_truth,
+    # so they need no fitting.
+    fitted_real_frames = [_fit_to_canvas(f, image_height, image_width) for f in real_frames]
+    targets = list(mie_frames) + fitted_real_frames
+    search_max_particles = min(max(len(positions_lj), 1), 50)
+
+    best_score = -np.inf
+    best_params = None
+
+    for _ in range(n_iterations):
+        radius = float(rng.uniform(*bounds["radius"]))
+        refractive_index = float(rng.uniform(*bounds["refractive_index"]))
+        # Independently sampled, then sorted -- a genuine [z_min, z_max]
+        # spread, not the mirrored-constant pattern radius/refractive_index
+        # use above (see the z_range_px bound's own comment).
+        z_a = float(rng.uniform(*bounds["z_range_px"]))
+        z_b = float(rng.uniform(*bounds["z_range_px"]))
+        candidate = {
+            "max_particles": search_max_particles,
+            "intensity_scale": float(rng.uniform(*bounds["intensity_scale"])),
+            "na": float(rng.uniform(*bounds["na"])),
+            "wavelength": float(rng.uniform(*bounds["wavelength"])),
+            "resolution": float(rng.uniform(*bounds["resolution"])),
+            # Fixed, not searched: deeptrack.Brightfield's own default (10)
+            # renders this dataset's particles at ~10x its real interparticle
+            # spacing (invisible at small validation scales, catastrophic at
+            # production density -- see render_brightfield.py's
+            # _resolve_brightfield_intensity docstring). 1.0 matches every
+            # other render strategy's particle scale; not reopened as a
+            # search dimension since it's a fixed, decided value, not a
+            # free physical parameter to fit against reference imagery.
+            "magnification": 1.0,
+            "refractive_index_medium": float(rng.uniform(*bounds["refractive_index_medium"])),
+            "radius_min": radius,
+            "radius_max": radius,
+            "refractive_index_min": refractive_index,
+            "refractive_index_max": refractive_index,
+            "z_min_px": min(z_a, z_b),
+            "z_max_px": max(z_a, z_b),
+        }
+        cfg = {
+            "image_height": image_height,
+            "image_width": image_width,
+            "brightfield": candidate,
+        }
+        rendered = render_frame_brightfield(positions_lj, box, cfg, rng)
+
+        scores = [
+            mid
+            for target in targets
+            for (_, mid, _) in [compute_psd_similarity(rendered, target)]
+            if not np.isnan(mid)
+        ]
+        if not scores:
+            continue
+        score = float(np.mean(scores))
+        if score > best_score:
+            best_score = score
+            best_params = candidate
+
+    if best_params is None:
+        raise ValueError(
+            "calibrate_brightfield: no candidate produced a valid PSD similarity "
+            "score against the given targets."
+        )
+
+    return {
+        "brightfield": best_params,
+        "_meta": {"psd_mid_score": round(best_score, 4), "n_iterations": n_iterations},
+    }
+
+
 def _format_yaml_fragment(params: dict) -> str:
     meta = params["_meta"]
     gain_note = params["noise"]["_gain_sigma_note"]
@@ -379,13 +598,12 @@ def _merge_params_into_config(config_path: Path, params: dict) -> None:
     """Merge calibrated params into an existing config.yaml file under synthetic:.
 
     Preserves all existing keys not in `params`'s own top-level sections (e.g.
-    psf, particle, background, noise -- or procedural_shape for
-    fit_procedural_ring.py's ring parameters), including comments and
-    formatting — this patches only the specific lines being updated (or
-    appends new ones) rather than re-dumping the whole file, since a full
-    yaml.safe_load -> yaml.dump round-trip silently drops every comment in
-    the file. Strips _gain_sigma_note from noise and drops _meta entirely
-    (both are internal-only fields, never written).
+    psf, particle, background, noise -- or any other caller-defined section),
+    including comments and formatting — this patches only the specific lines
+    being updated (or appends new ones) rather than re-dumping the whole
+    file, since a full yaml.safe_load -> yaml.dump round-trip silently drops
+    every comment in the file. Strips _gain_sigma_note from noise and drops
+    _meta entirely (both are internal-only fields, never written).
 
     Iterates over whatever sections `params` actually contains rather than a
     fixed tuple, so any caller-defined section (not just the four
@@ -434,9 +652,107 @@ def _merge_params_into_config(config_path: Path, params: dict) -> None:
     config_path.write_text("".join(lines))
 
 
+def _run_brightfield_calibration(args):
+    """--brightfield mode: calibrate_brightfield instead of calibrate_from_frames.
+
+    Real footage is optional here (calibrate_brightfield accepts real
+    frames and/or Mie ground-truth frames), unlike the default Gaussian-fit
+    mode where --real-frames is required.
+    """
+    sys.path.insert(0, str(Path(__file__).parent))
+    sys.path.insert(0, str(Path(__file__).parent / ".." / "lammps-scripts"))
+    from lammps_parser import parse_lammps_dump
+
+    from render import _parse_atoms, _parse_box
+    from render_brightfield import generate_mie_ground_truth
+
+    real_frames = []
+    if args.real_frames:
+        real_dir = Path(args.real_frames)
+        if not real_dir.exists():
+            print(
+                f"ERROR: --real-frames directory does not exist: {real_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        real_frames = _load_real_frames(real_dir)
+
+    positions_lj, box = None, None
+    for block in parse_lammps_dump(args.lammps):
+        box = _parse_box(block["box_bounds"])
+        positions_lj, _ = _parse_atoms(block["atom_header"], block["atoms"])
+        break
+    if positions_lj is None or len(positions_lj) == 0:
+        print(f"ERROR: No timesteps/particles found in {args.lammps}", file=sys.stderr)
+        sys.exit(1)
+
+    rng = np.random.default_rng(args.seed)
+    mie_frames = []
+    if args.mie_frames > 0:
+        n_particles = min(args.mie_frames_particles, len(positions_lj))
+        cfg = {
+            "image_height": args.image_height,
+            "image_width": args.image_width,
+            "brightfield": {
+                "mie_max_particles": n_particles,
+                "mie_max_frames": args.mie_frames,
+                "magnification": 1.0,
+            },
+        }
+        mie_frames = generate_mie_ground_truth(
+            cfg,
+            positions_lj,
+            box,
+            n_frames=args.mie_frames,
+            n_particles=n_particles,
+            rng=rng,
+        )
+
+    if not real_frames and not mie_frames:
+        print(
+            "ERROR: --brightfield needs at least one of --real-frames or --mie-frames > 0.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    params = calibrate_brightfield(
+        real_frames,
+        mie_frames,
+        positions_lj,
+        box,
+        image_height=args.image_height,
+        image_width=args.image_width,
+        rng=rng,
+        n_iterations=args.n_iterations,
+    )
+    # _format_yaml_fragment is hardcoded to calibrate_from_frames' fixed
+    # psf/particle/background/noise shape (unlike _merge_params_into_config,
+    # which is genuinely section-agnostic) -- not reusable here. A plain
+    # yaml.dump of the one flat "brightfield" section is sufficient for the
+    # --output-config/stdout display path.
+    fragment = "# Calibrated brightfield parameters (paste into config.yaml under synthetic:)\n"
+    fragment += f"# Best PSD mid-band score: {params['_meta']['psd_mid_score']} "
+    fragment += f"over {params['_meta']['n_iterations']} candidates\n"
+    fragment += yaml.dump({"brightfield": params["brightfield"]}, sort_keys=False)
+    yaml.safe_load(fragment)  # verify valid YAML before output
+
+    if args.output_config:
+        Path(args.output_config).write_text(fragment + "\n")
+        print(f"Calibrated config written to: {args.output_config}")
+    if args.merge_config:
+        _merge_params_into_config(Path(args.merge_config), params)
+        print(f"Calibrated parameters merged into: {args.merge_config}")
+    if not args.output_config and not args.merge_config:
+        print(fragment)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Calibrate PSF and noise from real .tif frames")
-    parser.add_argument("--real-frames", required=True)
+    parser.add_argument(
+        "--real-frames",
+        default=None,
+        help="required unless --brightfield is given with --mie-frames > 0",
+    )
     parser.add_argument("--output-config", default=None)
     parser.add_argument("--merge-config", default=None, metavar="PATH")
     parser.add_argument("--dark-frames", default=None)
@@ -463,11 +779,62 @@ def main():
         "crop_template values (--min-area 100 --max-area 4000 --percentile 95.0), "
         "retuned per dataset",
     )
+    parser.add_argument(
+        "--brightfield",
+        action="store_true",
+        help="calibrate render_strategy: brightfield's synthetic.brightfield section "
+        "(calibrate_brightfield) instead of the default Gaussian-spot PSF fit "
+        "(calibrate_from_frames).",
+    )
+    parser.add_argument(
+        "--lammps",
+        default=None,
+        help="--brightfield only: trajectory to render candidates from",
+    )
+    parser.add_argument(
+        "--mie-frames",
+        type=int,
+        default=0,
+        help="--brightfield only: number of Mie ground-truth frames to generate as an "
+        "additional fitting target (default: 0, real frames only)",
+    )
+    parser.add_argument(
+        "--mie-frames-particles",
+        type=int,
+        default=10,
+        help="--brightfield only: particles per generated Mie ground-truth frame (default: 10)",
+    )
+    parser.add_argument(
+        "--n-iterations",
+        type=int,
+        default=15,
+        help="--brightfield only: number of candidate configs to search (default: 15)",
+    )
+    parser.add_argument("--image-height", type=int, default=256, help="--brightfield only")
+    parser.add_argument("--image-width", type=int, default=256, help="--brightfield only")
+    parser.add_argument("--seed", type=int, default=42, help="--brightfield only")
     args = parser.parse_args()
+
+    if args.brightfield:
+        if not args.lammps:
+            print("ERROR: --brightfield requires --lammps.", file=sys.stderr)
+            sys.exit(1)
+        _run_brightfield_calibration(args)
+        return
+
+    if not args.real_frames:
+        print(
+            "ERROR: --real-frames is required (unless --brightfield is given).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     real_dir = Path(args.real_frames)
     if not real_dir.exists():
-        print(f"ERROR: --real-frames directory does not exist: {real_dir}", file=sys.stderr)
+        print(
+            f"ERROR: --real-frames directory does not exist: {real_dir}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     frames = _load_tifs(real_dir)

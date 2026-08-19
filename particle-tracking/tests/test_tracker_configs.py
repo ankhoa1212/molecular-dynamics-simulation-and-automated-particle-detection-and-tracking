@@ -9,6 +9,7 @@ from tracker_configs import (
     read_lodestar_cutoff,
     write_lodestar_config,
     write_rfdetr_config,
+    write_yolo_config,
 )
 
 
@@ -48,6 +49,12 @@ class TestWriteRfdetrConfig:
         assert parsed["detection"]["threshold"] == 0.3
         assert parsed["tracking"]["search_range"] == 25
         assert parsed["tracking"]["memory"] == 5
+        # 90, the historical/only empirically-grounded value for rf-detr.
+        # Briefly lowered to 6 (U6) as a workaround for trackpy falling back
+        # to this value and getting zeroed out; trackpy has its own
+        # independent entry now instead, so rf-detr's value reverted back.
+        # See trackers-common/trackers_common/tracker_defaults.yaml's
+        # rf-detr entry.
         assert parsed["tracking"]["stub_filter"] == 90
         assert parsed["output"]["save_trajectory_image"] is True
         assert "tiling" in parsed  # no crop given -> tiling spatial config
@@ -252,6 +259,57 @@ class TestWriteLodestarConfig:
         assert parsed["detection"]["threshold"] == 0.1
 
 
+class TestWriteYoloConfig:
+    def test_creates_run_configs_dir_when_absent(self, tmp_path):
+        assert not (tmp_path / "run_configs").exists()
+        write_yolo_config(
+            "sample", "/data/input.tif", str(tmp_path / "out"), None, None, None, tmp_path
+        )
+        assert (tmp_path / "run_configs").is_dir()
+
+    def test_defaults_match_pre_refactor_values(self, tmp_path):
+        output_dir = str(tmp_path / "results" / "yolo" / "vid1")
+        cfg_path = write_yolo_config(
+            "vid1", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert parsed["input"] == "/videos/vid1.tif"
+        assert parsed["model"]["type"] == "yolo"
+        assert parsed["detection"]["threshold"] == 0.25
+        assert parsed["tracking"]["search_range"] == 25
+        assert parsed["tracking"]["stub_filter"] == 6
+        assert "dataset_profile" not in parsed
+
+    def test_dataset_profile_included_when_given(self, tmp_path):
+        # Regression: write_yolo_config previously had no dataset_profile parameter
+        # at all, so model_comparison.py's --dataset-profile passthrough (shared
+        # across all model types) raised TypeError for yolo specs.
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_yolo_config(
+            "vid1",
+            "/videos/vid1.tif",
+            output_dir,
+            None,
+            None,
+            None,
+            tmp_path,
+            dataset_profile="../dataset-profiles/synthetic-default.yaml",
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert parsed["dataset_profile"] == "../dataset-profiles/synthetic-default.yaml"
+
+    def test_dataset_profile_omitted_when_none(self, tmp_path):
+        output_dir = str(tmp_path / "out")
+        cfg_path = write_yolo_config(
+            "vid1", "/videos/vid1.tif", output_dir, None, None, None, tmp_path
+        )
+        parsed = yaml.safe_load(cfg_path.read_text())
+
+        assert "dataset_profile" not in parsed
+
+
 class TestParseCropDims:
     def test_none_returns_none_none(self):
         assert parse_crop_dims(None, self._error_fn()) == (None, None)
@@ -377,7 +435,7 @@ class TestRunTrackingIntegration:
             rfdetr_parsed = yaml.safe_load(rfdetr_cfg.read_text())
             assert rfdetr_parsed["input"] == input_path
             assert rfdetr_parsed["output"]["dir"] == rfdetr_output_dir
-            assert rfdetr_parsed["tracking"]["stub_filter"] == 90
+            assert rfdetr_parsed["tracking"]["stub_filter"] == 90  # see U6 note above
 
             lodestar_output_dir = f"{results_base}/lodestar/{short_name}"
             lodestar_cfg = run_tracking.write_lodestar_config(

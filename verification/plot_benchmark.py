@@ -7,6 +7,7 @@ CLI: uv run python plot_benchmark.py [--output-dir verification_output/]
 """
 import argparse
 import csv
+import statistics
 from pathlib import Path
 
 import matplotlib
@@ -53,10 +54,14 @@ def _aggregate_from_csv(rows_path):
     benchmark.py's own overall-summary calculation, not a mean of per-frame values.
     mean_pos_error_px is tp-weighted across frames (approximates benchmark.py's
     pooled-distance mean; an unweighted mean-of-means would skew toward frames
-    with few matches)."""
+    with few matches). inference_time_ms is a plain (unweighted) mean/median
+    across frames -- it isn't a match-quality metric, so match-count weighting
+    doesn't apply; missing on older CSVs (added after benchmark.py started
+    recording per-frame timing), in which case both come back None."""
     tp = fp = fn = 0
     weighted_err_sum = 0.0
     err_weight = 0
+    inference_times_ms = []
     with open(rows_path) as f:
         for row in csv.DictReader(f):
             frame_tp = int(row["n_tp"])
@@ -66,11 +71,22 @@ def _aggregate_from_csv(rows_path):
             if row["mean_pos_error_px"] != "" and frame_tp > 0:
                 weighted_err_sum += float(row["mean_pos_error_px"]) * frame_tp
                 err_weight += frame_tp
+            if row.get("inference_time_ms", "") != "":
+                inference_times_ms.append(float(row["inference_time_ms"]))
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
     mean_err = weighted_err_sum / err_weight if err_weight else float("nan")
-    return {"precision": prec, "recall": rec, "f1": f1, "mean_pos_error_px": mean_err}
+    mean_inference_ms = statistics.mean(inference_times_ms) if inference_times_ms else None
+    median_inference_ms = statistics.median(inference_times_ms) if inference_times_ms else None
+    return {
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "mean_pos_error_px": mean_err,
+        "mean_inference_ms": mean_inference_ms,
+        "median_inference_ms": median_inference_ms,
+    }
 
 
 def _read_tracking_csv(path):
@@ -137,24 +153,29 @@ def main():
         }
 
     # --- Summary table (stdout) — the table-view twin of the plot below ---
-    header = f"{'model':<10} {'precision':>10} {'recall':>8} {'f1':>8} {'mean_err_px':>12}"
+    header = (
+        f"{'model':<10} {'precision':>10} {'recall':>8} {'f1':>8} {'mean_err_px':>12} "
+        f"{'median_ms/frame':>16}"
+    )
     print(header)
     print("-" * len(header))
     for model_type, data in per_model.items():
         a = data["aggregate"]
+        median_ms = a["median_inference_ms"]
+        median_str = f"{median_ms:.2f}" if median_ms is not None else "n/a"
         print(
             f"{model_type:<10} {a['precision']:>10.4f} {a['recall']:>8.4f} "
-            f"{a['f1']:>8.4f} {a['mean_pos_error_px']:>12.2f}"
+            f"{a['f1']:>8.4f} {a['mean_pos_error_px']:>12.2f} {median_str:>16}"
         )
     if any(data["tracking"] for data in per_model.values()):
         print()
-        print(f"{'model':<10} {'mota':>8} {'idf1':>8} {'fragmentations':>15}")
+        print(f"{'model':<10} {'mota':>8} {'idf1':>8} {'fragmentations':>15} {'id_switches':>12}")
         for model_type, data in per_model.items():
             t = data["tracking"]
             if t:
                 print(
                     f"{model_type:<10} {float(t['mota']):>8.4f} {float(t['idf1']):>8.4f} "
-                    f"{int(t['num_fragmentations']):>15}"
+                    f"{int(t['num_fragmentations']):>15} {int(t['num_switches']):>12}"
                 )
 
     # --- Plot: one panel per metric, one line per model, fixed color order ---
@@ -189,6 +210,89 @@ def main():
     fig.savefig(str(png_path), dpi=100)
     plt.close(fig)
     print(f"\nPlot -> {png_path}")
+
+    # --- Summary bar chart: one bar per model per metric, six run-level
+    # scalars (unlike the per-frame line plots above) that the U6/U7-era
+    # sweeps only ever printed as text -- F1, MOTA, IDF1, fragmentations, ID
+    # switches, and inference time all need to be visually comparable across
+    # all four methods too, not just readable off a table.
+    summary_path = _plot_summary_bars(per_model, out)
+    if summary_path:
+        print(f"Summary plot -> {summary_path}")
+
+
+def _plot_summary_bars(per_model, out):
+    """One bar chart per run-level scalar metric (F1, MOTA, IDF1,
+    fragmentations, ID switches, median inference time), one bar per model,
+    same fixed color order as the per-frame line plots. Tracking-metric
+    panels are skipped entirely if no model has tracking data (no
+    --ground-truth-tracks run); the inference-time panel is skipped if no
+    model's CSV has timing (older run, before benchmark.py recorded it).
+    """
+    models = list(per_model.keys())
+    has_tracking = any(data["tracking"] for data in per_model.values())
+    has_timing = any(
+        data["aggregate"]["median_inference_ms"] is not None for data in per_model.values()
+    )
+
+    panels = [("f1", "F1", lambda d: d["aggregate"]["f1"])]
+    if has_tracking:
+        panels += [
+            ("mota", "MOTA", lambda d: float(d["tracking"]["mota"]) if d["tracking"] else None),
+            ("idf1", "IDF1", lambda d: float(d["tracking"]["idf1"]) if d["tracking"] else None),
+            (
+                "fragmentations",
+                "Fragmentations",
+                lambda d: int(d["tracking"]["num_fragmentations"]) if d["tracking"] else None,
+            ),
+            (
+                "id_switches",
+                "ID switches",
+                lambda d: int(d["tracking"]["num_switches"]) if d["tracking"] else None,
+            ),
+        ]
+    if has_timing:
+        panels.append(
+            (
+                "inference_ms",
+                "Inference time (ms/frame, median)",
+                lambda d: d["aggregate"]["median_inference_ms"],
+            )
+        )
+
+    if len(panels) == 1 and not has_timing:
+        # Nothing beyond plain F1 (already in the line-plot figure above) --
+        # not worth a whole extra figure for one redundant bar chart.
+        return None
+
+    ncols = 3
+    nrows = -(-len(panels) // ncols)  # ceil division
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 3.6 * nrows))
+    axes = axes.flatten() if len(panels) > 1 else [axes]
+
+    for ax, (_, label, getter) in zip(axes, panels):
+        values = [getter(per_model[m]) for m in models]
+        bar_models = [m for m, v in zip(models, values) if v is not None]
+        bar_values = [v for v in values if v is not None]
+        bar_colors = [_color_for(m, models) for m in bar_models]
+        ax.bar(bar_models, bar_values, color=bar_colors)
+        ax.set_title(label, fontsize=10, color=_INK)
+        ax.grid(True, axis="y", color=_GRID_COLOR, linewidth=0.8)
+        ax.set_axisbelow(True)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+        for spine in ("left", "bottom"):
+            ax.spines[spine].set_color(_AXIS_COLOR)
+        ax.tick_params(colors=_MUTED, labelsize=8)
+
+    for ax in axes[len(panels) :]:
+        ax.axis("off")
+
+    fig.tight_layout()
+    summary_path = out / "benchmark_summary.png"
+    fig.savefig(str(summary_path), dpi=100)
+    plt.close(fig)
+    return summary_path
 
 
 if __name__ == "__main__":

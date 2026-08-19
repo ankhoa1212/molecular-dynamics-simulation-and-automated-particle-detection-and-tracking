@@ -52,7 +52,7 @@ lammps-scripts/simulation_results/*.png
 particle-tracking/evaluation/results/
 
 # cached crop-template library (regeneratable via
-# render_crop_templates.build_template_library() / fit_procedural_ring.py)
+# render_crop_templates.build_template_library())
 verification/crop_templates.npz
 
 # generated lint reports

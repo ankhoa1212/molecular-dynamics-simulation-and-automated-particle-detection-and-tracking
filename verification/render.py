@@ -18,8 +18,18 @@ Assumptions:
 
 Render strategies (set via synthetic.render_strategy in config.yaml):
     procedural  — flat 2D Gaussian PSF (default; unchanged from original)
-    deeptrack   — physics-accurate scalar-diffraction PSF via DeepTrack2
+    deeptrack   — empirical crop-template compositing (crop_source: real);
+                  no deeptrack dependency despite the module's historical name
     randomized  — procedural with per-frame stochastic parameter sampling
+    brightfield — coherent whole-frame optical-field solve via DeepTrack2's
+                  Brightfield optics; particles placed at real trajectory
+                  positions, small-batch/reference-quality (see
+                  render_brightfield.py)
+    brightfield_fast — same coherent optics, reimplemented directly in
+                  numpy/scipy (no deeptrack dependency) so cost is
+                  independent of particle count; validated against
+                  brightfield as a fast, production-density-capable
+                  equivalent (see render_brightfield_fast.py)
 """
 
 import argparse
@@ -123,7 +133,12 @@ def _gaussian_ring_extent(sigma, ring_radius_factor=1.0, ring_width_factor=0.3, 
 
 
 def _disk_rim_profile(
-    r_grid, disk_radius_px, blur_sigma_px, rim_depth=0.0, rim_width_px=1.0, rim_offset_px=0.0
+    r_grid,
+    disk_radius_px,
+    blur_sigma_px,
+    rim_depth=0.0,
+    rim_width_px=1.0,
+    rim_offset_px=0.0,
 ):
     """Flat-top disk (smoothed step) with an optional dark rim near its edge,
     peak-normalized (may dip below 0 near the rim edge; caller clips before
@@ -407,15 +422,20 @@ def _dispatch_render(
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
-        strategy: 'procedural' | 'deeptrack' | 'randomized'
-        state: optional dict carrying cross-frame smoothing state for the
-            'randomized' strategy (see render_randomized.render_frame_randomized).
-            Passed through only for that branch; 'procedural' and 'deeptrack'
-            ignore it entirely — their signatures/calls are unchanged.
+        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'brightfield' | 'brightfield_fast'
+        state: optional dict carrying cross-frame state. For 'randomized',
+            smoothing state (see render_randomized.render_frame_randomized).
+            For 'brightfield'/'brightfield_fast', a per-atom_id cache of
+            sampled radius/refractive_index/z so each physical particle's
+            properties stay constant across frames instead of flickering
+            (see render_brightfield._sample_particle_properties). Ignored
+            entirely by 'procedural'/'deeptrack' — their signatures/calls
+            are unchanged.
         atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
-            Passed through only to the 'procedural' branch's render_frame,
-            for particle_render_profiles lookup. 'deeptrack'/'randomized'
-            never receive it.
+            Passed through to the 'procedural' branch's render_frame (for
+            particle_render_profiles lookup) and to 'brightfield'/
+            'brightfield_fast' (for the per-particle state cache above).
+            'deeptrack'/'randomized' never receive it.
         profile_map: optional dict of atom_id -> profile name from
             _assign_particle_profiles. Passed through only to the
             'procedural' branch; 'deeptrack'/'randomized' never receive it.
@@ -430,8 +450,32 @@ def _dispatch_render(
             return render_frame_deeptrack(positions_lj, box, cfg, rng)
         except ImportError:
             raise ImportError(
-                "DeepTrack2 rendering requires 'deeptrack==2.0.1'. "
+                "render_strategy: deeptrack (crop_source: real) requires scipy. "
+                "Run 'uv add scipy' inside verification/. "
+            )
+    elif strategy == "brightfield":
+        try:
+            from render_brightfield import render_frame_brightfield
+
+            return render_frame_brightfield(
+                positions_lj, box, cfg, rng, atom_ids=atom_ids, state=state
+            )
+        except ImportError:
+            raise ImportError(
+                "Brightfield rendering requires 'deeptrack==2.0.1'. "
                 "Run 'uv add deeptrack==2.0.1' inside verification/. "
+            )
+    elif strategy == "brightfield_fast":
+        try:
+            from render_brightfield_fast import render_frame_brightfield_fast
+
+            return render_frame_brightfield_fast(
+                positions_lj, box, cfg, rng, atom_ids=atom_ids, state=state
+            )
+        except ImportError:
+            raise ImportError(
+                "brightfield_fast rendering requires render_brightfield_fast.py. "
+                "Ensure the file exists in the verification/ directory."
             )
     elif strategy == "randomized":
         try:
@@ -502,7 +546,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for reproducibility")
     parser.add_argument("--video", action="store_true", help="Also encode frames into preview.mp4")
     parser.add_argument(
-        "--fps", type=float, default=10.0, help="Frame rate for --video output (default: 10)"
+        "--fps",
+        type=float,
+        default=10.0,
+        help="Frame rate for --video output (default: 10)",
     )
     args = parser.parse_args()
 
@@ -531,15 +578,19 @@ def main():
         stretch_cfg["background_fraction"] = 0.0
 
     rng = np.random.default_rng(args.seed)
-    # Cross-frame smoothing state for render_strategy: randomized (R8) — a
-    # small dict owned by this run, created once alongside rng, and threaded
-    # through _dispatch_render the same way rng already is. Deliberately not
-    # stuffed into cfg: render_frame_randomized already makes a private
-    # dict(cfg) copy per call to avoid mutating the caller's config, and
-    # carrying runtime state through cfg would break that boundary (see
-    # plan's Key Decisions, "cfg dict mutation is rejected"). Other
-    # strategies never see this — it stays None for them.
-    state = {} if strategy == "randomized" else None
+    # Cross-frame state — a small dict owned by this run, created once
+    # alongside rng, and threaded through _dispatch_render the same way rng
+    # already is. Deliberately not stuffed into cfg: render_frame_randomized
+    # already makes a private dict(cfg) copy per call to avoid mutating the
+    # caller's config, and carrying runtime state through cfg would break
+    # that boundary (see plan's Key Decisions, "cfg dict mutation is
+    # rejected"). For 'randomized' this holds cross-frame smoothing state
+    # (R8); for 'brightfield'/'brightfield_fast' it holds the per-atom_id
+    # particle-property cache that keeps each particle's rendered
+    # appearance stable across frames instead of flickering (see
+    # render_brightfield._sample_particle_properties). Other strategies
+    # never see this — it stays None for them.
+    state = {} if strategy in ("randomized", "brightfield", "brightfield_fast") else None
     profile_map = None
 
     ground_truth = []
@@ -649,7 +700,12 @@ def main():
         all_frame_ids.append(atom_ids)
         for atom_id, (px, py) in zip(atom_ids, px_pos):
             track_rows.append(
-                {"frame": i, "particle_id": int(atom_id), "x": float(px), "y": float(py)}
+                {
+                    "frame": i,
+                    "particle_id": int(atom_id),
+                    "x": float(px),
+                    "y": float(py),
+                }
             )
 
         if i == 0 or (i + 1) % 10 == 0:
