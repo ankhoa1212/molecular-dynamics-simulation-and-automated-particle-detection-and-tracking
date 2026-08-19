@@ -1583,10 +1583,20 @@ class TestMainTrackerDispatch:
 
             return (out_dir / "verification_output" / "accuracy_metrics_trackpy.csv").read_text()
 
+        def _strip_inference_time_column(csv_text):
+            # inference_time_ms is real per-frame wall-clock timing (added
+            # independently of --tracker) -- it legitimately varies between
+            # two separate runs and isn't part of what this test guards.
+            rows = [row.split(",") for row in csv_text.strip().splitlines()]
+            idx = rows[0].index("inference_time_ms")
+            return [row[:idx] + row[idx + 1 :] for row in rows]
+
         trackpy_output = _run("trackpy", "run_trackpy")
         bytetrack_output = _run("bytetrack", "run_bytetrack")
 
-        assert trackpy_output == bytetrack_output
+        assert _strip_inference_time_column(trackpy_output) == _strip_inference_time_column(
+            bytetrack_output
+        )
 
 
 class TestLodestarBoxSizeDerivation:
