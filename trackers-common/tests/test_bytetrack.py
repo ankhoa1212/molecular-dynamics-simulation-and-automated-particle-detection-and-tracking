@@ -76,9 +76,12 @@ class TestRunBytetrack:
         )
 
         confirmed = [i for i, r in enumerate(results) if len(r) > 0]
-        # Appears (unconfirmed) at frame 1, needs 3 more consecutive matched
-        # frames (2, 3, 4) before it is confirmed with a tracker_id.
-        assert confirmed == [4, 5, 6]
+        # First appears at frame 1 (unconfirmed). minimum_consecutive_frames=3
+        # counts that first match as consecutive-match #1, not #0 -- confirmed
+        # supervision's actual semantics empirically: matches at frames 1, 2, 3
+        # are consecutive-match #1, #2, #3, so the track is confirmed starting
+        # frame 3, not frame 4.
+        assert confirmed == [3, 4, 5, 6]
 
     def test_below_activation_threshold_does_not_start_track(self):
         frames = [_present(conf=0.1) for _ in range(3)]
