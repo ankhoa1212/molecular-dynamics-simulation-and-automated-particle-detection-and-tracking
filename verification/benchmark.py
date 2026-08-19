@@ -9,26 +9,46 @@ known particle positions, and reports per-frame precision/recall/F1 and mean
 position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
---ground-truth-tracks is supplied (CSV from render.py U1).
+--ground-truth-tracks is supplied (CSV from render.py U1), for either tracker
+selected via --tracker {trackpy,bytetrack} (default trackpy) -- orthogonal to
+--model-type, the detector. This supersedes an earlier plan's KTD that left
+"bytetrack linker parity" out of scope; that deferral was correct when the
+goal was closing a dependency gap for trackpy's own metrics, but ByteTrack
+evaluation is this module's own goal now
+(docs/plans/2026-08-18-001-feat-bytetrack-tracking-support-plan.md).
 
-Tracking metrics link detections with trackers_common.linking.link_and_filter_tracks
+--tracker trackpy links detections with trackers_common.linking.link_and_filter_tracks
 -- the same trackpy-linking implementation particle-tracking/track.py's production
 tracker uses -- resolving search_range/memory/stub_filter from trackers_common's
 canonical per-model tuning (the same values particle-tracking/tracker_configs.py
 generates for real per-model production comparison runs), not a generic value
-shared across all detectors. verification/config.yaml's tracking: section can still
-override these per-model defaults when set explicitly. --model-type trackpy (a
-classical detector with no particle-tracking/track.py model_type of its own) falls
-back to the rf-detr tuning as a documented default, not a claim of measured parity.
-bytetrack linker parity is out of scope -- only the trackpy-linking path, which is
-production's configured default tracker, is unified.
+shared across all detectors. --tracker bytetrack tracks detections online,
+per-frame, via trackers_common.bytetrack.run_bytetrack (the same implementation
+particle-tracking/track.py's own --tracker bytetrack uses), resolving
+lost_track_buffer/minimum_consecutive_frames/track_activation_threshold from
+trackers_common's canonical defaults through the same mechanism. Both trackers'
+canonical values still honor verification/config.yaml's tracking: section as an
+override when set explicitly. --model-type trackpy (a classical detector with no
+particle-tracking/track.py model_type of its own) falls back to the rf-detr
+tuning for both trackers, as a documented default, not a claim of measured
+parity.
+
+Two fairness caveats matter for reading plot_benchmark.py's tracking-metrics bar
+panel: (1) trackpy's tuning is a genuinely measured per-model split (see
+trackers_common/tracker_defaults.yaml's comments); ByteTrack's tuning is a
+single unmeasured value carried forward identically across every model type
+(same file) -- a trackpy-vs-bytetrack comparison today is not yet
+apples-to-apples on tuning quality, only on what each tracker does with its
+current defaults. (2) track_activation_threshold has no effect on the
+`trackpy` detector specifically, since detect_trackpy's synthesized
+confidence (always 1.0) exceeds any plausible threshold value.
 
 Usage:
     uv run python benchmark.py \\
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
-        [--model-type rf-detr|lodestar|yolo|trackpy]
+        [--model-type rf-detr|lodestar|yolo|trackpy] [--tracker trackpy|bytetrack]
 """
 
 import os

@@ -178,12 +178,17 @@ uv run python benchmark.py \
     --ground-truth-tracks verification_output/ground_truth_tracks.csv
 ```
 
-Outputs (named per `--model-type` so a run of one model doesn't overwrite the other's results):
+Outputs (named per `--model-type` and `--tracker` so a run of one combination doesn't overwrite another's results):
 - `verification_output/accuracy_metrics_{model_type}.csv` — per-frame precision/recall/F1/inference_time_ms, plus a printed mean/median inference-time summary line
-- `verification_output/tracking_metrics_{model_type}.csv` — MOTA, IDF1, fragmentation (when `--ground-truth-tracks` is provided)
+- `verification_output/tracking_metrics_{model_type}_{tracker}.csv` — MOTA, IDF1, fragmentation for `--tracker trackpy|bytetrack` (default `trackpy`; when `--ground-truth-tracks` is provided)
 - `verification_output/tracking_visualization_{model_type}.mp4` — detection boxes and trajectory traces overlaid on every frame (when `--save-video` is passed)
 
-**Note:** The tracking metrics use a standalone `trackpy` linking pass configured via `tracking:` in `config.yaml`. This is NOT the production `particle-tracking/track.py` linker. Run a separate comparison against production tracker output before using MOTA/IDF1 for model selection decisions.
+**Note:** Tracking metrics link detections with the same `trackers_common` implementation
+`particle-tracking/track.py`'s production tracker uses — `--tracker trackpy` (default) shares its
+trackpy-linking implementation and per-model tuning; `--tracker bytetrack` shares its ByteTrack
+implementation, though its tuning is currently a single unmeasured default rather than a measured
+per-model split (see `trackers-common/README.md`). Both still honor `config.yaml`'s `tracking:`
+overrides.
 
 **Note:** MOTA/IDF1 are skipped (with a printed warning, not a crash) above a safe detection density or distinct-track-id count — building motmetrics' accumulator at this repo's default trajectory density (~1446 particles/frame) can grow memory into the double-digit-GB range even when the linking step itself succeeds. This is independent of `--save-video`'s own trajectory overlay, which uses a separate, always-attempted linking call and is unaffected by this guard (see `_run_tracking_metrics` in `benchmark.py`, and the multiprocessing/CUDA notes in `AGENTS.md`).
 
@@ -289,7 +294,7 @@ verification_output/
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
 ├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1/inference_time_ms (from benchmark.py)
-├── tracking_metrics_{model_type}.csv   # MOTA/IDF1/fragmentation (from benchmark.py)
+├── tracking_metrics_{model_type}_{tracker}.csv   # MOTA/IDF1/fragmentation, tracker=trackpy|bytetrack (from benchmark.py)
 ├── tracking_visualization_{model_type}.mp4  # detection boxes + trajectory traces (from benchmark.py --save-video)
 ├── benchmark_comparison.png    # per-frame metrics across model types (from plot_benchmark.py)
 ├── benchmark_summary.png       # run-level bar chart across model types (from plot_benchmark.py)
