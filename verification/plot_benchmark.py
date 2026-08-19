@@ -68,6 +68,20 @@ def _tracker_sort_key(tracker):
         return (1, tracker)
 
 
+def _hatch_index_for(tracker):
+    """Canonical hatch/alpha index for a tracker name, fixed by _TRACKER_ORDER
+    position -- NOT by enumerate() position within whatever subset of
+    trackers happens to be present for one model or globally. A model with
+    only 'bytetrack' present must still use bytetrack's fixed index (1), the
+    same index _add_tracker_legend uses for it, or the bar's styling would
+    silently mismatch what the legend claims (found during review:
+    correctness)."""
+    try:
+        return _TRACKER_ORDER.index(tracker)
+    except ValueError:
+        return len(_TRACKER_ORDER)
+
+
 def _read_accuracy_csv(path):
     rows = []
     with open(path) as f:
@@ -189,6 +203,7 @@ def _plot_tracking_bars(ax, model_order, per_tracking, metric_key, label):
             offset = (idx - (n - 1) / 2) * (bar_width + gap)
             raw = per_tracking[(model_type, tracker)][metric_key]
             value = int(raw) if metric_key == "num_fragmentations" else float(raw)
+            hatch_idx = _hatch_index_for(tracker)
             ax.bar(
                 gi + offset,
                 value,
@@ -196,8 +211,8 @@ def _plot_tracking_bars(ax, model_order, per_tracking, metric_key, label):
                 color=color,
                 edgecolor=_INK,
                 linewidth=0.6,
-                hatch=_HATCHES[idx % len(_HATCHES)],
-                alpha=1.0 if idx == 0 else 0.7,
+                hatch=_HATCHES[hatch_idx % len(_HATCHES)],
+                alpha=1.0 if hatch_idx == 0 else 0.7,
             )
 
     ax.set_xticks(range(len(groups)))
@@ -238,10 +253,10 @@ def _add_tracker_legend(fig, per_tracking):
         Patch(
             facecolor="white",
             edgecolor=_INK,
-            hatch=_HATCHES[i % len(_HATCHES)],
+            hatch=_HATCHES[_hatch_index_for(tracker) % len(_HATCHES)],
             label=tracker,
         )
-        for i, tracker in enumerate(trackers_seen)
+        for tracker in trackers_seen
     ]
     fig.legend(
         handles=tracker_handles,

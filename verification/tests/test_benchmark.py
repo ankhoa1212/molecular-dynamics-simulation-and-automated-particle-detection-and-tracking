@@ -454,6 +454,39 @@ class TestRunBytetrackMetrics:
         assert result["psf_sigma_px"] == pytest.approx(9.25)
         assert result["match_threshold_px"] == pytest.approx(0.5 * 9.25)
 
+    def test_high_raw_density_skips_before_running_bytetrack(self, tmp_path):
+        """Density pre-check must fire on RAW per-frame box count, before
+        run_bytetrack is ever called -- not only after tracking completes,
+        which would waste the full timeout window on input already known to
+        exceed the safe threshold (found during review: performance)."""
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 100.0, "y": 100.0}])
+        # 401 detections in a single frame -- over the 400/frame threshold.
+        centers = [(100.0 + i, 100.0) for i in range(401)]
+        all_boxes = _boxes_from_centers({0: centers})
+        cfg = _make_cfg()
+
+        with mock.patch("trackers_common.bytetrack.run_bytetrack") as mock_run_bytetrack:
+            result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+
+        assert result is None
+        mock_run_bytetrack.assert_not_called()
+
+    def test_memory_error_from_run_bytetrack_degrades_to_none(self, tmp_path):
+        """A MemoryError from the in-process, unisolated ByteTrack call must
+        degrade to a warning + None, the same as a timeout -- not propagate
+        and crash the whole benchmark.py process (found during review:
+        adversarial, reliability)."""
+        gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        cfg = _make_cfg()
+
+        with mock.patch("trackers_common.bytetrack.run_bytetrack", side_effect=MemoryError):
+            result = benchmark._run_bytetrack_metrics(all_boxes, str(gt_path), cfg, "rf-detr")
+
+        assert result is None
+
 
 class TestBytetrackTuningDefaults:
     """R5/R9: ByteTrack's lost_track_buffer/minimum_consecutive_frames/

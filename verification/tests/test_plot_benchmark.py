@@ -135,6 +135,37 @@ class TestTwoTrackersPresent:
         plt.close(fig)
 
 
+class TestHatchIndexIsGlobalNotPerGroup:
+    """A model group with only 'bytetrack' present must still use
+    bytetrack's fixed global hatch/alpha, not the local enumerate()
+    position within that group's own (shorter) tracker subset -- otherwise
+    its bar would be styled identically to a 'trackpy' bar elsewhere on the
+    same figure while the legend claims the two hatches mean different
+    things (found during review: correctness)."""
+
+    def test_hatch_index_fixed_by_tracker_order_not_local_position(self):
+        assert pb._hatch_index_for("trackpy") == 0
+        assert pb._hatch_index_for("bytetrack") == 1
+
+    def test_bytetrack_only_group_uses_bytetrack_hatch_not_index_zero(self):
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots()
+        # rf-detr has ONLY bytetrack present (no trackpy) -- its bar's
+        # local enumerate() index would be 0, but bytetrack's fixed global
+        # hatch index is 1.
+        per_tracking = {("rf-detr", "bytetrack"): {"mota": "0.4"}}
+        pb._plot_tracking_bars(ax, ["rf-detr"], per_tracking, "mota", "MOTA")
+
+        assert len(ax.patches) == 1
+        assert ax.patches[0].get_hatch() == pb._HATCHES[pb._hatch_index_for("bytetrack")]
+        assert ax.patches[0].get_hatch() != pb._HATCHES[pb._hatch_index_for("trackpy")]
+        plt.close(fig)
+
+
 class TestSingleTrackerPresent:
     def test_single_tracker_csv_produces_one_bar_no_crash(self, tmp_path, capsys):
         _write_accuracy_csv(tmp_path, "rf-detr")

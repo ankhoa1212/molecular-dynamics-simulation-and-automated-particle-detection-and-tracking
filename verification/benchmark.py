@@ -303,13 +303,17 @@ def resolve_tile_size(explicit_value, profile, frame_width, frame_height, hardco
 
 
 # ---------------------------------------------------------------------------
-# trackpy detection — NOT re-exported from detectors_common. Unlike RF-DETR
-# and LodeSTAR, trackpy has no CUDA/compiled-extension dependency and is
-# already a native dependency of verification/pyproject.toml (used today for
-# the tracking-metrics pass below), so it needs no cross-venv site-packages
-# injection and no re-exec (see _MODEL_VENV_DIRS["trackpy"] = None above).
-# It has exactly one consumer (this file), so routing it through the shared
-# package would add indirection with no sharing benefit.
+# trackpy detection (tp.locate itself) — NOT re-exported from
+# detectors_common. Unlike RF-DETR and LodeSTAR, trackpy has no
+# CUDA/compiled-extension dependency and is already a native dependency of
+# verification/pyproject.toml (used today for the tracking-metrics pass
+# below), so it needs no cross-venv site-packages injection and no re-exec
+# (see _MODEL_VENV_DIRS["trackpy"] = None above). tp.locate() itself has
+# exactly one consumer (this file), so routing it through the shared package
+# would add indirection with no sharing benefit -- but its point-to-box
+# synthesis step (points_to_xyxy, below) DOES have a second consumer
+# (detect_lodestar) and lives in detectors_common for that reason; see
+# detectors_common/point_to_box.py's own docstring.
 # ---------------------------------------------------------------------------
 
 
@@ -1086,7 +1090,13 @@ def _run_bytetrack_with_timeout(
             minimum_consecutive_frames,
             track_activation_threshold,
         )
-    except TimeoutError:
+    except (TimeoutError, MemoryError):
+        # MemoryError alongside TimeoutError: this call runs in-process with
+        # no subprocess/rlimit isolation (unlike trackpy's
+        # _link_df_with_fallback), so a real memory blowup at high density
+        # must degrade the same way a timeout does -- crashing the whole
+        # benchmark.py process on one detector's tracking metrics would be
+        # worse than skipping just that metric with a warning.
         return None
     finally:
         signal.alarm(0)
@@ -1210,6 +1220,26 @@ def _run_bytetrack_metrics(
     # loop already has an `if frame_idx not in gt_by_frame: continue` guard
     # that can produce exactly this shape.
     present_frame_indices = sorted(all_boxes_by_frame.keys())
+
+    # Pre-check raw detection density BEFORE running ByteTrack (which can take
+    # up to _run_bytetrack_with_timeout's full timeout window) rather than
+    # only after -- at this repo's default dataset density (~1446/frame,
+    # already ~3.6x over this threshold), every default --tracker bytetrack
+    # run would otherwise pay for a full, unverified-cost tracking pass only
+    # to discard the result via the identical check below. Raw density alone
+    # (not n_distinct_tracks, which only exists post-tracking) is available
+    # this early -- the post-tracking check further down still catches
+    # fragmentation the raw count can't predict.
+    raw_avg_det_per_frame = sum(
+        len(all_boxes_by_frame[fi]["xyxy"]) for fi in present_frame_indices
+    ) / max(1, len(present_frame_indices))
+    if raw_avg_det_per_frame > 400:
+        print(
+            f"Warning: raw detection density ({raw_avg_det_per_frame:.0f}/frame) is too high "
+            "to safely run ByteTrack tracking in-process. Skipping tracking metrics."
+        )
+        return None
+
     full_frame_range = list(range(present_frame_indices[0], present_frame_indices[-1] + 1))
     detections_list = []
     for frame_idx in full_frame_range:
@@ -1235,8 +1265,8 @@ def _run_bytetrack_metrics(
     )
     if tracked is None:
         print(
-            "Warning: ByteTrack tracking did not finish within the timeout window -- "
-            "skipping tracking metrics."
+            "Warning: ByteTrack tracking did not finish within the timeout window or ran "
+            "out of memory -- skipping tracking metrics."
         )
         return None
 
