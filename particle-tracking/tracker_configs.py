@@ -216,7 +216,7 @@ def write_yolo_config(
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    tracking = {"tracker": "trackpy", **load_tracking_config("yolo", {}, DEFAULT_KEY_PATH_MAP)}
+    tracking = {"tracker": "trackpy", **load_tracking_config("yolo", {}, TRACKPY_KEY_PATH_MAP)}
     if bridge_gap is not None:
         tracking["bridge_gap"] = bridge_gap
 
