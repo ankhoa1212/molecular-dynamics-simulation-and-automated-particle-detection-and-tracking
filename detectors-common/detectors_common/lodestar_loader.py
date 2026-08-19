@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from detectors_common.point_to_box import points_to_xyxy
 from detectors_common.rfdetr_loader import VenvNotSyncedError
 
 _LODESTAR_EVICTION_MODULES = ("torch", "torchvision", "supervision", "deeplay")
@@ -100,15 +101,16 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
     # a near-constant value across detections, not a per-particle size signal. box_size
     # is therefore the sole source of box radius, regardless of how many channels the
     # model returns — see docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
-    xyxy, confidences = [], []
+    centers, confidences = [], []
     for det in detections_raw:
         y, x = det[0], det[1]
-        r = box_size / 2
-        xyxy.append([x - r, y - r, x + r, y + r])
+        centers.append((x, y))
         confidences.append(1.0)  # all detections passed the same cutoff; ordering is secondary
 
+    xyxy = points_to_xyxy(centers, box_size)
+
     result = sv.Detections(
-        xyxy=np.array(xyxy, dtype=np.float32),
+        xyxy=xyxy,
         confidence=np.array(confidences, dtype=np.float32),
         class_id=np.zeros(len(xyxy), dtype=int),
     )

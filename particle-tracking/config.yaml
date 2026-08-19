@@ -95,14 +95,23 @@ tracking:
   # Trackpy: spatial search radius in pixels for gap-closing (default: 2 × search_range)
   bridge_radius: null
 
-  # ByteTrack: frames to keep a lost track alive before discarding it
-  lost_track_buffer: 60
+  # ByteTrack: frames to keep a lost track alive before discarding it. Swept
+  # directly against this repo's real dense dataset (~1446 particles/frame,
+  # ~11px spacing) -- 30 beat 60/120 (MOTA/IDF1 both improved, e.g. rf-detr
+  # 0.397->0.400/0.373->0.389) by reducing identity confusion: holding a lost
+  # track alive too long in a crowded scene increases the odds of
+  # re-associating it with the wrong nearby particle. See
+  # trackers-common/trackers_common/tracker_defaults.yaml for the full sweep.
+  lost_track_buffer: 30
 
   # ByteTrack: consecutive frames a detection must appear before a track is confirmed
   minimum_consecutive_frames: 1
 
-  # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0)
-  track_activation_threshold: 0.1
+  # ByteTrack: minimum detection confidence to activate a new track (0.0–1.0).
+  # Swept alongside lost_track_buffer above -- 0.3 beat 0.1 by filtering out
+  # lower-confidence, noisier detections that would otherwise start spurious
+  # tracks in this dense scene.
+  track_activation_threshold: 0.3
 
 # Output:
 output:

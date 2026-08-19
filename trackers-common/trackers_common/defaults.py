@@ -35,6 +35,21 @@ DEFAULT_KEY_PATH_MAP = {
     "adaptive_stop": "tracking.adaptive_stop",
     "adaptive_step": "tracking.adaptive_step",
     "link_strategy": "tracking.link_strategy",
+    "lost_track_buffer": "tracking.lost_track_buffer",
+    "minimum_consecutive_frames": "tracking.minimum_consecutive_frames",
+    "track_activation_threshold": "tracking.track_activation_threshold",
+}
+
+# Trackpy-only subset of DEFAULT_KEY_PATH_MAP -- for callers that generate or
+# resolve a trackpy-specific config tree (e.g. particle-tracking/tracker_configs.py's
+# trackpy-only writers) and must not emit ByteTrack's three keys into a config
+# that hardcodes `tracker: "trackpy"`. verification/benchmark.py's two
+# _run_*_metrics functions each pick their own relevant keys back out of
+# DEFAULT_KEY_PATH_MAP's full result and are unaffected by this subset.
+TRACKPY_KEY_PATH_MAP = {
+    k: v
+    for k, v in DEFAULT_KEY_PATH_MAP.items()
+    if k not in ("lost_track_buffer", "minimum_consecutive_frames", "track_activation_threshold")
 }
 
 

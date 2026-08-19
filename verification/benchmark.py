@@ -9,26 +9,46 @@ known particle positions, and reports per-frame precision/recall/F1 and mean
 position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
---ground-truth-tracks is supplied (CSV from render.py U1).
+--ground-truth-tracks is supplied (CSV from render.py U1), for either tracker
+selected via --tracker {trackpy,bytetrack} (default trackpy) -- orthogonal to
+--model-type, the detector. This supersedes an earlier plan's KTD that left
+"bytetrack linker parity" out of scope; that deferral was correct when the
+goal was closing a dependency gap for trackpy's own metrics, but ByteTrack
+evaluation is this module's own goal now
+(docs/plans/2026-08-18-001-feat-bytetrack-tracking-support-plan.md).
 
-Tracking metrics link detections with trackers_common.linking.link_and_filter_tracks
+--tracker trackpy links detections with trackers_common.linking.link_and_filter_tracks
 -- the same trackpy-linking implementation particle-tracking/track.py's production
 tracker uses -- resolving search_range/memory/stub_filter from trackers_common's
 canonical per-model tuning (the same values particle-tracking/tracker_configs.py
 generates for real per-model production comparison runs), not a generic value
-shared across all detectors. verification/config.yaml's tracking: section can still
-override these per-model defaults when set explicitly. --model-type trackpy (a
-classical detector with no particle-tracking/track.py model_type of its own) falls
-back to the rf-detr tuning as a documented default, not a claim of measured parity.
-bytetrack linker parity is out of scope -- only the trackpy-linking path, which is
-production's configured default tracker, is unified.
+shared across all detectors. --tracker bytetrack tracks detections online,
+per-frame, via trackers_common.bytetrack.run_bytetrack (the same implementation
+particle-tracking/track.py's own --tracker bytetrack uses), resolving
+lost_track_buffer/minimum_consecutive_frames/track_activation_threshold from
+trackers_common's canonical defaults through the same mechanism. Both trackers'
+canonical values still honor verification/config.yaml's tracking: section as an
+override when set explicitly. --model-type trackpy (a classical detector with no
+particle-tracking/track.py model_type of its own) falls back to the rf-detr
+tuning for both trackers, as a documented default, not a claim of measured
+parity.
+
+Two fairness caveats matter for reading plot_benchmark.py's tracking-metrics bar
+panel: (1) trackpy's tuning is a genuinely measured per-model split (see
+trackers_common/tracker_defaults.yaml's comments); ByteTrack's tuning is a
+single unmeasured value carried forward identically across every model type
+(same file) -- a trackpy-vs-bytetrack comparison today is not yet
+apples-to-apples on tuning quality, only on what each tracker does with its
+current defaults. (2) track_activation_threshold has no effect on the
+`trackpy` detector specifically, since detect_trackpy's synthesized
+confidence (always 1.0) exceeds any plausible threshold value.
 
 Usage:
     uv run python benchmark.py \\
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
-        [--model-type rf-detr|lodestar|yolo|trackpy]
+        [--model-type rf-detr|lodestar|yolo|trackpy] [--tracker trackpy|bytetrack]
 """
 
 import os
@@ -283,21 +303,27 @@ def resolve_tile_size(explicit_value, profile, frame_width, frame_height, hardco
 
 
 # ---------------------------------------------------------------------------
-# trackpy detection — NOT re-exported from detectors_common. Unlike RF-DETR
-# and LodeSTAR, trackpy has no CUDA/compiled-extension dependency and is
-# already a native dependency of verification/pyproject.toml (used today for
-# the tracking-metrics pass below), so it needs no cross-venv site-packages
-# injection and no re-exec (see _MODEL_VENV_DIRS["trackpy"] = None above).
-# It has exactly one consumer (this file), so routing it through the shared
-# package would add indirection with no sharing benefit.
+# trackpy detection (tp.locate itself) — NOT re-exported from
+# detectors_common. Unlike RF-DETR and LodeSTAR, trackpy has no
+# CUDA/compiled-extension dependency and is already a native dependency of
+# verification/pyproject.toml (used today for the tracking-metrics pass
+# below), so it needs no cross-venv site-packages injection and no re-exec
+# (see _MODEL_VENV_DIRS["trackpy"] = None above). tp.locate() itself has
+# exactly one consumer (this file), so routing it through the shared package
+# would add indirection with no sharing benefit -- but its point-to-box
+# synthesis step (points_to_xyxy, below) DOES have a second consumer
+# (detect_lodestar) and lives in detectors_common for that reason; see
+# detectors_common/point_to_box.py's own docstring.
 # ---------------------------------------------------------------------------
 
 
 def detect_trackpy(frame, diameter, minmass=None, separation=None):
     """Locate particles with trackpy's classical brightness-thresholding
-    algorithm and return an sv.Detections object shaped like the other two
-    detectors' output (xyxy boxes, confidence left unset — see plan KTDs on
-    why trackpy's `mass` isn't surfaced as a confidence score)."""
+    algorithm and return an sv.Detections object shaped like the other
+    detectors' output (xyxy boxes, confidence a constant 1.0 -- see plan KTDs
+    on why trackpy's `mass` isn't surfaced as a confidence score instead; the
+    constant is needed so ByteTrack, which requires confidence to be set, can
+    run against trackpy's detections)."""
     import trackpy as tp
     import supervision as sv
 
@@ -307,11 +333,15 @@ def detect_trackpy(frame, diameter, minmass=None, separation=None):
     if features.empty:
         return sv.Detections.empty()
 
+    from detectors_common.point_to_box import points_to_xyxy
+
     xs = features["x"].to_numpy()
     ys = features["y"].to_numpy()
-    half = diameter / 2.0
-    xyxy = np.stack([xs - half, ys - half, xs + half, ys + half], axis=1).astype(np.float32)
-    return sv.Detections(xyxy=xyxy, class_id=np.zeros(len(xyxy), dtype=int))
+    centers = np.stack([xs, ys], axis=1)
+    xyxy = points_to_xyxy(centers, diameter)
+    return sv.Detections(
+        xyxy=xyxy, class_id=np.zeros(len(xyxy), dtype=int), confidence=np.ones(len(xyxy))
+    )
 
 
 def _load_lodestar_defaults(cfg):
@@ -352,6 +382,28 @@ def _resolve_psf_sigma_px(cfg):
     if psf_sigma_px is None:
         psf_sigma_px = _cfg_get(cfg, "synthetic", "psf", "sigma_px", default=5.0)
     return psf_sigma_px
+
+
+def _resolve_match_distance(cfg, full_cfg):
+    """Accuracy metrics' (precision/recall/F1) match_distance, derived from
+    the SAME tracking.matching_threshold_radii x psf_sigma_px formula the
+    tracking metrics (MOTA/IDF1) already use -- not a disconnected hardcoded
+    literal. Without this, a detection can count as a correct match for
+    accuracy (a loose radius) while failing the tracking metrics' stricter
+    identity match (a tighter, unrelated radius) purely from normal
+    localization jitter, not a real accuracy-vs-tracking disagreement --
+    confirmed directly: rf-detr's own mean position error (~2.2px) sits close
+    to the derived ~2.5px default, so a meaningful fraction of genuinely
+    correct detections were failing the old disconnected 10px-vs-2.5px split.
+
+    `benchmark.match_distance` in config.yaml, when explicitly set, still
+    wins over this derived value, matching this file's established
+    explicit-value-always-wins override convention.
+    """
+    threshold_radii = _cfg_get(full_cfg, "tracking", "matching_threshold_radii", default=0.5)
+    return _cfg_get(
+        cfg, "match_distance", default=threshold_radii * _resolve_psf_sigma_px(full_cfg)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1011,6 +1063,290 @@ def _run_tracking_metrics(
     return result
 
 
+def _run_bytetrack_with_timeout(
+    all_detections,
+    lost_track_buffer,
+    minimum_consecutive_frames,
+    track_activation_threshold,
+    timeout_s=90,
+):
+    """Run trackers_common.bytetrack.run_bytetrack under a simple wall-clock
+    timeout (signal.alarm — POSIX only), as cheap insurance rather than
+    shipping it fully unguarded.
+
+    Deliberately NOT the subprocess/rlimit/retry machinery
+    _link_df_with_fallback uses for trackpy: sv.ByteTrack's per-frame IoU
+    association plus Kalman filter has no known combinatorial subnet-blowup
+    mode the way trackpy's recursive solver does (see this unit's plan KTD),
+    so this is only a bound against an *unverified* runtime/memory profile at
+    high particle density, not a guard against a confirmed pathology. A
+    signal-based timeout is sufficient for that and far simpler than spawning
+    a subprocess for every benchmark run.
+
+    Returns:
+        list[sv.Detections] on success, or None if it didn't finish within
+        timeout_s (a platform with no SIGALRM runs unbounded instead of
+        silently skipping the timeout).
+    """
+    import signal
+
+    from trackers_common.bytetrack import run_bytetrack
+
+    if not hasattr(signal, "SIGALRM"):
+        return run_bytetrack(
+            all_detections,
+            lost_track_buffer,
+            minimum_consecutive_frames,
+            track_activation_threshold,
+        )
+
+    def _handler(signum, frame):
+        raise TimeoutError(f"run_bytetrack exceeded {timeout_s}s")
+
+    previous_handler = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(timeout_s)
+    try:
+        return run_bytetrack(
+            all_detections,
+            lost_track_buffer,
+            minimum_consecutive_frames,
+            track_activation_threshold,
+        )
+    except (TimeoutError, MemoryError):
+        # MemoryError alongside TimeoutError: this call runs in-process with
+        # no subprocess/rlimit isolation (unlike trackpy's
+        # _link_df_with_fallback), so a real memory blowup at high density
+        # must degrade the same way a timeout does -- crashing the whole
+        # benchmark.py process on one detector's tracking metrics would be
+        # worse than skipping just that metric with a warning.
+        return None
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _run_bytetrack_metrics(
+    all_boxes_by_frame,
+    gt_tracks_path,
+    cfg,
+    model_type,
+    derived_psf_sigma_px=None,
+    profile=None,  # pylint: disable=unused-argument
+):
+    """Track detections via trackers_common's shared ByteTrack wrapper
+    (trackers_common.bytetrack.run_bytetrack), then evaluate against ground
+    truth with motmetrics — the --tracker bytetrack counterpart to
+    _run_tracking_metrics's trackpy-linking path.
+
+    Unlike _run_tracking_metrics (a single batch call over all detections at
+    once), ByteTrack is a stateful, order-dependent, per-frame loop: this
+    builds one sv.Detections per frame from all_boxes_by_frame, in ascending
+    frame_idx order (not dict-insertion or glob order), so run_bytetrack's
+    frame-position-based lost_track_buffer timing lines up with ground
+    truth's actual frame spacing even across a gap — main()'s detection loop
+    already has an `if frame_idx not in gt_by_frame: continue` guard, so a
+    dataset with non-contiguous frame_idx values is a real possibility this
+    function must handle correctly, not assume away.
+
+    Args:
+        all_boxes_by_frame: dict frame_idx -> {"xyxy": (N,4) float array,
+            "confidence": (N,) float array} — one entry per detected frame,
+            populated unconditionally by main()'s detection loop (not only
+            for --save-video).
+        gt_tracks_path: path to ground_truth_tracks.csv
+        cfg: full config dict
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo", or
+            "trackpy") — resolves lost_track_buffer/minimum_consecutive_frames/
+            track_activation_threshold from trackers_common's canonical
+            per-model tuning (trackers_common.tracker_defaults.yaml), each
+            independently swept against real data. rf-detr/yolo converge on
+            minimum_consecutive_frames=1; lodestar/trackpy (noisier per-frame
+            confidence) converge on minimum_consecutive_frames=3 instead.
+        derived_psf_sigma_px: if given, overrides cfg's synthetic.psf_sigma /
+            synthetic.psf.sigma_px for the match-threshold calculation — same
+            semantics as _run_tracking_metrics's own parameter.
+        profile: accepted for call-site symmetry with _run_tracking_metrics,
+            but unused here — R9: lost_track_buffer/minimum_consecutive_frames/
+            track_activation_threshold never derive from a dataset profile.
+
+    Returns:
+        dict of tracking metric values (same shape as _run_tracking_metrics's
+        result), or None if prerequisites are missing.
+    """
+    tracking_enabled = _cfg_get(cfg, "tracking", "enabled", default=True)
+    if not tracking_enabled:
+        return None
+
+    import importlib.util
+
+    # Existence check only -- _build_accumulator_with_timeout imports motmetrics
+    # itself, lazily, in its subprocess worker.
+    if importlib.util.find_spec("motmetrics") is None:
+        print(
+            "Warning: motmetrics not installed — skipping tracking metrics. Run: uv add motmetrics"
+        )
+        return None
+
+    try:
+        import supervision as sv
+    except ImportError:
+        print(
+            "Warning: supervision not installed — skipping tracking metrics. Run: uv add supervision"
+        )
+        return None
+
+    gt_path = Path(gt_tracks_path)
+    if not gt_path.exists():
+        print(f"Warning: {gt_path} not found — skipping tracking metrics (run render.py first).")
+        return None
+
+    import pandas as pd
+
+    gt_df = pd.read_csv(gt_path)
+    required = {"frame", "particle_id", "x", "y"}
+    if not required.issubset(gt_df.columns):
+        print(
+            f"Warning: {gt_path} missing columns {required - set(gt_df.columns)} — skipping tracking metrics."
+        )
+        return None
+
+    if not all_boxes_by_frame:
+        print("Warning: no detections accumulated — skipping tracking metrics.")
+        return None
+
+    # verification/config.yaml's own tracking: block can still override any of
+    # these per-model canonical values — same override precedence
+    # _run_tracking_metrics's search_range/memory/stub_filter already has.
+    tracking_defaults = load_tracking_config(model_type, cfg, DEFAULT_KEY_PATH_MAP)
+    lost_track_buffer = tracking_defaults.get("lost_track_buffer", 60)
+    minimum_consecutive_frames = tracking_defaults.get("minimum_consecutive_frames", 1)
+    track_activation_threshold = tracking_defaults.get("track_activation_threshold", 0.1)
+
+    threshold_radii = _cfg_get(cfg, "tracking", "matching_threshold_radii", default=0.5)
+    if derived_psf_sigma_px is not None:
+        psf_sigma_px = derived_psf_sigma_px
+    else:
+        psf_sigma_px = _resolve_psf_sigma_px(cfg)
+    match_threshold = threshold_radii * psf_sigma_px
+
+    # run_bytetrack's lost_track_buffer/minimum_consecutive_frames timing
+    # counts LIST POSITIONS, not real frame_idx values -- so the list handed
+    # to it must span every integer frame_idx from min to max inclusive
+    # (ascending, NOT dict-insertion or glob order), with an empty
+    # placeholder standing in for any frame_idx absent from
+    # all_boxes_by_frame. Just sorting the *present* keys would silently
+    # collapse a gap (e.g. frames 0, 1, 3 with 2 missing) into list-adjacency
+    # between frames 1 and 3 -- exactly the frame-position-vs-frame-index
+    # mismatch this function must not assume away, since main()'s detection
+    # loop already has an `if frame_idx not in gt_by_frame: continue` guard
+    # that can produce exactly this shape.
+    present_frame_indices = sorted(all_boxes_by_frame.keys())
+
+    # No raw-density pre-check here (unlike the accumulator-building step
+    # below, which is subprocess/RLIMIT-isolated the same way trackpy's is).
+    # An earlier version of this function had one at 400 det/frame, copied
+    # from trackpy's own accumulator-protection threshold -- but that number
+    # was never validated against ByteTrack's actual cost, and measuring it
+    # directly against this repo's real dataset (~1167-1446 det/frame,
+    # temporally coherent) showed run_bytetrack completing in ~18s, nowhere
+    # near _run_bytetrack_with_timeout's 90s budget. A synthetic worst-case
+    # test with fully random (temporally-incoherent) positions did take ~99s
+    # at the same density, but that's an adversarial case IoU-based
+    # association is inherently bad at, not representative of real slowly-
+    # moving particles -- and the timeout+MemoryError catch already degrades
+    # gracefully if a genuinely pathological input ever hits it.
+    full_frame_range = list(range(present_frame_indices[0], present_frame_indices[-1] + 1))
+    detections_list = []
+    for frame_idx in full_frame_range:
+        frame_boxes = all_boxes_by_frame.get(frame_idx)
+        xyxy = frame_boxes["xyxy"] if frame_boxes is not None else np.zeros((0, 4))
+        confidence = frame_boxes["confidence"] if frame_boxes is not None else np.zeros(0)
+        if len(xyxy) == 0:
+            detections_list.append(sv.Detections.empty())
+        else:
+            detections_list.append(
+                sv.Detections(
+                    xyxy=xyxy.astype(np.float64),
+                    confidence=confidence.astype(np.float64),
+                    class_id=np.zeros(len(xyxy), dtype=int),
+                )
+            )
+
+    tracked = _run_bytetrack_with_timeout(
+        detections_list,
+        lost_track_buffer,
+        minimum_consecutive_frames,
+        track_activation_threshold,
+    )
+    if tracked is None:
+        print(
+            "Warning: ByteTrack tracking did not finish within the timeout window or ran "
+            "out of memory -- skipping tracking metrics."
+        )
+        return None
+
+    rows = []
+    for frame_idx, dets in zip(full_frame_range, tracked):
+        if dets.tracker_id is None or len(dets) == 0:
+            continue
+        centers = (dets.xyxy[:, :2] + dets.xyxy[:, 2:]) / 2
+        for (cx, cy), track_id in zip(centers, dets.tracker_id):
+            rows.append(
+                {"frame": frame_idx, "track_id": int(track_id), "x": float(cx), "y": float(cy)}
+            )
+
+    if not rows:
+        print("Warning: ByteTrack produced no confirmed tracks — skipping tracking metrics.")
+        return None
+
+    linked = pd.DataFrame(rows)
+
+    # Build the accumulator in a subprocess with a hard RLIMIT_AS memory
+    # ceiling and wall-clock timeout, same as _run_tracking_metrics's trackpy
+    # path -- see _build_accumulator_with_timeout's own docstring. This
+    # replaces an earlier in-process avg_det_per_frame/n_distinct_tracks
+    # pre-check (same rationale as the trackpy path: a pre-check meant dense
+    # results never got a chance to actually produce MOTA/IDF1 even when the
+    # real cost would have fit safely). The raw-density pre-check before
+    # _run_bytetrack_with_timeout above is unrelated and still applies -- it
+    # protects the tracking pass itself, not this accumulator-building step.
+    acc = _build_accumulator_with_timeout(gt_df, linked, psf_sigma_px, threshold_radii)
+    if acc is None:
+        print(
+            "Warning: building the MOTA/IDF1 accumulator did not finish within its "
+            "memory/time budget -- skipping tracking metrics."
+        )
+        return None
+
+    summary_dict = _compute_motmetrics_with_timeout(
+        acc,
+        metrics=[
+            "mota",
+            "idf1",
+            "num_fragmentations",
+            "num_switches",
+            "num_misses",
+            "num_false_positives",
+        ],
+    )
+    if summary_dict is None:
+        print("Warning: MOTA/IDF1 computation did not finish in time -- skipping tracking metrics.")
+        return None
+
+    result = {
+        "mota": float(summary_dict["mota"]),
+        "idf1": float(summary_dict["idf1"]),
+        "num_fragmentations": int(summary_dict["num_fragmentations"]),
+        "num_switches": int(summary_dict["num_switches"]),
+        "num_misses": int(summary_dict["num_misses"]),
+        "num_false_positives": int(summary_dict["num_false_positives"]),
+        "matching_threshold_radii": threshold_radii,
+        "psf_sigma_px": psf_sigma_px,
+        "match_threshold_px": match_threshold,
+    }
+    return result
+
+
 def _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory):
     """Link detections across frames via trackpy, for --save-video only.
 
@@ -1090,14 +1426,22 @@ def _write_tracking_video(
     import cv2
     import supervision as sv
 
-    if not any(len(boxes) > 0 for boxes in all_boxes_by_frame.values()):
+    if not any(len(frame_data["xyxy"]) > 0 for frame_data in all_boxes_by_frame.values()):
         print("Warning: no detections to draw -- skipping --save-video.")
         return
 
+    # _link_detections_for_video (and _link_df_with_fallback beneath it) only
+    # need each frame's xyxy boxes, not confidence -- extract a plain
+    # frame_idx -> xyxy view rather than changing that function's own
+    # dict-of-plain-arrays contract.
+    #
     # linked is {} whenever linking wasn't attempted (no detections) or failed
     # (SubnetOversizeException) -- _write_tracking_video still draws
     # box-only frames (no trace/track_id) from all_boxes_by_frame in that case.
-    linked = _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory)
+    xyxy_by_frame = {
+        frame_idx: frame_data["xyxy"] for frame_idx, frame_data in all_boxes_by_frame.items()
+    }
+    linked = _link_detections_for_video(xyxy_by_frame, cfg, search_range, memory)
 
     box_annotator = sv.BoxAnnotator()
     trace_annotator = sv.TraceAnnotator(trace_length=trace_length)
@@ -1112,7 +1456,7 @@ def _write_tracking_video(
             h, w = frame_rgb.shape[:2]
             writer = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
 
-        boxes_this_frame = all_boxes_by_frame.get(frame_idx, np.zeros((0, 4)))
+        boxes_this_frame = all_boxes_by_frame.get(frame_idx, {"xyxy": np.zeros((0, 4))})["xyxy"]
         if frame_idx in linked:
             boxes, track_ids = linked[frame_idx]
             detections = sv.Detections(
@@ -1174,6 +1518,14 @@ def main():
         help=f"Detector to benchmark (default: {_DEFAULT_MODEL_TYPE}, or "
         "benchmark.model_type from --config)",
     )
+    parser.add_argument(
+        "--tracker",
+        choices=["trackpy", "bytetrack"],
+        default="trackpy",
+        help="Tracking/linking algorithm used for --ground-truth-tracks metrics (default: "
+        "trackpy). Orthogonal to --model-type (the detector) -- any model_type works with "
+        "either tracker. Output filename: tracking_metrics_{model_type}_{tracker}.csv.",
+    )
     parser.add_argument("--device", default=None, help="Inference device (e.g. 0 or cpu)")
     parser.add_argument(
         "--save-video",
@@ -1212,7 +1564,7 @@ def main():
     # Sourced from the same _MODEL_VENV_DIRS/_DEFAULT_MODEL_TYPE as the
     # module-level _resolve_model_type pre-parse, so the two can't drift.
     model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
-    match_distance = _cfg_get(cfg, "match_distance", default=10)
+    match_distance = _resolve_match_distance(cfg, full_cfg)
 
     # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
     # nms_distance/tile_size/diameter/search_range/memory each derive from it
@@ -1401,9 +1753,11 @@ def main():
     all_dists = []
     all_inference_times_ms = []
     all_detections_by_frame = {}  # frame_idx → (N, 2) array of (x, y) centroids
-    all_boxes_by_frame = (
-        {}
-    )  # frame_idx → (N, 4) array of xyxy boxes, only populated for --save-video
+    # frame_idx → {"xyxy": (N, 4) array, "confidence": (N,) array} -- populated
+    # unconditionally (not only for --save-video): --tracker bytetrack's
+    # _run_bytetrack_metrics also needs box+confidence data per frame, in
+    # addition to --save-video's own existing use.
+    all_boxes_by_frame = {}
 
     for png_path in tiff_files:
         frame_idx = int(png_path.stem.replace("frame_", ""))
@@ -1459,10 +1813,22 @@ def main():
         all_fn += fn
         all_dists.extend(dists)
         all_detections_by_frame[frame_idx] = pred_centers
-        if args.save_video:
-            all_boxes_by_frame[frame_idx] = (
-                dets.xyxy.astype(np.float64) if len(dets) > 0 else np.zeros((0, 4))
+        # Additive only -- all_detections_by_frame above is completely
+        # untouched by this. confidence falls back to all-ones when a
+        # detector doesn't set it (matches detect_trackpy's own default and
+        # keeps --tracker bytetrack runnable against every detector, since
+        # sv.ByteTrack requires confidence to be non-None).
+        if len(dets) > 0:
+            boxes_xyxy = dets.xyxy.astype(np.float64)
+            boxes_confidence = (
+                dets.confidence.astype(np.float64)
+                if dets.confidence is not None
+                else np.ones(len(dets), dtype=np.float64)
             )
+        else:
+            boxes_xyxy = np.zeros((0, 4))
+            boxes_confidence = np.zeros(0, dtype=np.float64)
+        all_boxes_by_frame[frame_idx] = {"xyxy": boxes_xyxy, "confidence": boxes_confidence}
 
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -1553,16 +1919,33 @@ def main():
                 f"(derived from --lammps-in {args.lammps_in})"
             )
 
-        tracking_metrics = _run_tracking_metrics(
-            all_detections_by_frame,
-            args.ground_truth_tracks,
-            full_cfg,
-            model_type,
-            derived_psf_sigma_px=derived_psf_sigma_px,
-            profile=tracking_profile,
-        )
+        # --tracker trackpy -> the existing batch/offline linker path
+        # (unchanged behavior); --tracker bytetrack -> the per-frame online
+        # tracker path (U5). Orthogonal to --model-type (the detector).
+        if args.tracker == "bytetrack":
+            tracking_metrics = _run_bytetrack_metrics(
+                all_boxes_by_frame,
+                args.ground_truth_tracks,
+                full_cfg,
+                model_type,
+                derived_psf_sigma_px=derived_psf_sigma_px,
+                profile=tracking_profile,
+            )
+        else:
+            tracking_metrics = _run_tracking_metrics(
+                all_detections_by_frame,
+                args.ground_truth_tracks,
+                full_cfg,
+                model_type,
+                derived_psf_sigma_px=derived_psf_sigma_px,
+                profile=tracking_profile,
+            )
         if tracking_metrics:
-            tracking_csv_path = output_dir / f"tracking_metrics_{model_type}.csv"
+            # Uniform naming for both trackers (not just bytetrack) -- see
+            # this unit's plan KTD: a one-time rename now is simpler than
+            # carrying two permanently different naming conventions for the
+            # same kind of artifact.
+            tracking_csv_path = output_dir / f"tracking_metrics_{model_type}_{args.tracker}.csv"
             with open(tracking_csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=list(tracking_metrics.keys()))
                 writer.writeheader()

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from trackers_common.defaults import DEFAULT_KEY_PATH_MAP, load_tracking_config
+from trackers_common.defaults import TRACKPY_KEY_PATH_MAP, load_tracking_config
 
 
 def _write_config(cfg: dict, model_prefix: str, name: str, script_dir: Path) -> Path:
@@ -100,7 +100,7 @@ def write_rfdetr_config(
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    tracking = {"tracker": "trackpy", **load_tracking_config("rf-detr", {}, DEFAULT_KEY_PATH_MAP)}
+    tracking = {"tracker": "trackpy", **load_tracking_config("rf-detr", {}, TRACKPY_KEY_PATH_MAP)}
     if bridge_gap is not None:
         tracking["bridge_gap"] = bridge_gap
 
@@ -167,7 +167,7 @@ def write_lodestar_config(
     if threshold is None:
         threshold = 0.1
 
-    tracking = {"tracker": "trackpy", **load_tracking_config("lodestar", {}, DEFAULT_KEY_PATH_MAP)}
+    tracking = {"tracker": "trackpy", **load_tracking_config("lodestar", {}, TRACKPY_KEY_PATH_MAP)}
     if bridge_gap is not None:
         tracking["bridge_gap"] = bridge_gap
 
@@ -216,7 +216,7 @@ def write_yolo_config(
 ) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    tracking = {"tracker": "trackpy", **load_tracking_config("yolo", {}, DEFAULT_KEY_PATH_MAP)}
+    tracking = {"tracker": "trackpy", **load_tracking_config("yolo", {}, TRACKPY_KEY_PATH_MAP)}
     if bridge_gap is not None:
         tracking["bridge_gap"] = bridge_gap
 

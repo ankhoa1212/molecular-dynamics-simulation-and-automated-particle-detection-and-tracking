@@ -1329,6 +1329,7 @@ dependencies = [
     { name = "motmetrics" },
     { name = "pandas" },
     { name = "pyyaml" },
+    { name = "supervision" },
     { name = "trackpy" },
 ]
 
@@ -1337,6 +1338,7 @@ requires-dist = [
     { name = "motmetrics", specifier = ">=1.4.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "supervision", specifier = ">=0.21.0" },
     { name = "trackpy", specifier = ">=0.6.0" },
 ]
 

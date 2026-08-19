@@ -15,6 +15,7 @@ import detectors_common.rfdetr_loader
 import detectors_common.lodestar_loader
 import detectors_common.tiling
 import trackers_common.linking
+import trackers_common.bytetrack
 
 # ---------------------------------------------------------------------------
 # detectors_common re-exports — U8: guards against the re-export convention
@@ -87,6 +88,9 @@ class TestTrackersCommonReExports:
 
     def test_link_and_filter_tracks_is_the_shared_implementation(self):
         assert track.link_and_filter_tracks is trackers_common.linking.link_and_filter_tracks
+
+    def test_run_bytetrack_is_the_shared_implementation(self):
+        assert track.run_bytetrack is trackers_common.bytetrack.run_bytetrack
 
     def test_no_call_site_uses_the_qualified_trackers_common_path(self):
         """Static guard mirroring TestDetectorsCommonReExports' — every call in
@@ -707,6 +711,179 @@ def _write_multi_input_config(tmp_path, input_paths, stub_filter=90):
     return cfg_path
 
 
+# ---------------------------------------------------------------------------
+# ByteTrack characterization tests (U2 of the bytetrack-tracking-support plan).
+#
+# Written against track.py's *current* inline `sv.ByteTrack` init-and-per-frame
+# loop before it is extracted into trackers_common.bytetrack.run_bytetrack, so
+# they serve as a behavior-preservation baseline: they must pass unchanged both
+# before and after the extraction (AE4). Exact frame-by-frame outcomes below
+# were confirmed empirically against the installed `supervision` package's
+# actual sv.ByteTrack semantics (e.g. a track created on any frame other than
+# the tracker's very first only becomes visible in output once it has been
+# matched again, independent of minimum_consecutive_frames==1) rather than
+# assumed from the docstring alone.
+# ---------------------------------------------------------------------------
+
+
+def _write_bytetrack_config(
+    tmp_path,
+    lost_track_buffer=30,
+    minimum_consecutive_frames=1,
+    track_activation_threshold=0.25,
+):
+    cfg = {
+        "input": "dummy_input.tif",
+        "model": {
+            "type": "rf-detr",
+            "checkpoint": "dummy.pth",
+            "variant": "large",
+            "num_classes": 2,
+            "num_queries": 300,
+            "device": "cpu",
+        },
+        "tiling": {"enabled": False},
+        "detection": {"threshold": 0.0},
+        "tracking": {
+            "tracker": "bytetrack",
+            "lost_track_buffer": lost_track_buffer,
+            "minimum_consecutive_frames": minimum_consecutive_frames,
+            "track_activation_threshold": track_activation_threshold,
+        },
+        "output": {"dir": str(tmp_path / "out"), "save_video": False},
+    }
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    return cfg_path
+
+
+def _sequenced_detection_model(detections_per_frame):
+    """Fake model: returns one scripted sv.Detections per call, in order --
+    lets tests script an exact per-frame detection sequence to exercise
+    ByteTrack's frame-to-frame state machine (gaps, low confidence, etc.)."""
+    model = MagicMock()
+    frames_iter = iter(detections_per_frame)
+    model.predict.side_effect = lambda frame, threshold=None: next(frames_iter)
+    return model
+
+
+def _present(conf=0.9):
+    return sv.Detections(
+        xyxy=np.array([[10.0, 10.0, 20.0, 20.0]], dtype=np.float64),
+        confidence=np.array([conf], dtype=np.float64),
+    )
+
+
+class TestByteTrackCharacterization:
+    def test_consecutive_detections_keep_same_tracker_id(self, tmp_path, run_main):
+        """A detection present every frame, well within lost_track_buffer,
+        keeps the same track_id across all frames."""
+        cfg_path = _write_bytetrack_config(tmp_path, lost_track_buffer=30)
+        frames_dets = [_present() for _ in range(5)]
+        run_main(
+            ["--config", str(cfg_path)],
+            _sequenced_detection_model(frames_dets),
+            _fake_frames(5),
+        )
+
+        df = pd.read_csv(tmp_path / "out" / "dummy_input" / "tracks.csv")
+        assert sorted(df["frame"].tolist()) == [0, 1, 2, 3, 4]
+        assert df["track_id"].nunique() == 1
+
+    def test_gap_longer_than_lost_track_buffer_starts_new_tracker_id(self, tmp_path, run_main):
+        """A detection gap longer than lost_track_buffer starts a brand new
+        track_id after reappearing rather than reconnecting to the original.
+        Two frames after the gap are needed for the new track to surface in
+        output at all (see module docstring), so this asserts on the second
+        reappearance frame."""
+        cfg_path = _write_bytetrack_config(tmp_path, lost_track_buffer=2)
+        frames_dets = (
+            [_present()] + [sv.Detections.empty() for _ in range(4)] + [_present(), _present()]
+        )
+        run_main(
+            ["--config", str(cfg_path)],
+            _sequenced_detection_model(frames_dets),
+            _fake_frames(len(frames_dets)),
+        )
+
+        df = pd.read_csv(tmp_path / "out" / "dummy_input" / "tracks.csv")
+        original_id = df[df["frame"] == 0]["track_id"].iloc[0]
+        last_frame_rows = df[df["frame"] == len(frames_dets) - 1]
+        assert len(last_frame_rows) == 1
+        assert last_frame_rows["track_id"].iloc[0] != original_id
+
+    def test_gap_within_lost_track_buffer_reconnects(self, tmp_path, run_main):
+        """A detection gap shorter than lost_track_buffer reconnects to the
+        original track_id after reappearing."""
+        cfg_path = _write_bytetrack_config(tmp_path, lost_track_buffer=5)
+        frames_dets = [_present()] + [sv.Detections.empty() for _ in range(3)] + [_present()]
+        run_main(
+            ["--config", str(cfg_path)],
+            _sequenced_detection_model(frames_dets),
+            _fake_frames(len(frames_dets)),
+        )
+
+        df = pd.read_csv(tmp_path / "out" / "dummy_input" / "tracks.csv")
+        original_id = df[df["frame"] == 0]["track_id"].iloc[0]
+        last_frame_rows = df[df["frame"] == len(frames_dets) - 1]
+        assert len(last_frame_rows) == 1
+        assert last_frame_rows["track_id"].iloc[0] == original_id
+
+    def test_minimum_consecutive_frames_delays_confirmation(self, tmp_path, run_main):
+        """With minimum_consecutive_frames=3, a newly appearing track is not
+        confirmed (no track_id row emitted) until it has been matched that
+        many consecutive frames after its first appearance."""
+        cfg_path = _write_bytetrack_config(
+            tmp_path, minimum_consecutive_frames=3, lost_track_buffer=30
+        )
+        # Frame 0 is empty so the track's first appearance (frame 1) is not
+        # the tracker's very first-ever frame -- see module docstring.
+        frames_dets = [sv.Detections.empty()] + [_present() for _ in range(6)]
+        run_main(
+            ["--config", str(cfg_path)],
+            _sequenced_detection_model(frames_dets),
+            _fake_frames(len(frames_dets)),
+        )
+
+        df = pd.read_csv(tmp_path / "out" / "dummy_input" / "tracks.csv")
+        frames_with_rows = sorted(df["frame"].unique().tolist()) if not df.empty else []
+        # Confirmed starting at frame 4 (0-indexed): appears frame 1, then
+        # needs 3 more consecutive matched frames (2, 3, 4) to confirm.
+        assert frames_with_rows == [4, 5, 6]
+
+    def test_below_activation_threshold_does_not_start_track(self, tmp_path, run_main):
+        """A detection with confidence below track_activation_threshold never
+        starts a new track (with no pre-existing tracks to match against)."""
+        cfg_path = _write_bytetrack_config(tmp_path, track_activation_threshold=0.25)
+        frames_dets = [_present(conf=0.1) for _ in range(3)]
+        run_main(
+            ["--config", str(cfg_path)],
+            _sequenced_detection_model(frames_dets),
+            _fake_frames(3),
+        )
+
+        tracks_csv = tmp_path / "out" / "dummy_input" / "tracks.csv"
+        assert tracks_csv.exists()
+        # Same bare-newline shape a zero-detection full run writes today (see
+        # TestPreviewIntegration.test_preview_zero_detections_no_crash).
+        assert tracks_csv.read_text().strip() == ""
+
+    def test_empty_detections_frame_does_not_raise(self, tmp_path, run_main):
+        """An sv.Detections.empty() frame in the middle of the sequence does
+        not raise and produces no rows for that frame."""
+        cfg_path = _write_bytetrack_config(tmp_path)
+        frames_dets = [_present(), sv.Detections.empty(), _present()]
+        run_main(
+            ["--config", str(cfg_path)],
+            _sequenced_detection_model(frames_dets),
+            _fake_frames(3),
+        )
+
+        df = pd.read_csv(tmp_path / "out" / "dummy_input" / "tracks.csv")
+        assert 1 not in df["frame"].tolist()
+        assert sorted(df["frame"].unique().tolist()) == [0, 2]
+
+
 class TestMultiInputStemDedup:
     def test_same_stem_different_parent_dirs_get_suffixed(self, tmp_path, run_main):
         cfg_path = _write_multi_input_config(tmp_path, ["dirA/sample.tif", "dirB/sample.tif"])
@@ -1017,7 +1194,7 @@ class TestOverrideCliWiring:
         # not silently fall back to main()'s hardcoded defaults.
         cfg = track.load_config(PARTICLE_TRACKING_DIR / "lodestar_config.yaml")
         assert cfg["tracking"]["stub_filter"] == 6
-        assert cfg["tracking"]["lost_track_buffer"] == 60
+        assert cfg["tracking"]["lost_track_buffer"] == 30
         assert cfg["output"]["save_video"] is True
         assert cfg["output"]["trace_length"] == 60
         assert cfg["tiling"]["enabled"] is False

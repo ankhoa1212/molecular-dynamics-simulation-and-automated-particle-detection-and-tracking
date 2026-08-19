@@ -29,7 +29,7 @@ molecular-dynamics-simulation/
 │   ├── runs/detect/train/weights/best.pt
 │   └── processed_data/      # Train/validation image splits
 ├── detectors-common/        # Shared detector-loading/tiling/config-merge package (rf-detr/, particle-tracking/)
-├── trackers-common/         # Shared trackpy-linking/tracking-tuning package (particle-tracking/, verification/, rf-detr/)
+├── trackers-common/         # Shared trackpy-linking/ByteTrack-tracking/tracking-tuning package (particle-tracking/, verification/, rf-detr/)
 ├── dataset-profiles/        # Per-dataset scale profiles (size_px/spacing_px) detection/tracking params derive from
 ├── particle-tracking/       # Particle tracking pipeline
 │   ├── track.py             # Unified tracker (RF-DETR, YOLOv12, or LodeSTAR)

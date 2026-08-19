@@ -1,14 +1,23 @@
 # trackers-common
 
-Shared trackpy-linking and per-model tracking-tuning primitives for `particle-tracking/track.py`
-and `verification/benchmark.py`, extracted to stop the two from drifting against each other (see
-`docs/plans/2026-08-05-001-fix-benchmark-tracking-linker-parity-plan.md`).
+Shared trackpy-linking, ByteTrack-tracking, and per-model tracking-tuning primitives for
+`particle-tracking/track.py` and `verification/benchmark.py`, extracted to stop the two from drifting
+against each other (see `docs/plans/2026-08-05-001-fix-benchmark-tracking-linker-parity-plan.md` for
+the trackpy-linking extraction, and
+`docs/plans/2026-08-18-001-feat-bytetrack-tracking-support-plan.md` for the ByteTrack extraction that
+followed it — the latter explicitly supersedes the former's "bytetrack linker parity stays out of
+scope" decision, once trackpy-metrics parity was solid and ByteTrack evaluation became the active
+goal).
 
 Installed as a local `uv` editable path dependency by `rf-detr/`, `particle-tracking/`, and
 `verification/` — unlike `detectors-common`, `verification/` installs this package directly. Its
-dependencies (`trackpy`, `motmetrics`, `pandas`) have no CUDA/heavy-ML sensitivity, so there's no
-need for `detectors-common`'s re-exec-then-lazy-import dance; every consumer imports it at module
-scope.
+dependencies (`trackpy`, `motmetrics`, `pandas`, `supervision`) have no CUDA/heavy-ML sensitivity
+(confirmed for `supervision` specifically before adding it — it was already a direct, CUDA-free
+dependency of all three consumers), so there's no need for `detectors-common`'s
+re-exec-then-lazy-import dance; every consumer imports it at module scope. `supervision` is still
+imported lazily *inside* `bytetrack.py`'s own function body, not at this package's module scope —
+see that file's docstring for why (it preserves `track.py`'s own friendly missing-dependency error
+path).
 
 ## Conventions
 
@@ -16,16 +25,22 @@ scope.
    only.** Detector loading, tiling, and model-config-merge logic belongs in `detectors-common`, not
    here — see that package's own README for why it, in turn, excludes tracking-linkage logic. Keeping
    each package narrowly scoped is what keeps either one safe to install broadly without dragging in
-   unrelated dependencies.
+   unrelated dependencies. Point-to-box synthesis (a detection-side concern) lives in
+   `detectors-common` instead, not here — see `detectors_common/point_to_box.py`'s own docstring.
 2. **Consumers re-export under their original local names and call them unqualified.**
-   `particle-tracking/track.py` re-exports `link_and_filter_tracks`/`bridge_track_gaps` at module
-   scope, mirroring how it already re-exports `get_rfdetr_model` from `detectors_common`. This keeps
-   existing test-mocking conventions (`monkeypatch.setattr(track, "link_and_filter_tracks", ...)`)
-   working unchanged.
+   `particle-tracking/track.py` re-exports `link_and_filter_tracks`/`bridge_track_gaps` (from
+   `linking.py`) and `run_bytetrack` (from `bytetrack.py`) at module scope, mirroring how it already
+   re-exports `get_rfdetr_model` from `detectors_common`. This keeps existing test-mocking conventions
+   (`monkeypatch.setattr(track, "link_and_filter_tracks", ...)`) working unchanged.
 3. **Per-model tracking-tuning values (`tracker_defaults.yaml`) are the single source of truth** for
    both `particle-tracking/tracker_configs.py`'s generated per-model configs and
    `verification/benchmark.py`'s tracking-metrics resolution. Add a new model's tuning here, not in
-   either consumer.
+   either consumer. ByteTrack's three tuning values (`lost_track_buffer`,
+   `minimum_consecutive_frames`, `track_activation_threshold`) live here too, resolved the same way —
+   but unlike trackpy's genuinely-measured per-model split, they're currently identical, unmeasured
+   values carried forward from `particle-tracking/config.yaml`'s prior global block (see the file's
+   own comments). `tracker_configs.py` does not yet emit them (deferred until they diverge) —
+   production `track.py` still reads them from its own `config.yaml` block directly.
 
 ## Dataset scale profile derivation
 
@@ -42,5 +57,7 @@ the profile.
 
 ## Dependencies
 
-`trackpy`, `motmetrics`, `pandas`, `pyyaml`. All pure-Python/pandas — no CUDA sensitivity, unlike
-`detectors-common`'s `torch`/`rfdetr`-adjacent callers.
+`trackpy`, `motmetrics`, `pandas`, `pyyaml`, `supervision`. All CUDA-free — unlike `detectors-common`'s
+`torch`/`rfdetr`-adjacent callers. `supervision` was confirmed CUDA/torch-free before being added
+(already an existing direct dependency of `rf-detr/`, `particle-tracking/`, and `verification/`
+independent of this package).

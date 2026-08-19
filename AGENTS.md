@@ -11,7 +11,7 @@ Has project context (has collective learning of all agents working on the projec
 
 - The repo is a chain of independent `uv`-managed Python subprojects, each with its own `pyproject.toml`/`.venv`: `data-setup/` (LodeSTAR auto-labeling), `rf-detr/` (detector training), `particle-tracking/` (tracking pipeline), `verification/` (end-to-end validation harness), plus `lammps-scripts/` (plain-Python simulation, no venv needed). See README.md#repository-structure for the full tree.
 - `detectors-common/` is a shared local package (editable path dependency) with detector-loading/tiling/config-merge code consumed by both `rf-detr/` and `particle-tracking/`. Put cross-cutting detector logic there instead of duplicating it in both subprojects.
-- `trackers-common/` is a second shared local package (editable path dependency), consumed by `particle-tracking/`, `verification/`, and `rf-detr/`, with trackpy-linking and per-model tracking-tuning primitives. See `trackers-common/README.md` for its scope boundary against `detectors-common` and its re-export convention.
+- `trackers-common/` is a second shared local package (editable path dependency), consumed by `particle-tracking/`, `verification/`, and `rf-detr/`, with trackpy-linking, ByteTrack-tracking, and per-model tracking-tuning primitives. See `trackers-common/README.md` for its scope boundary against `detectors-common` and its re-export convention.
 - `particle-tracking/` intentionally excludes the `rfdetr` package from its own dependencies and loads it at runtime from `rf-detr/.venv` instead, to avoid CUDA build conflicts (see the comment above `[[tool.uv.index]]` in `particle-tracking/pyproject.toml`). Don't "fix" this by adding `rfdetr` back as a direct dependency.
 
 ## Vocab
@@ -27,7 +27,7 @@ Domain terms (PSF, MOTA/IDF1, render strategies, box_size vs. psf_sigma_px, etc.
 
 - Run tests from inside each subproject: `cd <subproject> && uv run pytest tests/ -v`. There is no root-level test command that covers everything.
 - CI (`.github/workflows/pylint.yml`) runs each of `rf-detr/`, `particle-tracking/`, `verification/`, `detectors-common/`, `data-setup/`, and `trackers-common/`'s test suites on every push and PR, blocking on failure. `yolov12/` has no `tests/` directory yet. `lammps-scripts/test/` contains only JSON fixtures, not a runnable pytest suite, and `lammps-scripts/` has its own `.venv/` despite earlier notes here claiming otherwise. Black is also blocking; pylint stays non-blocking until it installs each subproject's own dependencies instead of a shared root-level set (it currently reports import-resolution noise it can't otherwise avoid).
-- `verification/benchmark.py`'s MOTA/IDF1 tracking metrics run a standalone `trackpy` linker, not the production `particle-tracking/track.py` linker (documented in `verification/README.md`). Don't treat those numbers as production tracking accuracy without a separate comparison against real `track.py` output.
+- `verification/benchmark.py`'s MOTA/IDF1 tracking metrics (`--tracker trackpy|bytetrack`) link detections with the same `trackers_common` implementation `particle-tracking/track.py`'s production tracker uses; see `verification/README.md` for what still differs (config overrides, per-tracker tuning coverage) before treating those numbers as production tracking accuracy.
 
 ## Conventions
 

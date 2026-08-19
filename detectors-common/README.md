@@ -5,10 +5,12 @@ LodeSTAR, and YOLOv12, extracted from `particle-tracking/track.py` and
 `verification/benchmark.py` to stop the two from drifting against each other
 (see `docs/plans/2026-07-17-001-refactor-consolidate-verification-particle-tracking-plan.md`).
 
-Installed as a local `uv` editable path dependency by `rf-detr/` and
-`particle-tracking/`. `verification/` never installs it directly — it only
-becomes reachable after `verification/benchmark.py`'s existing cross-venv
-re-exec lands in one of the other two venvs.
+Installed as a local `uv` editable path dependency by `rf-detr/`,
+`particle-tracking/`, and `verification/` (the last of these added later, for
+`dataset_profile`/`scale_derivation` support — `verification/benchmark.py`'s
+own consumers still use the lazy-import-per-wrapper pattern below rather than
+importing at module scope, since its venv can never safely hold
+`torch`/`rfdetr`).
 
 ## Conventions
 
@@ -26,13 +28,17 @@ document is long gone by the time you're reading this:
    (`monkeypatch.setattr(track, "get_rfdetr_model", ...)`,
    `mock.patch.object(benchmark, "get_lodestar_model", ...)`) keep working
    unchanged.
-2. **This package stays scoped to detector loading, tiling, and config-merge
-   primitives only.** Tracking-linkage logic, MLflow helpers, or other
-   pipeline-stage code belongs elsewhere, even once a shared package exists
-   to make it tempting to add "just one more thing" here. Keeping this
-   package free of `torch`/`rfdetr`/`deeplay` as its own dependencies (they
-   stay lazy, function-local imports) is what makes it safe to install into
-   any CUDA-sensitive venv — a heavier package would undermine that.
+2. **This package stays scoped to detector loading, tiling, config-merge, and
+   detection-side geometry primitives only** (e.g. `point_to_box.py`'s
+   point-to-box synthesis — a raw-detection-output concern, consumed before
+   any tracker sees the result; see that module's own docstring for why it
+   lives here and not in `trackers-common`). Tracking-linkage logic, MLflow
+   helpers, or other pipeline-stage code belongs elsewhere, even once a
+   shared package exists to make it tempting to add "just one more thing"
+   here. Keeping this package free of `torch`/`rfdetr`/`deeplay` as its own
+   dependencies (they stay lazy, function-local imports) is what makes it
+   safe to install into any CUDA-sensitive venv — a heavier package would
+   undermine that.
 
 ## Dataset scale profile derivation
 
