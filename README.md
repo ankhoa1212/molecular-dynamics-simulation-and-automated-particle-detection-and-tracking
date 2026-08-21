@@ -5,6 +5,7 @@ End-to-end pipeline for running molecular dynamics simulations, auto-labeling mi
 ## Table of Contents
 
 - [Repository Structure](#repository-structure)
+- [Data & Model Availability](#data--model-availability)
 - [Components](#components)
   - [1. Simulation](#1-simulation-lammps-scripts)
   - [2. Auto-Labeling with LodeSTAR](#2-auto-labeling-with-lodestar-data-setup)
@@ -46,6 +47,34 @@ molecular-dynamics-simulation/
     ├── dataset_profile_builder.py  # Builds a dataset-profiles/ YAML from a LAMMPS trajectory
     └── config.yaml          # Rendering, benchmarking, and tracking metric settings
 ```
+
+---
+
+## Data & Model Availability
+
+None of the training data or trained checkpoints are committed to this repository (large, and machine-specific paths don't belong in tracked files). Every config across the repo resolves dataset/checkpoint paths relative to a top-level `data/` directory, which is gitignored and not created automatically — point it at wherever your data actually lives with a single symlink:
+
+```bash
+ln -s "/path/to/your/dataset/root" data
+```
+
+For example, on the original development machine this was a symlink to a separate data drive:
+
+```bash
+ln -s "/mnt/d/Particle Tracking Data" data
+```
+
+After that one symlink, every package's `../data/<name>` reference (in `rf-detr/config.yaml`, `yolov12/config.yaml`, `particle-tracking/*.yaml`, `data-setup/yolo_split.py`, `rf-detr/k8s-launch.sh`) resolves correctly regardless of where your actual data lives on disk.
+
+**Datasets and checkpoints used by this repo's reported results are also published on Hugging Face for anyone without access to the original raw microscopy data:**
+
+- Datasets: https://huggingface.co/datasets/anonymousresearchuser42/particle-detection-datasets
+  - `2um-coco-merged/` (`images/` + `annotations.json`, ~3.4GB) — trains the reported RF-DETR checkpoint. `split/{train,valid,test}/` is intentionally not included -- `rf-detr/train.py` regenerates it automatically on first run (see `rf-detr/README.md`'s "Dataset Format" section)
+  - `2um-yolov12-matched/` (~3.5GB) — trains the reported YOLOv12 checkpoint (same images/split as `2um-coco-merged`, converted to YOLO format, for a fair comparison)
+- Models: https://huggingface.co/anonymousresearchuser42/particle-detection-models
+  - RF-DETR (`checkpoint_best_ema.pth`), YOLOv12 (`best.pt`), LodeSTAR (`model.pt` + its 5 source training crops)
+
+Download and place these under `data/<name>` (datasets) or point the relevant `checkpoint:`/`weights:` config key at wherever you save the model files.
 
 ---
 
@@ -288,6 +317,44 @@ uv run pytest tests/ -v
 ```
 
 See [`verification/README.md`](verification/README.md) for the full calibration workflow, configuration reference, and acceptance criteria.
+
+---
+
+## Reported Results
+
+The synthetic ground-truth benchmark (4-way detector/tracker comparison against known particle
+positions, on the repo's default 151-frame trajectory) reproduces as:
+
+| Model    | Precision | Recall | F1    | Loc. Error (px) |
+|----------|-----------|--------|-------|------------------|
+| Trackpy  | 100.0%    | 16.8%  | 28.8% | 3.24             |
+| LodeSTAR | 43.4%     | 15.7%  | 23.1% | 2.43             |
+| YOLOv12  | 98.7%     | 82.1%  | 89.7% | 0.99             |
+| RF-DETR  | 93.9%     | 77.9%  | 85.2% | 0.99             |
+
+Precision/Recall/F1 are pooled over true/false positive/negative counts across all frames (10px
+greedy nearest-neighbor matching, each ground-truth particle matched at most once); localization
+error is the mean center-to-center distance over matched pairs only. See
+[`verification/README.md`](verification/README.md) for the full metric/matching definitions.
+
+**Exact commands to reproduce this table**, from `verification/` (after `uv sync`, with the
+pretrained checkpoints in place per [Data & Model Availability](#data--model-availability)):
+
+```bash
+uv run python render.py \
+    --lammps ../lammps-scripts/single_continuous_force_test/continuous_force_1500_5.0.lammpstrj \
+    --frames 151
+
+for model in rf-detr yolo lodestar trackpy; do
+  uv run python benchmark.py \
+      --frames verification_output/synthetic_frames/ \
+      --ground-truth verification_output/ground_truth.json \
+      --ground-truth-tracks verification_output/ground_truth_tracks.csv \
+      --model-type "$model"
+done
+
+uv run python plot_benchmark.py   # aggregates accuracy_metrics_*.csv into the table above + benchmark_comparison.png
+```
 
 ---
 

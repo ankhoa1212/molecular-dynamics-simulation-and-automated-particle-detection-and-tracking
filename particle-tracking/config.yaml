@@ -9,7 +9,10 @@
 # explicit --override <file>.yaml to merge any two files together directly.
 
 # Input: path to video, TIFF stack, or folder of images
-input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
+# Resolved relative to this repo's top-level data/ directory -- symlink or
+# copy your dataset there (see README.md's "Data & Model Availability"
+# section): ln -s /path/to/your/dataset ../data/<name>
+input: "../data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 80% Light Intensity_5_MMStack_Default.ome.tif"
 
 # Dataset scale profile: path to a YAML file with size_px/spacing_px (see
 # dataset-profiles/README.md). When set, drives box_size/nms_distance/
@@ -115,7 +118,9 @@ tracking:
 
 # Output:
 output:
-  dir: /mnt/d/Particle Tracking Data/2um/rf-detr-trial/
+  # Resolved relative to this repo's top-level data/ directory -- change to
+# any output location you prefer.
+  dir: ../data/2um/rf-detr-trial/
 
   save_video: true  # Save an annotated MP4 with bounding boxes drawn
 

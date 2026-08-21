@@ -29,6 +29,8 @@ my-dataset/
 └── annotations.json      # single COCO JSON covering all images and annotations
 ```
 
+That's the only input `train.py` needs -- `split/{train,valid,test}/` gets created automatically on first run (see "Training" below) from `images/` + `annotations.json`, so it's not part of the dataset you need to provide or download. The HF dataset release (see the top-level `README.md`'s "Data & Model Availability" section) accordingly ships only `images/` + `annotations.json`, not a pre-built `split/`.
+
 The COCO JSON must have the standard structure:
 
 ```json
@@ -99,6 +101,26 @@ This will:
 6. Save checkpoints to `checkpoints/` and log the best one as an MLflow artifact
 
 Training progress and metrics are printed to stdout.
+
+---
+
+## Kubernetes Training (optional)
+
+`k8s-launch.sh`/`k8s-retrieve.sh` run the same training on a Kubernetes cluster (`config.k8s.yaml`) instead of locally. Two things must be set before running either script -- both fail with a clear error if missing:
+
+- **`K8S_NAMESPACE`** (env var, required): your cluster namespace.
+  ```bash
+  export K8S_NAMESPACE=your-namespace
+  ```
+- **Container registry** (required): `k8s-job.yaml`'s `image:` field is a placeholder (`your-registry/rf-detr-trainer:latest`) -- build and push your own training image, then edit that line to point at it.
+
+Also requires the dataset symlinked at `../data/2um-coco-merged` (see the top-level `README.md`'s "Data & Model Availability" section) -- `k8s-launch.sh` checks for this and errors with instructions if it's missing.
+
+```bash
+export K8S_NAMESPACE=your-namespace
+bash k8s-launch.sh      # syncs the dataset to the cluster and starts training
+bash k8s-retrieve.sh    # pulls results back (works mid-training or after completion)
+```
 
 ---
 

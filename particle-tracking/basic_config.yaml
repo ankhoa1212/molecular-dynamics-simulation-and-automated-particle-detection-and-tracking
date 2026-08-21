@@ -5,7 +5,10 @@
 extends: config.yaml
 
 # Input: path to video, TIFF stack, or folder of images
-input: "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
+# Resolved relative to this repo's top-level data/ directory -- symlink or
+# copy your dataset there (see README.md's "Data & Model Availability"
+# section): ln -s /path/to/your/dataset ../data/<name>
+input: "../data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration/5 ul Au Citrate + 2.5 ul 1% of 2ul + 2.5 ul pf NaCl Trial 1 100% Light Intensity_3_MMStack_Default.ome.tif"
 
 # Crop: restrict detection to a region of interest (useful when particle count exceeds the
 # model's per-frame detection limit, e.g. RF-DETR's 300-query ceiling).
@@ -27,7 +30,9 @@ tracking:
   adaptive_stop: 1.0    # Trackpy: minimum search_range before giving up
 
 output:
-  dir: /mnt/d/Particle Tracking Data/2um/rf-detr/
+  # Resolved relative to this repo's top-level data/ directory -- change to
+# any output location you prefer.
+  dir: ../data/2um/rf-detr/
   save_trajectory_image: false  # base has this on; not used at this crop size
 
 analysis:

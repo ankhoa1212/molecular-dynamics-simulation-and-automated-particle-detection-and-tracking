@@ -12,11 +12,12 @@ each --input path. A video is assigned to a split if its stem contains any of
 that split's configured experiment-name substrings (same substring-match rule
 as rf-detr/dataset.py:split_by_experiment).
 
-Usage:
+Usage (paths resolved relative to this repo's top-level data/ directory --
+see README.md's "Data & Model Availability" section):
     python yolo_split.py \\
-        --input "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Higher Concentration" \\
-                "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration" \\
-        --output "/mnt/d/Particle Tracking Data/2um-yolov12-matched"
+        --input "../data/2um-automatic-particle-detection-lodestar-data/2 um Higher Concentration" \\
+                "../data/2um-automatic-particle-detection-lodestar-data/2 um Lower Concentration" \\
+        --output "../data/2um-yolov12-matched"
 """
 
 import argparse

@@ -1,6 +1,6 @@
 {
     "model": "models/lodestar_model_10.pt",
-    "input": "/mnt/d/Particle Tracking Data/2um/",
+    "input": "../data/2um/",
     "use_radius": true,
     "alpha": 0.9,
     "cutoff": 0.001,
