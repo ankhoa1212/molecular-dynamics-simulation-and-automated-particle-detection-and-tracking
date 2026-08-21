@@ -338,12 +338,15 @@ error is the mean center-to-center distance over matched pairs only. See
 [`verification/README.md`](verification/README.md) for the full metric/matching definitions.
 
 **Exact commands to reproduce this table**, from `verification/` (after `uv sync`, with the
-pretrained checkpoints in place per [Data & Model Availability](#data--model-availability)):
+pretrained checkpoints in place per [Data & Model Availability](#data--model-availability)). This
+table was generated under `render_strategy: procedural`, not the current `config.yaml` default of
+`brightfield_fast`, so the render step below passes `configs/render_procedural.yaml` explicitly:
 
 ```bash
 uv run python render.py \
     --lammps ../lammps-scripts/single_continuous_force_test/continuous_force_1500_5.0.lammpstrj \
-    --frames 151
+    --frames 151 \
+    --config configs/render_procedural.yaml
 
 for model in rf-detr yolo lodestar trackpy; do
   uv run python benchmark.py \
