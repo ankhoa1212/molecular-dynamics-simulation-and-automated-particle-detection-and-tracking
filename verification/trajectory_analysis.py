@@ -52,7 +52,10 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 from compare import compute_msd, _track_velocity_magnitudes  # noqa: E402
 
-MIN_MSD_POINTS = 2
+MIN_MSD_POINTS = 5  # below this, a log-log fit's R^2 is degenerate (e.g. a
+# 2-point fit always has zero residual, i.e. fit_quality=1.0 regardless of
+# whether the data follows a power law) and can't gate alpha_reliable
+# meaningfully.
 MIN_FIT_QUALITY = 0.90  # R^2 floor below which alpha is unreliable (see
 # docs/plans/2026-08-21-001-feat-trajectory-analysis-
 # sim-real-validation-plan.md's doc-review findings

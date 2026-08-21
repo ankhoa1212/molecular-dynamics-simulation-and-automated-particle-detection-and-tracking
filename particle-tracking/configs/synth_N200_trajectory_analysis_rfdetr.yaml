@@ -24,6 +24,10 @@ detection:
 
 tracking:
   tracker: trackpy
+  # No dataset_profile here (unlike the real_5um_trajectory_analysis_*.yaml
+  # configs), so search_range can't be derived from one -- it's set
+  # explicitly instead, matching track.py's own documented fallback default
+  # for when no profile is referenced.
   search_range: 25.0
   memory: 5
   stub_filter: 10

@@ -68,9 +68,14 @@ class TestFitMsdExponent:
         assert alpha == pytest.approx(2.0, abs=0.3)
         assert fit_quality > 0.9
 
-    def test_too_few_points_returns_none(self):
-        lags = np.array([1.0])
-        msd = np.array([2.5])
+    @pytest.mark.parametrize("n_points", [1, 2, 3, 4])
+    def test_too_few_points_returns_none(self, n_points):
+        # Below MIN_MSD_POINTS=5, a log-log fit is either impossible (n<2) or
+        # degenerate (n=2 always has zero residual, i.e. a spuriously perfect
+        # fit_quality=1.0 regardless of whether the data follows a power law).
+        # Both cases must return None rather than a misleadingly clean fit.
+        lags = np.arange(1, n_points + 1, dtype=float)
+        msd = np.array([1.0, 100.0, 3.0, 400.0])[:n_points]
         alpha, fit_quality = fit_msd_exponent(lags, msd)
         assert alpha is None
         assert fit_quality is None

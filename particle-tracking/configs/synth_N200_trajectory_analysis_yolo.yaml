@@ -1,5 +1,8 @@
 # Trajectory-analysis pipeline (docs/plans/2026-08-21-001-feat-trajectory-analysis-sim-real-validation-plan.md, U3).
 # YOLOv12 + trackpy on the N=200 comparative synthetic video (U1's render output).
+# No dataset_profile: the synthetic-default.yaml profile is calibrated for the
+# denser N~1446 trajectory's spacing, not N=200's -- deriving from it would
+# give a mismatched search_range.
 input: "../verification/verification_output/trajectory_analysis/synth_N200/frames"
 
 model:
@@ -17,6 +20,10 @@ detection:
 
 tracking:
   tracker: trackpy
+  # No dataset_profile here (unlike the real_5um_trajectory_analysis_*.yaml
+  # configs), so search_range can't be derived from one -- it's set
+  # explicitly instead, matching track.py's own documented fallback default
+  # for when no profile is referenced.
   search_range: 25.0
   memory: 5
   stub_filter: 10
