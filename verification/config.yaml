@@ -19,7 +19,7 @@ synthetic:
   render_strategy: brightfield_fast   # procedural | brightfield | brightfield_fast
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
-  psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
+  psf_sigma: 4.0                # Gaussian PSF half-width in pixels (procedural strategy)
   peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
   background_fraction: 0.25     # uniform background baseline, as a fraction of peak_intensity
                                  # (procedural strategy). Sized as a fraction (not a fixed ADU value)
@@ -76,7 +76,7 @@ synthetic:
   ring:
     radius_factor: 1.0    # ring center's distance from particle center, in units of psf_sigma
     width_factor: 0.3     # ring Gaussian width, in units of psf_sigma
-    depth: 0.65           # ring depth, as a fraction of peak_intensity
+    depth: 0.8            # ring depth, as a fraction of peak_intensity
 
   # --- Multiple particle render profiles (render_strategy: procedural) ---
   # Optional. When present, particles are assigned one of several named
