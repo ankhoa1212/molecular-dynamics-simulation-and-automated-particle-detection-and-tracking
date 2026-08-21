@@ -1,4 +1,7 @@
-"""Tests for trajectory_analysis.py (docs/plans/2026-08-21-001-feat-trajectory-analysis-sim-real-validation-plan.md, U5)."""
+"""Tests for trajectory_analysis.py.
+
+See docs/plans/2026-08-21-001-feat-trajectory-analysis-sim-real-validation-plan.md, U5.
+"""
 
 import sys
 from pathlib import Path
@@ -16,7 +19,7 @@ from trajectory_analysis import (
 )
 
 
-def _diffusive_track_df(n_particles=20, n_frames=60, D=0.5, seed=0):
+def _diffusive_track_df(n_particles=20, n_frames=60, d=0.5, seed=0):
     """Synthetic tracks.csv-shaped DataFrame with known Brownian (alpha=1) motion."""
     rng = np.random.default_rng(seed)
     rows = []
@@ -24,8 +27,8 @@ def _diffusive_track_df(n_particles=20, n_frames=60, D=0.5, seed=0):
         x, y = rng.uniform(0, 500, size=2)
         for frame in range(n_frames):
             rows.append({"frame": frame, "x": x, "y": y, "track_id": pid})
-            x += rng.normal(0, np.sqrt(2 * D))
-            y += rng.normal(0, np.sqrt(2 * D))
+            x += rng.normal(0, np.sqrt(2 * d))
+            y += rng.normal(0, np.sqrt(2 * d))
     return pd.DataFrame(rows)
 
 
@@ -91,7 +94,7 @@ class TestFitMsdExponent:
 class TestAnalyzeLeg:
     def test_happy_path_produces_all_fields(self):
         df = _diffusive_track_df()
-        stats, lags, msd = analyze_leg(df, id_col="track_id", scale=0.108, max_lag=20)
+        stats, _, _ = analyze_leg(df, id_col="track_id", scale=0.108, max_lag=20)
         assert stats["alpha"] is not None
         assert stats["fit_quality"] is not None
         assert stats["raw_slope_D"] is not None

@@ -9,6 +9,7 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
 6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a grouped MOTA/IDF1/fragmentations bar panel by (model, tracker) and a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector and tracker performance side by side.
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
+8. **`trajectory_analysis.py`** — decomposes the sim-to-real trajectory gap into tracking-induced measurement error (GT-synthetic vs. tracked-synthetic) and domain gap (tracked-synthetic vs. tracked-real), reporting an MSD log-log scaling exponent (alpha, with an R²-gated `alpha_reliable` flag) plus secondary raw-slope diffusion coefficient and mean velocity for up to five legs (GT-synthetic, RF-DETR/YOLOv12 × synthetic/real). Reuses `compare.py`'s `compute_msd`/`_track_velocity_magnitudes`. See its module docstring for the full CLI and unit-scaling details.
 
 ## Setup
 
@@ -296,5 +297,9 @@ verification_output/
 ├── snr_psd_scores.csv          # per-strategy SNR and PSD similarity (from compare_renders.py)
 ├── hexatic_order.png           # structural order comparison (from compare.py)
 ├── msd.png                     # MSD comparison (from compare.py)
-└── velocity_dist.png           # velocity distribution comparison (from compare.py)
+├── velocity_dist.png           # velocity distribution comparison (from compare.py)
+└── trajectory_analysis/        # sim-to-real decomposition (from trajectory_analysis.py)
+    ├── summary.json             # per-leg alpha/fit_quality/alpha_reliable/raw_slope_D/velocity
+    ├── msd_comparison.png       # log-log MSD across all legs
+    └── velocity_comparison.png  # mean |v| bar chart across all legs
 ```

@@ -29,15 +29,19 @@ raw LAMMPS vx/vy columns (compare.py's _sim_velocity_magnitudes) -- the
 latter returns unscaled LJ velocity units that aren't comparable to the
 other four legs' px/frame-derived velocities.
 
-Usage:
-    uv run python trajectory_analysis.py \
-        --gt-synthetic ../particle-tracking/../verification/verification_output/trajectory_analysis/synth_N200/ground_truth_tracks.csv \
-        --rfdetr-synthetic ../particle-tracking/output/trajectory_analysis/synth_rfdetr/frames/tracks.csv \
-        --yolo-synthetic ../particle-tracking/output/trajectory_analysis/synth_yolo/frames/tracks.csv \
-        --rfdetr-real ../particle-tracking/output/trajectory_analysis/real_rfdetr/frames_000-150/tracks.csv \
-        --yolo-real ../particle-tracking/output/trajectory_analysis/real_yolo/frames_000-150/tracks.csv \
-        --lammps ../lammps-scripts/results/density_ablation/continuous_force_200_5.0.lammpstrj \
-        --image-width 512 --lj-to-um 5.0 --pixel-scale-real 0.108 \
+Usage (run from verification/, after particle-tracking/'s configs/*trajectory_analysis*.yaml runs):
+    uv run python trajectory_analysis.py \\
+        --gt-synthetic verification_output/trajectory_analysis/synth_N200/ground_truth_tracks.csv \\
+        --rfdetr-synthetic \\
+            ../particle-tracking/output/trajectory_analysis/synth_rfdetr/frames/tracks.csv \\
+        --yolo-synthetic \\
+            ../particle-tracking/output/trajectory_analysis/synth_yolo/frames/tracks.csv \\
+        --rfdetr-real \\
+            ../particle-tracking/output/trajectory_analysis/real_rfdetr/frames_000-150/tracks.csv \\
+        --yolo-real \\
+            ../particle-tracking/output/trajectory_analysis/real_yolo/frames_000-150/tracks.csv \\
+        --lammps ../lammps-scripts/results/density_ablation/continuous_force_200_5.0.lammpstrj \\
+        --image-width 512 --lj-to-um 5.0 --pixel-scale-real 0.108 \\
         --output-dir verification_output/trajectory_analysis
 """
 import argparse
@@ -144,10 +148,10 @@ def analyze_leg(df, id_col, scale, max_lag):
         df, id_col=id_col, time_col="frame", x_col="x", y_col="y", max_lag=max_lag, scale=scale
     )
     alpha, fit_quality = fit_msd_exponent(lags, msd)
-    raw_slope_D = None
+    raw_slope_d = None
     mask = ~np.isnan(msd)
     if mask.sum() >= MIN_MSD_POINTS:
-        raw_slope_D = float(np.polyfit(lags[mask], msd[mask], 1)[0] / 4.0)
+        raw_slope_d = float(np.polyfit(lags[mask], msd[mask], 1)[0] / 4.0)
     v_mean, v_std = _velocity_stats(df, id_col, scale)
     reliable = fit_quality is not None and fit_quality >= MIN_FIT_QUALITY
     return (
@@ -155,7 +159,7 @@ def analyze_leg(df, id_col, scale, max_lag):
             "alpha": alpha,
             "fit_quality": fit_quality,
             "alpha_reliable": reliable,
-            "raw_slope_D": raw_slope_D,
+            "raw_slope_D": raw_slope_d,
             "velocity_mean": v_mean,
             "velocity_std": v_std,
             "n_msd_points": int(mask.sum()),

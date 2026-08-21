@@ -6,9 +6,9 @@ venv/
 output/
 *.csv
 data/
-# data/ above only matches a real directory -- the documented convention
-# (see README.md's "Data & Model Availability" section) is a symlink named
-# `data`, which the trailing slash doesn't match.
+# data/ above only matches a real directory -- data is conventionally a
+# symlink named `data` (e.g. under particle-tracking/), which the trailing
+# slash doesn't match.
 /data
 **/__pycache__/
 __pycache__/
