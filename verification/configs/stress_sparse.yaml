@@ -36,59 +36,14 @@ compare:
   pixel_scale: 0.108
   tracks_file: null
 synthetic:
-  background:
-    amplitude: 705.0
-    heterogeneity_scale: 203.1
   background_fraction: 0.25
-  crop_template:
-    cache_path: crop_templates.npz
-    core_radius: 20.0
-    crop_half: 90
-    fit_half: 20
-    max_area: 4000
-    max_crops: 500
-    max_sigma: 20.0
-    min_area: 100
-    min_sep: 40
-    min_sigma: 3.0
-    n_clusters: 5
-    percentile: 95.0
-    ring_method: empirical
-    target_half: 65
-    transition_width: 10.0
-    video_paths:
-    - ../particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
   image_height: 512
   image_width: 512
-  noise:
-    gain_sigma: 0.02
-    read_noise: 62.42
   output_dir: verification_output/stress_sparse/synthetic_frames/
-  particle:
-    intensity_distribution: lognormal
-    intensity_sigma: 1.015
-    peak_mean: 987.4
   peak_intensity: 40000
   psf:
-    defocus: 0.0
-    na: 1.4
-    resolution: 6.5e-08
     sigma_px: 8.21
-    spherical_aberration: 0.0
-    wavelength: 520e-9
   psf_sigma: 5.0
-  randomization:
-    peak_range:
-    - 20000
-    - 60000
-    psf_sigma_range:
-    - 3.0
-    - 7.0
-    readout_noise_range:
-    - 150.0
-    - 300.0
-    smoothing:
-      step_std_fraction: 0.15
   readout_noise: 200.0
   render_strategy: procedural
   ring:

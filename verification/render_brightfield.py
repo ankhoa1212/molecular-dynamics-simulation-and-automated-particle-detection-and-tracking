@@ -24,21 +24,20 @@ rendering-requirements.md and docs/plans/2026-08-12-002-feat-brightfield-
 particle-rendering-plan.md).
 
 ``synthetic.brightfield`` is a flat config section (like every other
-strategy's config sub-dict here -- ``psf``, ``particle``, ``noise``), not
+strategy's config sub-dict here -- ``psf``, ``background``, ``noise``), not
 nested, so calibrate_psf.py's existing ``_merge_params_into_config`` (which
 only patches flat ``key: value`` lines per section) can write calibrated
 values into it without any changes.
 
 Requires deeptrack==2.0.1 (already a verification/ dependency; see
-pyproject.toml). render_deeptrack.py's crop_source: real path does NOT need
-deeptrack despite the similarly named module.
+pyproject.toml).
 """
 
 import warnings
 
 import numpy as np
 
-from render_deeptrack import _lj_to_pixels
+from render import _lj_to_pixels
 
 
 def _import_deeptrack():
@@ -230,7 +229,7 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None, state=N
         cfg: synthetic config dict (must have a flat 'brightfield' sub-dict
             -- see this module's docstring; reuses top-level 'background'/
             'noise' sections for the shared sCMOS camera-noise tail, the
-            same convention render_frame_deeptrack uses).
+            same sections render_frame_brightfield_fast reuses).
         rng: numpy.random.Generator instance.
         atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
             Passed through to _sample_particle_properties along with
@@ -267,8 +266,8 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None, state=N
 
     # --- Spatially varying background, sCMOS noise -----------------------
     # Reuses the same top-level synthetic.background/synthetic.noise blocks
-    # render_frame_deeptrack already applies (see that module), rather than
-    # inventing a parallel brightfield-only noise config -- this is a camera
+    # render_frame_brightfield_fast also applies, rather than inventing a
+    # parallel brightfield-only noise config -- this is a camera
     # characteristic independent of which optical model produced `frame`.
     bg_cfg = cfg.get("background", {})
     bg_scale = float(bg_cfg.get("heterogeneity_scale", 50))

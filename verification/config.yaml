@@ -16,16 +16,13 @@ dataset_profile: ../dataset-profiles/synthetic-default.yaml
 
 # --- render.py: synthetic microscopy image generation ---
 synthetic:
-  render_strategy: brightfield_fast   # procedural | deeptrack | randomized | brightfield | brightfield_fast
+  render_strategy: brightfield_fast   # procedural | brightfield | brightfield_fast
   image_width: 512              # output image width in pixels
   image_height: 512             # output image height in pixels
   psf_sigma: 5.0                # Gaussian PSF half-width in pixels (procedural strategy)
   peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
   background_fraction: 0.25     # uniform background baseline, as a fraction of peak_intensity
-                                 # (procedural strategy; silently ignored under render_strategy:
-                                 # deeptrack or randomized -- randomized explicitly zeroes it
-                                 # before delegating to stay black, deeptrack never reads this
-                                 # key at all). Sized as a fraction (not a fixed ADU value)
+                                 # (procedural strategy). Sized as a fraction (not a fixed ADU value)
                                  # because peak_intensity is an arbitrary synthetic scale,
                                  # not calibrated to real sensor
                                  # counts; 0.25 matches the real reference video's background/peak
@@ -119,37 +116,21 @@ synthetic:
 
   # --- PSF parameters ---
   # sigma_px is written here by: uv run python calibrate_psf.py --merge-config config.yaml
-  # deeptrack ignores sigma_px and uses na/wavelength/resolution instead.
+  # Used as a fallback match-threshold reference (benchmark.py's
+  # _resolve_psf_sigma_px) when synthetic.psf_sigma isn't set.
   psf:
-    na: 1.4                     # numerical aperture
-    wavelength: 520e-9          # emission wavelength (metres)
-    resolution: 6.5e-08  # pixel size (metres/pixel)
-    defocus: 0.0  # Zernike defocus coefficient (waves)
-    spherical_aberration: 0.0  # Zernike spherical aberration (waves)
     sigma_px: 8.21  # empirical PSF sigma (px) — filled by calibrate_psf.py
 
-  # --- Spatially varying background (render_strategy: deeptrack) ---
+  # --- Spatially varying background (render_strategy: brightfield /
+  # brightfield_fast; also read directly by calibrate_psf.py) ---
   # Calibrated (2026-07-22) via calibrate_psf.py --merge-config against 512x512
   # crops of particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif.
-  # Previously hand-set defaults, never calibrated against real data at all --
-  # see docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U3.
   background:
     heterogeneity_scale: 203.1  # spatial scale of background variation (px)
     amplitude: 705.0  # max background variation (ADU)
 
-  # --- Per-particle intensity distribution (render_strategy: deeptrack) ---
-  particle:
-    intensity_distribution: lognormal   # fixed | lognormal
-    peak_mean: 987.4  # mean peak intensity (ADU). Represents each particle's own peak
-                                 # brightness (before background/noise) -- crop_source: real's
-                                 # template is peak-normalized (max value 1) rather than
-                                 # sum-normalized, so peak_mean's meaning doesn't drift with template
-                                 # spatial extent. See docs/plans/2026-07-21-001-
-                                 # fix-peak-normalized-particle-brightness-plan.md.
-    intensity_sigma: 1.015  # log-normal sigma
-
-  # --- sCMOS noise model (render_strategy: deeptrack) ---
-  # Calibrated (2026-07-22), same source/command as background: above. No
+  # --- sCMOS noise model (render_strategy: brightfield / brightfield_fast)
+  # --- Calibrated (2026-07-22), same source/command as background: above. No
   # --dark-frames were available, so read_noise is estimated from image
   # stats rather than a clean dark-frame measurement (calibrate_psf.py
   # warns on this) -- revisit with real dark frames if this proves noisier
@@ -157,99 +138,6 @@ synthetic:
   noise:
     gain_sigma: 0.02  # per-pixel gain variation (fraction of mean gain)
     read_noise: 62.42  # Gaussian read noise std dev (ADU)
-
-  # --- Domain randomization (render_strategy: randomized) ---
-  randomization:
-    psf_sigma_range: [3.0, 7.0]          # Uniform range for per-frame PSF sigma (px)
-    peak_range: [20000, 60000]            # Uniform range for per-frame peak intensity (ADU)
-    readout_noise_range: [150.0, 300.0]  # Uniform range for per-frame readout noise std (ADU).
-                                          # Raised from [10.0, 25.0] to the same visible-noise
-                                          # scale as synthetic.readout_noise above (R7) --
-                                          # otherwise randomized output would be inconsistently
-                                          # "cleaner" than procedural after that fix. See
-                                          # docs/plans/2026-07-22-004-feat-procedural-renderer-
-                                          # ring-and-noise-plan.md U3.
-
-    # --- Frame-to-frame smoothing for the above ranges (R8/R9) ---
-    # Only takes effect when render.py's main() drives render_frame_randomized
-    # with a real cross-frame state dict (render_strategy: randomized); a
-    # bare call without a state argument still samples each parameter fresh
-    # and independently every time, unaffected by this block. See
-    # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-
-    # plan.md U4.
-    smoothing:
-      step_std_fraction: 0.15   # per-frame random-walk step std, as a fraction of each
-                                 # parameter's own (max - min) range. Starting-point value,
-                                 # not precision-fit -- balances "smooth enough to stop
-                                 # looking jumpy" against "still exploring the full range
-                                 # over a normal clip length, without dwelling at the
-                                 # boundaries." Confirm visually against a rendered
-                                 # randomized clip and adjust if it looks too jumpy (raise)
-                                 # or too static (lower).
-
-  # --- Particle appearance source (render_strategy: deeptrack) ---
-  crop_source: real   # real is the only supported value -- crop_source: physics and
-                       # crop_source: procedural were removed once render_strategy:
-                       # brightfield_fast superseded both on realism at production scale.
-                       # Requires crop_template.cache_path below to point at a prebuilt
-                       # template library (build one via
-                       # render_crop_templates.build_template_library() first).
-
-  # --- Empirical crop-template library (crop_source: real) ---
-  # Built once via render_crop_templates.build_template_library(), then cached; see
-  # docs/plans/2026-07-19-001-feat-crop-based-particle-rendering-plan.md.
-  crop_template:
-    # video_paths / min_area / max_area / max_sigma below are tuned for
-    # particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif.
-    # min_area/max_area were previously 20/400, sized for a different,
-    # smaller-particle "2 um dataset" -- measured (2026-07-22) that this 5um
-    # dataset's genuine particle blob areas run 400-3100px^2 at
-    # percentile: 95.0, so the old max_area rejected every real particle as
-    # "oversized" and left only noise-level candidates. See
-    # docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md.
-    video_paths:
-      - ../particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif
-    crop_half: 90                # half-width (px) of the harvested crop window — covers the measured
-                                  # diffraction-ring extent (bright core, first dark ring, secondary
-                                  # bright ring); see docs/plans/2026-07-20-001-fix-crop-template-
-                                  # harvest-quality-plan.md
-    fit_half: 20                 # half-width (px) of the small sub-window _fit_crop_gaussian actually
-                                  # fits — decoupled from crop_half so a larger crop_half doesn't
-                                  # multiply per-crop curve_fit cost
-    min_sep: 40                  # min candidate separation (px); also the contamination exclusion radius
-    percentile: 95.0             # candidate-detection brightness percentile
-    min_area: 100                 # min connected-component pixel area to count as a candidate
-    max_area: 4000                # max connected-component pixel area (excludes merged/oversized blobs)
-    max_crops: 500                # bounds harvest_crops' per-frame scan cost — early-exits once reached,
-                                   # so a rebuild against the full multi-hundred-frame video stays fast
-    target_half: 65              # half-width (px) of the final registered template — raised to cover
-                                  # through the measured secondary bright ring (~r=50-58); must stay
-                                  # <= crop_half or the ring data captured by crop_half is thrown away
-    n_clusters: 5                # number of empirical templates to build
-    min_sigma: 3.0                # reject fits at/near curve_fit's 0.5px floor (hot pixels/shot-noise
-                                   # spikes, not real particles) — see docs/plans/2026-07-20-001-fix-
-                                   # crop-template-harvest-quality-plan.md
-    max_sigma: 20.0                 # reject fits above this — genuine but out-of-focus particles
-                                    # (defocus blur broadens + lowers contrast), not hot pixels/noise but
-                                    # not in-focus PSF either; mixing them in washes out the dark-ring
-                                    # contrast (found via /ce-debug). null disables the upper bound.
-                                    # Raised from 15.0 -- this 5um dataset's genuine in-focus particles
-                                    # measure sigma up to ~19.7px, above the old ceiling tuned for a
-                                    # smaller-particle dataset.
-    ring_method: empirical         # empirical | model | hybrid — how each cluster's template is built.
-                                    # empirical: today's sigma-clipped raw-pixel average (default,
-                                    # unchanged behavior). model: fit a parametric ring function to the
-                                    # measured radial profile, generate a smoother/denoised template from
-                                    # the fit. hybrid: empirical core blended with a modeled ring.
-                                    # All three are implemented so template quality can be visually
-                                    # compared before picking a default — once a default is chosen, the
-                                    # unchosen ring_method code paths should be pruned rather than kept
-                                    # as a permanent three-way fork (see plan Scope Boundaries).
-    core_radius: 20.0              # (ring_method: hybrid only) radius (px) where the blend transitions
-                                    # from the empirical core to the modeled ring
-    transition_width: 10.0         # (ring_method: hybrid only) width (px) of the crossfade band centered
-                                    # on core_radius
-    cache_path: crop_templates.npz   # cached template library (.npz)
 
   # --- render_strategy: brightfield ---
   # Whole-frame coherent optical-field solve (DeepTrack2's Brightfield

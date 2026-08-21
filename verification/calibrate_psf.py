@@ -11,9 +11,9 @@ synthetic.brightfield for render_strategy: brightfield (see that function's
 docstring).
 
 Real saturated bright-field data should tune --min-area/--max-area/--percentile
-away from the small-particle-friendly defaults -- start from this repo's
-config.yaml crop_template values (--min-area 100 --max-area 4000 --percentile 95.0)
-and retune per dataset.
+away from the small-particle-friendly defaults -- start from
+--min-area 100 --max-area 4000 --percentile 95.0 (values previously tuned
+against this repo's real reference dataset) and retune per dataset.
 """
 
 import argparse
@@ -25,7 +25,6 @@ from pathlib import Path
 import numpy as np
 import scipy.ndimage
 import scipy.optimize
-import scipy.stats
 import tifffile
 import yaml
 
@@ -171,15 +170,14 @@ def _fit_gaussian(crop: np.ndarray):
         # particle too large for this fixed-size window) it converges to a
         # numerically-near-zero amplitude that still satisfies the sigma
         # bounds below. That's a degenerate "flat" fit, not a real peak, and
-        # left unfiltered it corrupts the population-level lognormal fit in
-        # calibrate_from_frames (a handful of ~1e-10 amplitudes alongside
-        # genuine hundreds-to-thousands-ADU peaks spans ~13 orders of
-        # magnitude in log-space, blowing up the fitted shape parameter).
-        # Scaled to the crop's own dynamic range rather than an absolute ADU
-        # constant, since that range varies by dataset/exposure. The 1e-9
-        # absolute floor backstops the relative check on an (near-)perfectly
-        # flat crop, where crop_range itself is ~0 and "A < 0.01 * crop_range"
-        # degenerates to "A < ~0", which a tiny positive A would pass.
+        # left unfiltered it corrupts calibrate_from_frames' sigma_ests
+        # population with sigmas fitted against noise rather than a genuine
+        # particle. Scaled to the crop's own dynamic range rather than an
+        # absolute ADU constant, since that range varies by dataset/exposure.
+        # The 1e-9 absolute floor backstops the relative check on an
+        # (near-)perfectly flat crop, where crop_range itself is ~0 and
+        # "A < 0.01 * crop_range" degenerates to "A < ~0", which a tiny
+        # positive A would pass.
         crop_range = float(crop.max() - crop.min())
         if A < 1e-9 or A < 0.01 * crop_range:
             return None
@@ -226,16 +224,16 @@ def calibrate_from_frames(
     min_area, max_area, percentile: tune _detect_particle_centers' connected-
     component candidate detection. Defaults suit small, isolated point-like
     data; real saturated bright-field data needs a higher percentile and an
-    explicit max_area (see verification/config.yaml's crop_template section
-    for values tuned to a real dataset).
+    explicit max_area (start from --min-area 100 --max-area 4000
+    --percentile 95.0, values previously tuned to a real dataset).
 
-    Returns dict with keys: psf, particle, background, noise, _meta.
+    Returns dict with keys: psf, background, noise, _meta.
     """
     if not frames:
         raise ValueError("frames list is empty")
 
     psf_sigma = _DEFAULT_SIGMA
-    sigma_ests, peak_vals, all_bg, bg_residuals = [], [], [], []
+    sigma_ests, all_bg, bg_residuals = [], [], []
 
     for frame in frames:
         spots = _detect_particle_centers(frame, min_area, max_area, percentile)
@@ -256,12 +254,6 @@ def calibrate_from_frames(
                 fit = _fit_gaussian(frame[r0:r1, c0:c1])
                 if fit is not None:
                     sigma_ests.append((fit[0] + fit[1]) / 2)
-                    # fit[2] is the fitted amplitude A, background-subtracted --
-                    # matches what render_deeptrack.py treats peak_mean as (the
-                    # particle's own contribution, separate from background).
-                    # The raw crop max used previously included the local
-                    # background baseline, inflating peak_mean.
-                    peak_vals.append(fit[2])
                     psf_sigma = float(np.mean(sigma_ests))
 
             # Mask particle for background
@@ -285,13 +277,6 @@ def calibrate_from_frames(
 
     fitted_sigma = float(np.mean(sigma_ests)) if sigma_ests else _DEFAULT_SIGMA
 
-    if peak_vals:
-        shape, _, scale = scipy.stats.lognorm.fit(np.array(peak_vals), floc=0)
-        peak_mean = float(np.exp(np.log(scale) + shape**2 / 2))
-        intensity_sigma = float(shape)
-    else:
-        peak_mean, intensity_sigma = 40000.0, 0.3
-
     bg_amplitude = float(np.std(np.concatenate(all_bg))) if all_bg else 500.0
     scale_px = _heterogeneity_scale(bg_residuals[0]) if bg_residuals else 50.0
 
@@ -313,13 +298,6 @@ def calibrate_from_frames(
     return {
         "psf": {
             "sigma_px": round(fitted_sigma, 2),
-            "defocus": 0.0,
-            "spherical_aberration": 0.0,
-            "resolution": 65.0e-9,
-        },
-        "particle": {
-            "peak_mean": round(peak_mean, 1),
-            "intensity_sigma": round(intensity_sigma, 3),
         },
         "background": {
             "heterogeneity_scale": round(scale_px, 1),
@@ -499,12 +477,6 @@ def _format_yaml_fragment(params: dict) -> str:
             f"# Fitted from {meta['n_fits']} particle crops in {meta['n_frames']} frames",
             "psf:",
             f"  sigma_px: {params['psf']['sigma_px']}      # mean fitted PSF sigma in pixels",
-            "  defocus: 0.0           # manual — use a defocused test image to fit",
-            "  spherical_aberration: 0.0",
-            f"  resolution: {params['psf']['resolution']:.1e}    # assumed — verify from microscope spec",
-            "particle:",
-            f"  peak_mean: {params['particle']['peak_mean']}",
-            f"  intensity_sigma: {params['particle']['intensity_sigma']}",
             "background:",
             f"  heterogeneity_scale: {params['background']['heterogeneity_scale']}",
             f"  amplitude: {params['background']['amplitude']}",
@@ -775,9 +747,9 @@ def main():
         type=float,
         default=90.0,
         help="candidate-detection brightness percentile (default: 90.0). Real "
-        "saturated bright-field data should start from this repo's config.yaml "
-        "crop_template values (--min-area 100 --max-area 4000 --percentile 95.0), "
-        "retuned per dataset",
+        "saturated bright-field data should start from "
+        "--min-area 100 --max-area 4000 --percentile 95.0 (values previously "
+        "tuned against this repo's real reference dataset), retuned per dataset",
     )
     parser.add_argument(
         "--brightfield",

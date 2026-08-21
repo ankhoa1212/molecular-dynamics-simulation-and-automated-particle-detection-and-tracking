@@ -51,10 +51,6 @@ lammps-scripts/simulation_results/*.png
 # particle-tracking: regeneratable evaluation output
 particle-tracking/evaluation/results/
 
-# cached crop-template library (regeneratable via
-# render_crop_templates.build_template_library())
-verification/crop_templates.npz
-
 # generated lint reports
 lint-reports/
 

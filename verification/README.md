@@ -37,15 +37,11 @@ Ready-to-use configs for each strategy live in `configs/`:
 
 | Config | Strategy | Description |
 |--------|----------|-------------|
-| `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (default; fast) |
-| *(none -- see note below)* | `deeptrack` | Empirical crop-template compositing (`crop_source: real`, the only supported value); spatially varying background; log-normal per-particle intensity; sCMOS noise model |
-| `configs/render_randomized.yaml` | `randomized` | Procedural renderer with per-frame stochastic PSF sigma, peak intensity, and noise sampling from config ranges; no deeptrack dependency |
-| `configs/render_brightfield.yaml` | `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; particles placed at the real trajectory's own x/y positions, not stamped independently. Small-batch/reference-quality by design (see `render_brightfield.py`'s module docstring for real per-frame cost data), not a bulk generator like the other three strategies |
+| `configs/render_procedural.yaml` | `procedural` | Flat 2D Gaussian PSF + Poisson/Gaussian noise (fast; also backs the density stress-test configs) |
+| `configs/render_brightfield.yaml` | `brightfield` | Coherent whole-frame optical-field solve via DeepTrack2's `Brightfield` optics; particles placed at the real trajectory's own x/y positions, not stamped independently. Small-batch/reference-quality by design (see `render_brightfield.py`'s module docstring for real per-frame cost data), not a bulk generator like `procedural`/`brightfield_fast` |
 | `configs/render_brightfield_fast.yaml` | `brightfield_fast` | FFT-based reimplementation of `brightfield`'s coherent optics directly in numpy/scipy (no deeptrack dependency), independent of particle count. Default strategy (`config.yaml`'s `render_strategy`), used for bulk/production-density rendering. See `render_brightfield_fast.py`'s module docstring for the algorithm and its validated equivalence to `brightfield` |
 
 Pass any of these with `--config`. Each writes to its own output subdirectory so runs don't overwrite each other.
-
-**Note on `deeptrack`:** there is no ready-made example config for this strategy. It requires `synthetic.crop_source: real` and a prebuilt empirical template library (`synthetic.crop_template.cache_path`, built via `render_crop_templates.build_template_library()`) -- neither is self-contained enough to ship as a standalone example without also documenting that build step. Set `render_strategy: deeptrack` and `crop_source: real` in a copy of `config.yaml` (which already has `crop_template` configured) to use it directly.
 
 `config.yaml` is the full reference config used by `benchmark.py`, `compare.py`, and `calibrate_psf.py --merge-config`.
 
@@ -67,10 +63,10 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack randomized
+    --strategies procedural brightfield_fast
 ```
 
-`--merge-config` writes calibrated values under `synthetic.psf`, `synthetic.particle`, `synthetic.background`, and `synthetic.noise` in `config.yaml`, preserving all existing keys. Omit it to print calibrated values to stdout instead (useful for inspection before committing).
+`--merge-config` writes calibrated values under `synthetic.psf`, `synthetic.background`, and `synthetic.noise` in `config.yaml`, preserving all existing keys. Omit it to print calibrated values to stdout instead (useful for inspection before committing).
 
 **Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between a calibrated render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
 
@@ -95,12 +91,11 @@ uv run python calibrate_psf.py \
 ## Step 1 — Render synthetic frames
 
 ```bash
-# Default (procedural, uses config.yaml)
+# Default (brightfield_fast, uses config.yaml)
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj
 
 # Pick a specific strategy
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_procedural.yaml
-uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_randomized.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield.yaml
 uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --config configs/render_brightfield_fast.yaml
 ```
@@ -125,17 +120,14 @@ Key settings in `config.yaml` under `synthetic:`:
 
 | Key | Description |
 |-----|-------------|
-| `render_strategy` | `procedural` / `deeptrack` / `randomized` / `brightfield` / `brightfield_fast` (default) |
+| `render_strategy` | `procedural` / `brightfield` / `brightfield_fast` (default) |
 | `image_width` / `image_height` | Output frame size in pixels |
 | `psf_sigma` | Gaussian PSF sigma for `procedural` strategy (px) |
 | `peak_intensity` | Particle center brightness (ADU, 16-bit: 0–65535) |
 | `background_fraction` | Flat background baseline for `procedural`, as a fraction of `peak_intensity` |
-| `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config` |
-| `psf.na` / `psf.wavelength` / `psf.resolution` | DeepTrack2 PSF optics params |
-| `background.amplitude` | Max spatial background variation (ADU) |
-| `particle.peak_mean` / `particle.intensity_sigma` | Log-normal intensity distribution |
-| `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params |
-| `randomization.psf_sigma_range` / `.peak_range` / `.readout_noise_range` | Per-frame sampling ranges for `randomized` strategy |
+| `psf.sigma_px` | Empirical PSF sigma written by `calibrate_psf.py --merge-config`; used as a match-threshold fallback (`benchmark.py`) when `psf_sigma` isn't set |
+| `background.amplitude` / `.heterogeneity_scale` | Spatially varying background for `brightfield`/`brightfield_fast`'s shared sCMOS camera-noise model |
+| `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params, shared by `brightfield`/`brightfield_fast` |
 | `brightfield.max_particles` | Safety cap on particles rendered per `brightfield` frame (real per-frame cost is highly variable; see `render_brightfield.py`) |
 | `brightfield.na` / `.wavelength` / `.resolution` / `.refractive_index_medium` | `brightfield` optics params, passed to `deeptrack.Brightfield` |
 | `brightfield.radius_min`/`.radius_max`, `.refractive_index_min`/`.refractive_index_max`, `.z_min_px`/`.z_max_px` | `brightfield` per-particle physical property ranges (single particle type this iteration) |
@@ -266,7 +258,7 @@ uv run python render.py --lammps ../lammps-scripts/results/sim.lammpstrj --frame
 uv run python compare_renders.py \
     --lammps ../lammps-scripts/results/sim.lammpstrj \
     --real-frame /path/to/reference.tif \
-    --strategies procedural deeptrack randomized
+    --strategies procedural brightfield_fast
 
 # 3. Benchmark detection + tracking
 uv run python benchmark.py \

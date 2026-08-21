@@ -2,7 +2,7 @@
 """Compare synthetic rendering strategies side-by-side against a real frame.
 
 CLI: uv run python compare_renders.py --lammps <path> --real-frame <tif>
-     --config config.yaml [--strategies procedural deeptrack randomized]
+     --config config.yaml [--strategies procedural brightfield_fast]
      [--output-dir verification_output/]
 """
 import argparse
@@ -129,11 +129,8 @@ def main():
         default=["procedural"],
         choices=[
             "procedural",
-            "deeptrack",
-            "randomized",
             "brightfield",
             "brightfield_fast",
-            "deeptrack-real",
         ],
     )
     parser.add_argument("--output-dir", default="verification_output/")
@@ -153,51 +150,23 @@ def main():
     if real_frame is None:
         warnings.warn("--real-frame not provided; PSD comparison skipped.", stacklevel=2)
 
-    if args.real_frame and "deeptrack-real" in args.strategies:
-        real_frame_path = Path(args.real_frame).resolve()
-        harvest_paths = {
-            Path(p).resolve() for p in synth_cfg.get("crop_template", {}).get("video_paths", [])
-        }
-        if real_frame_path in harvest_paths:
-            warnings.warn(
-                "--real-frame resolves to the same file as a configured "
-                "synthetic.crop_template.video_paths entry — the 'deeptrack-real' comparison may "
-                "be measuring memorization of the reference frame rather than generalization.",
-                stacklevel=2,
-            )
-
-    # "deeptrack-real" dispatches through the plain "deeptrack" strategy
-    # string with crop_source overridden on a copy of synth_cfg --
-    # _dispatch_render only recognizes literal "deeptrack" (see
-    # render.py:_dispatch_render), so this suffixed name can't be passed
-    # through directly. "real" is the only crop_source render_deeptrack.py
-    # still supports (crop_source: physics/procedural were removed once
-    # render_strategy: brightfield_fast superseded both on realism).
-    _CROP_SOURCE_BY_STRATEGY = {
-        "deeptrack-real": "real",
-    }
-
     # "brightfield" hits an ImportError deep inside _dispatch_render if
     # deeptrack isn't installed -- this guard skips it with a friendly
-    # warning instead of crashing the whole script. "deeptrack" (bare or
-    # -real) is deliberately NOT in this set: render_deeptrack.py's
-    # crop_source: real path is pure numpy/scipy with no deeptrack
-    # dependency at all, so gating it on deeptrack's presence would
-    # incorrectly skip a strategy that doesn't actually need it.
+    # warning instead of crashing the whole script. "brightfield_fast" is
+    # deliberately NOT in this set: it's a pure numpy/scipy reimplementation
+    # with no deeptrack dependency at all, so gating it on deeptrack's
+    # presence would incorrectly skip a strategy that doesn't actually need it.
     _DEEPTRACK_BACKED_STRATEGIES = {"brightfield"}
 
     rendered = {}
     for strategy in args.strategies:
-        crop_source = _CROP_SOURCE_BY_STRATEGY.get(strategy)
-        dispatch_strategy = "deeptrack" if crop_source else strategy
-        if dispatch_strategy in _DEEPTRACK_BACKED_STRATEGIES:
+        if strategy in _DEEPTRACK_BACKED_STRATEGIES:
             try:
                 import deeptrack  # noqa: F401
             except ImportError:
                 print(f"WARNING: deeptrack not installed — skipping '{strategy}'.")
                 continue
-        cfg = dict(synth_cfg, crop_source=crop_source) if crop_source else synth_cfg
-        rendered[strategy] = _dispatch_render(positions_lj, box, cfg, rng, dispatch_strategy)
+        rendered[strategy] = _dispatch_render(positions_lj, box, synth_cfg, rng, strategy)
 
     rows = []
     for strategy, frame in rendered.items():

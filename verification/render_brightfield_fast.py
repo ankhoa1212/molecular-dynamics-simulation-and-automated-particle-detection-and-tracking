@@ -60,8 +60,8 @@ import warnings
 
 import numpy as np
 
+from render import _lj_to_pixels
 from render_brightfield import _apply_partial_coherence_blur, _sample_particle_properties
-from render_deeptrack import _lj_to_pixels
 
 
 def _voxel_size_m(bf_cfg):
