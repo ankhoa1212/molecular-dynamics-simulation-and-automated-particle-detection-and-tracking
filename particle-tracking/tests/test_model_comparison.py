@@ -244,17 +244,6 @@ def _fake_yolo_writer(
     return cfg_path
 
 
-def _fake_yolo_writer(name, input_path, output_dir, crop_w, crop_h, bridge_gap, script_dir):
-    """Stand-in for tracker_configs.write_yolo_config; mirrors its real
-    stub_filter/search_range defaults (6 / 25 -- stub_filter independently
-    measured, not inherited from rf-detr's 90; see
-    trackers_common/tracker_defaults.yaml)."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    cfg_path = Path(output_dir) / f"{name}.yaml"
-    cfg_path.write_text(f'input: "{input_path}"\ntracking:\n  stub_filter: 6\n  search_range: 25\n')
-    return cfg_path
-
-
 def _parse_full_run_args(tmp_path, input_path, model_specs, output_dir=None, extra_argv=None):
     parser = build_arg_parser()
     output_dir = output_dir or (tmp_path / "cmp")
