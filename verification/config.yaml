@@ -447,6 +447,17 @@ tracking:
   adaptive_stop: null
   adaptive_step: 0.95
 
+  # bridge_gap/bridge_radius (--tracker trackpy only) reconnect track
+  # fragments separated by at most bridge_gap frames, mirroring
+  # particle-tracking/track.py's own tracking.bridge_gap/tracking.bridge_radius
+  # knobs. Off by default (null) -- unlike search_range/memory/stub_filter,
+  # not swept per model in trackers_common/tracker_defaults.yaml, so this is
+  # the only place benchmark.py resolves it from. Applied AFTER stub_filter
+  # (link -> filter_stubs -> bridge), so it can only reconnect fragments that
+  # already individually survive stub_filter.
+  bridge_gap: null
+  bridge_radius: null  # spatial search radius in pixels (default: 2 × search_range)
+
 # --- compare.py: physics observable comparison ---
 compare:
   lammps_file: null          # path to .lammpstrj (overridden by --lammps flag)
