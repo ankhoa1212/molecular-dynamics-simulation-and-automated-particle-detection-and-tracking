@@ -6,6 +6,10 @@ venv/
 output/
 *.csv
 data/
+# data/ above only matches a real directory -- the documented convention
+# (see README.md's "Data & Model Availability" section) is a symlink named
+# `data`, which the trailing slash doesn't match.
+/data
 **/__pycache__/
 __pycache__/
 *.log
@@ -35,6 +39,7 @@ data-setup/models/
 # yolov12
 yolov12/*.pt
 yolov12/runs/
+yolov12/mlruns/
 /runs/
 
 # yolov5 (vendored, not a submodule)
