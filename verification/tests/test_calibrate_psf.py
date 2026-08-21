@@ -125,10 +125,11 @@ class TestRecoveredSigma:
 
 # ---------------------------------------------------------------------------
 # R4 regression (docs/plans/2026-07-21-001-fix-peak-normalized-particle-
-# brightness-plan.md, U4): peak_mean must be background-subtracted, not the
-# raw crop maximum. _make_synthetic_frame's procedural renderer has no
-# background field (always 0), so it can't exercise this -- these tests
-# build a frame with an explicit nonzero background baseline directly.
+# brightness-plan.md, U4): _fit_gaussian's amplitude must be background-
+# subtracted, not the raw crop maximum. _make_synthetic_frame's procedural
+# renderer has no background field (always 0), so it can't exercise this --
+# these tests build a frame with an explicit nonzero background baseline
+# directly.
 # ---------------------------------------------------------------------------
 
 
@@ -149,29 +150,7 @@ def _make_frame_with_background(
     return frame.astype(np.float32)
 
 
-class TestPeakMeanBackgroundSubtraction:
-    def test_calibrated_peak_mean_matches_amplitude_not_amplitude_plus_background(self):
-        true_amplitude = 20000.0
-        true_background = 5000.0
-        spots = [(r, c) for r in (40, 88) for c in (40, 88)]
-        frame = _make_frame_with_background(
-            128,
-            128,
-            spots,
-            sigma=5.0,
-            amplitude=true_amplitude,
-            background=true_background,
-        )
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # few-fits warning expected; not under test here
-            params = calibrate_psf.calibrate_from_frames([frame])
-
-        recovered = params["particle"]["peak_mean"]
-        assert (
-            abs(recovered - true_amplitude) / true_amplitude < 0.05
-        ), f"peak_mean {recovered} should match the background-subtracted amplitude {true_amplitude}, not amplitude+background ({true_amplitude + true_background})"
-
+class TestFitGaussianAmplitude:
     def test_fit_gaussian_returns_amplitude_as_third_element(self):
         frame = _make_frame_with_background(
             64, 64, [(32, 32)], sigma=4.0, amplitude=1000.0, background=200.0
@@ -188,10 +167,8 @@ class TestPeakMeanBackgroundSubtraction:
 # degenerate near-zero-amplitude "fit" -- found 2026-07-22 running
 # calibrate_from_frames on real bright-field data: curve_fit can converge to
 # an amplitude of ~1e-10 on a flat/noise-only crop while still satisfying
-# the sigma bounds, and a handful of those alongside genuine hundreds-to-
-# thousands-ADU peaks spans ~13 orders of magnitude in log-space, which
-# blows up calibrate_from_frames' population-level lognormal fit (observed:
-# peak_mean computed as ~1e26).
+# the sigma bounds, and left unfiltered that pollutes sigma_ests with sigmas
+# fitted against noise rather than a genuine particle.
 # ---------------------------------------------------------------------------
 
 
@@ -221,10 +198,10 @@ class TestFitGaussianRejectsDegenerateAmplitude:
         _, _, amplitude = fit
         assert abs(amplitude - 50.0) / 50.0 < 0.1
 
-    def test_degenerate_fits_excluded_from_population_lognormal_fit(self):
-        """End-to-end: calibrate_from_frames must not blow up when some
-        candidates land on flat/noise-only regions alongside genuine
-        particles."""
+    def test_degenerate_fits_excluded_from_sigma_population(self):
+        """End-to-end: calibrate_from_frames must not blow up -- and must not
+        report a corrupted sigma_px -- when some candidates land on
+        flat/noise-only regions alongside genuine particles."""
         rng = np.random.default_rng(1)
         size = 256
         frame = 200.0 + rng.normal(0, 2.0, (size, size)).astype(np.float32)
@@ -242,8 +219,9 @@ class TestFitGaussianRejectsDegenerateAmplitude:
                 [frame.astype(np.float32)], min_area=50, max_area=5000, percentile=90.0
             )
 
-        assert params["particle"]["peak_mean"] < 10000.0
-        assert params["particle"]["intensity_sigma"] < 5.0
+        # sigma=4.0 particles: a corrupted fit (degenerate amplitude dragging
+        # in a garbage sigma) would blow this well past a sane PSF sigma.
+        assert 0 < params["psf"]["sigma_px"] < 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +381,6 @@ class TestOutputConfigYaml:
 
         assert parsed is not None, "Output is not valid YAML"
         assert "psf" in parsed, f"Missing 'psf' key; got: {list(parsed.keys())}"
-        assert "particle" in parsed, f"Missing 'particle' key; got: {list(parsed.keys())}"
         assert "background" in parsed, f"Missing 'background' key; got: {list(parsed.keys())}"
         assert "noise" in parsed, f"Missing 'noise' key; got: {list(parsed.keys())}"
 
@@ -421,7 +398,7 @@ class TestOutputConfigYaml:
         captured = capsys.readouterr().out
         parsed = yaml.safe_load(captured)
         assert parsed is not None
-        for key in ("psf", "particle", "background", "noise"):
+        for key in ("psf", "background", "noise"):
             assert key in parsed, f"Missing '{key}' in YAML output"
 
 
@@ -433,11 +410,7 @@ class TestOutputConfigYaml:
 _FAKE_PARAMS = {
     "psf": {
         "sigma_px": 5.2,
-        "defocus": 0.0,
-        "spherical_aberration": 0.0,
-        "resolution": 65e-9,
     },
-    "particle": {"peak_mean": 38000.0, "intensity_sigma": 0.28},
     "background": {"heterogeneity_scale": 47.0, "amplitude": 612.0},
     "noise": {
         "read_noise": 16.2,
@@ -455,7 +428,8 @@ class TestMergeConfig:
         path.write_text(yaml.dump(content, default_flow_style=False, sort_keys=False))
 
     def test_calibrated_values_land_in_synthetic_sub_dicts(self, tmp_path):
-        """After merge, config['synthetic']['particle']['peak_mean'] equals calibrated value."""
+        """After merge, config['synthetic']['background']['heterogeneity_scale']
+        equals calibrated value."""
         cfg_path = tmp_path / "config.yaml"
         self._write_config(
             cfg_path,
@@ -470,7 +444,7 @@ class TestMergeConfig:
         calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
 
         result = yaml.safe_load(cfg_path.read_text())
-        assert result["synthetic"]["particle"]["peak_mean"] == 38000.0
+        assert result["synthetic"]["background"]["heterogeneity_scale"] == 47.0
         # Pre-existing keys must be preserved
         assert result["synthetic"]["render_strategy"] == "gaussian"
         assert result["synthetic"]["image_width"] == 256
@@ -516,7 +490,7 @@ class TestMergeConfig:
         self._write_config(cfg_path, {"synthetic": {}})
 
         calibrate_psf._merge_params_into_config(
-            cfg_path, {"particle": {"peak_mean": 1.0}, "_internal": {"n": 1}}
+            cfg_path, {"custom_section": {"param_a": 1.0}, "_internal": {"n": 1}}
         )
 
         result = yaml.safe_load(cfg_path.read_text())
@@ -524,13 +498,14 @@ class TestMergeConfig:
         assert "_internal" not in result["synthetic"]
 
     def test_psf_sigma_alongside_existing_psf_keys(self, tmp_path):
-        """Merged psf.sigma_px coexists with pre-existing psf.na and psf.wavelength."""
+        """Merged psf.sigma_px coexists with an unrelated, pre-existing psf key
+        that calibrate_from_frames never writes."""
         cfg_path = tmp_path / "config.yaml"
         self._write_config(
             cfg_path,
             {
                 "synthetic": {
-                    "psf": {"na": 1.4, "wavelength": 532e-9},
+                    "psf": {"custom_field": 1.4},
                 }
             },
         )
@@ -540,8 +515,7 @@ class TestMergeConfig:
         result = yaml.safe_load(cfg_path.read_text())
         psf = result["synthetic"]["psf"]
         assert psf["sigma_px"] == 5.2
-        assert psf["na"] == pytest.approx(1.4)
-        assert psf["wavelength"] == pytest.approx(532e-9)
+        assert psf["custom_field"] == pytest.approx(1.4)
 
     def test_merged_yaml_is_parseable(self, tmp_path):
         """The written YAML must survive a round-trip through yaml.safe_load."""
@@ -563,7 +537,7 @@ class TestMergeConfig:
 
         result = yaml.safe_load(cfg_path.read_text())
         assert "synthetic" in result
-        for section in ("psf", "particle", "background", "noise"):
+        for section in ("psf", "background", "noise"):
             assert section in result["synthetic"], f"Missing section '{section}' after merge"
         # Other top-level keys must be untouched
         assert result["tracker"]["threshold"] == pytest.approx(0.5)
@@ -579,7 +553,7 @@ class TestMergeConfig:
             "  render_strategy: gaussian   # inline comment on an untouched key\n"
             "  # standalone comment above a section\n"
             "  psf:\n"
-            "    na: 1.4   # inline comment on a pre-existing psf key\n"
+            "    custom_field: 1.4   # inline comment on a pre-existing psf key\n"
         )
 
         calibrate_psf._merge_params_into_config(cfg_path, _FAKE_PARAMS)
@@ -592,17 +566,18 @@ class TestMergeConfig:
 
         result = yaml.safe_load(text)
         assert result["synthetic"]["psf"]["sigma_px"] == 5.2
-        assert result["synthetic"]["psf"]["na"] == pytest.approx(1.4)
+        assert result["synthetic"]["psf"]["custom_field"] == pytest.approx(1.4)
 
     def test_commented_out_placeholder_key_is_not_overwritten(self, tmp_path):
         """A commented-out example line for a key being merged (the real
-        verification/config.yaml:24 shape) must be left alone, with the active
-        value appended as a new line rather than the comment being uncommented."""
+        verification/config.yaml psf: section shape) must be left alone, with
+        the active value appended as a new line rather than the comment being
+        uncommented."""
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(
             "synthetic:\n"
             "  psf:\n"
-            "    na: 1.4\n"
+            "    custom_field: 1.4\n"
             "    # sigma_px: 4.2             # empirical PSF sigma (px) — filled by calibrate_psf.py\n"
         )
 
@@ -662,8 +637,8 @@ class TestMergeConfig:
 
         result = yaml.safe_load(cfg_path.read_text())
         assert "synthetic" in result
-        assert "particle" in result["synthetic"]
-        assert "peak_mean" in result["synthetic"]["particle"]
+        assert "background" in result["synthetic"]
+        assert "heterogeneity_scale" in result["synthetic"]["background"]
         # Pre-existing sibling keys preserved
         assert result["synthetic"]["render_strategy"] == "gaussian"
         assert result["synthetic"]["randomization"] is True

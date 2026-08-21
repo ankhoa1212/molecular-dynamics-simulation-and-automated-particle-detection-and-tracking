@@ -40,8 +40,8 @@ synthetic:
     mie_max_particles: 10
     mie_max_frames: 3
 
-  # Spatially varying background + sCMOS noise -- same model as
-  # render_strategy: deeptrack's background/noise steps.
+  # Spatially varying background + sCMOS noise -- shared camera-noise model,
+  # same config keys render_strategy: brightfield_fast also reads.
   background:
     heterogeneity_scale: 50
     amplitude: 500

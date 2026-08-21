@@ -20,7 +20,8 @@ dependencies = [
     # deeptrack's own pin ever drops scikit-image.
     "scikit-image>=0.22",
     # deeptrack==2.0.1 provides coherent optics for render_strategy: brightfield
-    # (render_strategy: deeptrack has no deeptrack dependency; see render_deeptrack.py)
+    # (render_strategy: brightfield_fast reimplements the same optics with no
+    # deeptrack dependency; see render_brightfield_fast.py)
     # May require build tools; tests mock the import so CI passes without it
     "deeptrack==2.0.1",
     "trackers-common",

@@ -18,9 +18,6 @@ Assumptions:
 
 Render strategies (set via synthetic.render_strategy in config.yaml):
     procedural  — flat 2D Gaussian PSF (default; unchanged from original)
-    deeptrack   — empirical crop-template compositing (crop_source: real);
-                  no deeptrack dependency despite the module's historical name
-    randomized  — procedural with per-frame stochastic parameter sampling
     brightfield — coherent whole-frame optical-field solve via DeepTrack2's
                   Brightfield optics; particles placed at real trajectory
                   positions, small-batch/reference-quality (see
@@ -422,38 +419,25 @@ def _dispatch_render(
     """Dispatch to the appropriate render function based on strategy.
 
     Args:
-        strategy: 'procedural' | 'deeptrack' | 'randomized' | 'brightfield' | 'brightfield_fast'
-        state: optional dict carrying cross-frame state. For 'randomized',
-            smoothing state (see render_randomized.render_frame_randomized).
-            For 'brightfield'/'brightfield_fast', a per-atom_id cache of
+        strategy: 'procedural' | 'brightfield' | 'brightfield_fast'
+        state: optional dict carrying cross-frame state. For
+            'brightfield'/'brightfield_fast', a per-atom_id cache of
             sampled radius/refractive_index/z so each physical particle's
             properties stay constant across frames instead of flickering
             (see render_brightfield._sample_particle_properties). Ignored
-            entirely by 'procedural'/'deeptrack' — their signatures/calls
-            are unchanged.
+            entirely by 'procedural' — its signature/call is unchanged.
         atom_ids: optional (N,) array of atom IDs, parallel to positions_lj.
             Passed through to the 'procedural' branch's render_frame (for
             particle_render_profiles lookup) and to 'brightfield'/
             'brightfield_fast' (for the per-particle state cache above).
-            'deeptrack'/'randomized' never receive it.
         profile_map: optional dict of atom_id -> profile name from
             _assign_particle_profiles. Passed through only to the
-            'procedural' branch; 'deeptrack'/'randomized' never receive it.
+            'procedural' branch.
 
     Returns:
         uint16 numpy array of shape (H, W)
     """
-    if strategy == "deeptrack":
-        try:
-            from render_deeptrack import render_frame_deeptrack
-
-            return render_frame_deeptrack(positions_lj, box, cfg, rng)
-        except ImportError:
-            raise ImportError(
-                "render_strategy: deeptrack (crop_source: real) requires scipy. "
-                "Run 'uv add scipy' inside verification/. "
-            )
-    elif strategy == "brightfield":
+    if strategy == "brightfield":
         try:
             from render_brightfield import render_frame_brightfield
 
@@ -477,16 +461,6 @@ def _dispatch_render(
                 "brightfield_fast rendering requires render_brightfield_fast.py. "
                 "Ensure the file exists in the verification/ directory."
             )
-    elif strategy == "randomized":
-        try:
-            from render_randomized import render_frame_randomized
-
-            return render_frame_randomized(positions_lj, box, cfg, rng, state=state)
-        except ImportError:
-            raise ImportError(
-                "Randomized rendering requires render_randomized.py. "
-                "Ensure the file exists in the verification/ directory."
-            )
     else:
         # Default: procedural
         return render_frame(positions_lj, box, cfg, rng, atom_ids=atom_ids, profile_map=profile_map)
@@ -504,12 +478,10 @@ def _stretch_to_uint8(img, cfg):
     the underlying psf_sigma never changes. lo=0 matches render_frame's own
     floor (its output is always clipped to >= 0). hi is derived from
     peak_intensity/background_fraction when the strategy exposes them
-    (procedural, randomized) -- the same fixed reference for every frame in
-    the run, regardless of that frame's own noise or particle count/overlap
-    -- falling back to this frame's own max otherwise (deeptrack, whose
-    config uses a different, unrelated key structure and is out of scope for
-    this fix). See docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-
-    stretch-design.md.
+    (procedural) -- the same fixed reference for every frame in the run,
+    regardless of that frame's own noise or particle count/overlap --
+    falling back to this frame's own max otherwise. See
+    docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-design.md.
     """
     img_f = img.astype(np.float32)
     lo = 0.0
@@ -538,7 +510,7 @@ def main():
             "When given, psf_sigma is derived from the script's particle diameter "
             "(overriding config.yaml's psf_sigma for this run) instead of using "
             "an arbitrary constant. Only affects render_strategy: procedural -- "
-            "randomized and deeptrack sample/derive their own particle size and "
+            "brightfield/brightfield_fast derive their own particle size and "
             "never read this override; a warning is printed if combined with them."
         ),
     )
@@ -561,36 +533,20 @@ def main():
 
     # _stretch_to_uint8 needs one fixed peak_intensity/background_fraction
     # reference for the whole run (see its docstring on why per-frame
-    # stretching causes apparent pulsing). render_strategy: randomized
-    # samples a *different* peak_intensity per frame (and always forces
-    # background_fraction to 0.0 -- see render_randomized.py) via a private
-    # frame_cfg that never reaches main(), so cfg's own static
-    # peak_intensity/background_fraction (from config.yaml, unrelated to
-    # randomized's sampling) is the wrong reference for this strategy.
-    # Building a stretch_cfg from randomization.peak_range's upper bound
-    # keeps the reference fixed for the whole run (no pulsing) while
-    # actually covering every value randomized can sample (no clipping).
+    # stretching causes apparent pulsing).
     stretch_cfg = cfg
-    if strategy == "randomized":
-        peak_max = cfg.get("randomization", {}).get("peak_range", [20000, 60000])[1]
-        stretch_cfg = dict(cfg)
-        stretch_cfg["peak_intensity"] = peak_max
-        stretch_cfg["background_fraction"] = 0.0
 
     rng = np.random.default_rng(args.seed)
     # Cross-frame state — a small dict owned by this run, created once
     # alongside rng, and threaded through _dispatch_render the same way rng
-    # already is. Deliberately not stuffed into cfg: render_frame_randomized
-    # already makes a private dict(cfg) copy per call to avoid mutating the
-    # caller's config, and carrying runtime state through cfg would break
-    # that boundary (see plan's Key Decisions, "cfg dict mutation is
-    # rejected"). For 'randomized' this holds cross-frame smoothing state
-    # (R8); for 'brightfield'/'brightfield_fast' it holds the per-atom_id
+    # already is. Deliberately not stuffed into cfg: carrying runtime state
+    # through cfg would let a callee's private dict(cfg) copy silently drop
+    # it. For 'brightfield'/'brightfield_fast' it holds the per-atom_id
     # particle-property cache that keeps each particle's rendered
     # appearance stable across frames instead of flickering (see
     # render_brightfield._sample_particle_properties). Other strategies
     # never see this — it stays None for them.
-    state = {} if strategy in ("randomized", "brightfield", "brightfield_fast") else None
+    state = {} if strategy in ("brightfield", "brightfield_fast") else None
     profile_map = None
 
     ground_truth = []
@@ -603,12 +559,11 @@ def main():
     if not args.lammps_in:
         print(f"PSF sigma:      {cfg.get('psf_sigma', cfg.get('psf', {}).get('sigma_px', 5.0))} px")
     elif strategy != "procedural":
-        # randomized samples its own psf_sigma from randomization.psf_sigma_range
-        # every frame (render_randomized.py) and deeptrack derives particle
-        # appearance from psf.na/wavelength/resolution or crop_source templates --
-        # neither ever reads cfg["psf_sigma"], so overriding it here would be a
-        # silent no-op. Warn instead of letting --lammps-in's derived value (and
-        # the "derived from --lammps-in" print below) misleadingly imply it's in
+        # brightfield/brightfield_fast derive particle appearance from their
+        # own brightfield.na/wavelength/resolution config, never reading
+        # cfg["psf_sigma"], so overriding it here would be a silent no-op.
+        # Warn instead of letting --lammps-in's derived value (and the
+        # "derived from --lammps-in" print below) misleadingly imply it's in
         # effect for this run's actual rendered output.
         print(
             f"WARNING:        --lammps-in has no effect on render_strategy: {strategy} -- "
