@@ -11,37 +11,41 @@ position error.
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
 --ground-truth-tracks is supplied (CSV from render.py U1), for either tracker
 selected via --tracker {trackpy,bytetrack} (default trackpy) -- orthogonal to
---model-type, the detector. This supersedes an earlier plan's KTD that left
-"bytetrack linker parity" out of scope; that deferral was correct when the
-goal was closing a dependency gap for trackpy's own metrics, but ByteTrack
-evaluation is this module's own goal now
-(docs/plans/2026-08-18-001-feat-bytetrack-tracking-support-plan.md).
+--model-type, the detector.
 
 --tracker trackpy links detections with trackers_common.linking.link_and_filter_tracks
 -- the same trackpy-linking implementation particle-tracking/track.py's production
-tracker uses -- resolving search_range/memory/stub_filter from trackers_common's
-canonical per-model tuning (the same values particle-tracking/tracker_configs.py
-generates for real per-model production comparison runs), not a generic value
-shared across all detectors. --tracker bytetrack tracks detections online,
-per-frame, via trackers_common.bytetrack.run_bytetrack (the same implementation
-particle-tracking/track.py's own --tracker bytetrack uses), resolving
-lost_track_buffer/minimum_consecutive_frames/track_activation_threshold from
-trackers_common's canonical defaults through the same mechanism. Both trackers'
-canonical values still honor verification/config.yaml's tracking: section as an
-override when set explicitly. --model-type trackpy (a classical detector with no
-particle-tracking/track.py model_type of its own) falls back to the rf-detr
-tuning for both trackers, as a documented default, not a claim of measured
-parity.
+tracker uses -- resolving search_range/memory/stub_filter/bridge_gap/bridge_radius
+from trackers_common's canonical per-model tuning (the same values
+particle-tracking/tracker_configs.py generates for real per-model production
+comparison runs; bridge_gap/bridge_radius come from verification/config.yaml's
+tracking: block instead, since gap-bridging isn't swept per model -- off by
+default), not a generic value shared across all detectors. --tracker bytetrack
+tracks detections online, per-frame, via trackers_common.bytetrack.run_bytetrack
+(the same implementation particle-tracking/track.py's own --tracker bytetrack
+uses), resolving lost_track_buffer/minimum_consecutive_frames/
+track_activation_threshold from trackers_common's canonical defaults through the
+same mechanism -- independently swept per model, same as trackpy's tuning (see
+trackers_common/tracker_defaults.yaml's comments: rf-detr/yolo converge on
+minimum_consecutive_frames=1, lodestar/trackpy on minimum_consecutive_frames=3).
+Both trackers' canonical values still honor verification/config.yaml's tracking:
+section as an override when set explicitly. Every --model-type, including
+trackpy (a classical detector with no particle-tracking/track.py model_type of
+its own), has its own tuned entry in tracker_defaults.yaml for both trackers --
+none falls back to rf-detr's tuning by default anymore.
 
-Two fairness caveats matter for reading plot_benchmark.py's tracking-metrics bar
-panel: (1) trackpy's tuning is a genuinely measured per-model split (see
-trackers_common/tracker_defaults.yaml's comments); ByteTrack's tuning is a
-single unmeasured value carried forward identically across every model type
-(same file) -- a trackpy-vs-bytetrack comparison today is not yet
-apples-to-apples on tuning quality, only on what each tracker does with its
-current defaults. (2) track_activation_threshold has no effect on the
-`trackpy` detector specifically, since detect_trackpy's synthesized
-confidence (always 1.0) exceeds any plausible threshold value.
+One fairness caveat: track_activation_threshold has no effect on the `trackpy`
+detector specifically, since detect_trackpy's synthesized confidence (always
+1.0) exceeds any plausible threshold value.
+
+NOTE: link_and_filter_tracks applies stub_filter BEFORE bridge_gap (link ->
+filter_stubs -> bridge), so --tracker trackpy's bridge_gap can only reconnect
+fragments that already individually survive stub_filter -- it cannot rescue a
+detector whose raw fragments are all shorter than stub_filter to begin with
+(e.g. rf-detr's stub_filter=90 against this dataset's collapsed ~3px
+search_range, where the longest raw fragment measured was 77 frames). For that
+case, --tracker bytetrack is the fix, not bridging -- it tracks online with no
+comparable filter-then-bridge ordering.
 
 Usage:
     uv run python benchmark.py \\
@@ -468,12 +472,19 @@ def _link_df_kwargs(cfg, search_range, memory):
     recall is high enough to recover a genuinely dense physical cluster
     (see tracking.adaptive_stop's config.yaml comment), not a synthetic-only
     edge case. Mirrors particle-tracking/track.py's own adaptive_stop/
-    adaptive_step threading."""
+    adaptive_step threading. bridge_gap/bridge_radius mirror track.py's own
+    --bridge-gap/--bridge-radius (tracking.bridge_gap/tracking.bridge_radius
+    here) -- off by default (None), since reconnecting fragments changes
+    trace continuity in the output video, not something to silently turn on."""
     kwargs = {"search_range": search_range, "memory": memory}
     adaptive_stop = _cfg_get(cfg, "tracking", "adaptive_stop", default=None)
     if adaptive_stop is not None:
         kwargs["adaptive_stop"] = adaptive_stop
         kwargs["adaptive_step"] = _cfg_get(cfg, "tracking", "adaptive_step", default=0.95)
+    bridge_gap = _cfg_get(cfg, "tracking", "bridge_gap", default=None)
+    if bridge_gap is not None:
+        kwargs["bridge_gap"] = bridge_gap
+        kwargs["bridge_radius"] = _cfg_get(cfg, "tracking", "bridge_radius", default=None)
     return kwargs
 
 
@@ -483,7 +494,7 @@ def _link_df_with_fallback_impl(det_df, link_kwargs, conn):
     subprocess+timeout wraps this rather than calling it directly).
 
     link_kwargs is an already-resolved dict of search_range/memory/
-    stub_filter/adaptive_stop/adaptive_step -- either the plain
+    stub_filter/adaptive_stop/adaptive_step/bridge_gap/bridge_radius -- either the plain
     verification/config.yaml tracking: block (--save-video, via
     _link_df_kwargs) or trackers_common's per-model canonical tuning
     (_run_tracking_metrics). Both routes call the same shared
@@ -960,6 +971,20 @@ def _run_tracking_metrics(
     stub_filter = tracking_defaults.get("stub_filter")
     adaptive_stop = tracking_defaults.get("adaptive_stop")
     adaptive_step = tracking_defaults.get("adaptive_step", 0.95)
+    # bridge_gap/bridge_radius: verification/config.yaml's tracking: block
+    # only (not per-model canonical tuning -- gap-bridging isn't swept per
+    # model in tracker_defaults.yaml) -- same resolution track.py's own
+    # --bridge-gap/--bridge-radius CLI flags fall back to. off by default
+    # (None). NOTE: link_and_filter_tracks applies stub_filter BEFORE
+    # bridging (link -> filter_stubs -> bridge), so this only reconnects
+    # fragments that already individually survive stub_filter -- it cannot
+    # rescue a detector whose fragments are all shorter than stub_filter to
+    # begin with (e.g. rf-detr's stub_filter=90 against this dataset's
+    # collapsed ~3px search_range, where the longest raw fragment measured
+    # was 77 frames). For that case, --tracker bytetrack is the fix, not
+    # bridging.
+    bridge_gap = _cfg_get(cfg, "tracking", "bridge_gap", default=None)
+    bridge_radius = _cfg_get(cfg, "tracking", "bridge_radius", default=None)
     threshold_radii = _cfg_get(cfg, "tracking", "matching_threshold_radii", default=0.5)
     # _resolve_psf_sigma_px(cfg) is the single source of truth shared with the
     # lodestar box_size derivation -- unless a --lammps-in-derived value was
@@ -997,6 +1022,8 @@ def _run_tracking_metrics(
         "stub_filter": stub_filter,
         "adaptive_stop": adaptive_stop,
         "adaptive_step": adaptive_step,
+        "bridge_gap": bridge_gap,
+        "bridge_radius": bridge_radius,
     }
     linked, _used_range = _link_df_with_fallback(det_df, link_kwargs)
     if linked is None:
