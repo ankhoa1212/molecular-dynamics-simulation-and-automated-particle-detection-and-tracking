@@ -1,4 +1,0 @@
-# file: /home/ankhoa1212/.no-mistakes/worktrees/e95feb70f8b2/01M0NEK5Z4ZDECTX4KPKKG63VT/verification/frames_to_video.py
-# hypothesis_version: 6.150.0
-
-[10.0, '--fps', '--frames', '--output', 'Output .mp4 path', '__main__', 'frame_*.png', 'mp4v']

@@ -3,6 +3,7 @@ log.lammps
 legacy/
 venv/
 .venv/
+.hypothesis/
 output/
 *.csv
 data/

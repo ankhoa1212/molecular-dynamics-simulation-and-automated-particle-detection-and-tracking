@@ -1,4 +1,0 @@
-# file: /home/ankhoa1212/.no-mistakes/worktrees/e95feb70f8b2/01M0NEK5Z4ZDECTX4KPKKG63VT/trackers-common/trackers_common/defaults.py
-# hypothesis_version: 6.150.0
-
-['.', 'adaptive_step', 'adaptive_stop', 'link_strategy', 'lost_track_buffer', 'memory', 'rf-detr', 'search_range', 'stub_filter', 'tracking.memory', 'tracking.stub_filter']
