@@ -238,6 +238,109 @@ class TestRunTrackingMetrics:
 
 
 # ---------------------------------------------------------------------------
+# _run_bytetrack_metrics — --tracker bytetrack counterpart to
+# _run_tracking_metrics's trackpy-linking path.
+# ---------------------------------------------------------------------------
+
+
+def _boxes_frame(centers, box_size=10.0, confidence=0.9):
+    """Build one all_boxes_by_frame entry ({"xyxy": ..., "confidence": ...})
+    from a list of (x, y) centers, matching main()'s detection-loop shape."""
+    if not centers:
+        return {"xyxy": np.zeros((0, 4)), "confidence": np.zeros(0)}
+    r = box_size / 2
+    xyxy = np.array([[x - r, y - r, x + r, y + r] for x, y in centers], dtype=np.float64)
+    return {"xyxy": xyxy, "confidence": np.full(len(centers), confidence, dtype=np.float64)}
+
+
+class TestRunBytetrackMetrics:
+    def test_perfect_detection_and_tracking(self, tmp_path):
+        gt_rows = []
+        for frame in range(5):
+            for pid in [1, 2, 3]:
+                x, y = float(pid * 50), float(pid * 50)
+                gt_rows.append({"frame": frame, "particle_id": pid, "x": x, "y": y})
+        gt_path = tmp_path / "ground_truth_tracks.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+
+        all_boxes_by_frame = {
+            frame: _boxes_frame([(pid * 50.0, pid * 50.0) for pid in [1, 2, 3]])
+            for frame in range(5)
+        }
+        cfg = _make_cfg()
+        result = benchmark._run_bytetrack_metrics(all_boxes_by_frame, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert result["mota"] == pytest.approx(1.0, abs=1e-4)
+        assert result["idf1"] == pytest.approx(1.0, abs=1e-4)
+
+    def test_no_detections_returns_none(self, tmp_path):
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 50.0, "y": 50.0}])
+        cfg = _make_cfg()
+        result = benchmark._run_bytetrack_metrics({}, str(gt_path), cfg, "rf-detr")
+        assert result is None
+
+    def test_missing_gt_tracks_file_returns_none(self, tmp_path):
+        absent = str(tmp_path / "nonexistent.csv")
+        cfg = _make_cfg()
+        all_boxes_by_frame = {0: _boxes_frame([(50.0, 50.0)])}
+        result = benchmark._run_bytetrack_metrics(all_boxes_by_frame, absent, cfg, "rf-detr")
+        assert result is None
+
+    def test_tracking_disabled_returns_none(self, tmp_path):
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, [{"frame": 0, "particle_id": 1, "x": 50.0, "y": 50.0}])
+        cfg = _make_cfg(enabled=False)
+        all_boxes_by_frame = {0: _boxes_frame([(50.0, 50.0)])}
+        result = benchmark._run_bytetrack_metrics(all_boxes_by_frame, str(gt_path), cfg, "rf-detr")
+        assert result is None
+
+    def test_gap_in_frame_indices_does_not_crash_and_still_tracks(self, tmp_path):
+        """all_boxes_by_frame can have non-contiguous frame_idx keys (main()'s
+        detection loop skips a frame entirely if it's absent from
+        ground_truth.json) -- _run_bytetrack_metrics must fill the gap with
+        empty placeholders rather than collapsing frame 0 and frame 3 into
+        list-adjacency."""
+        gt_rows = []
+        for frame in [0, 1, 3, 4]:
+            gt_rows.append({"frame": frame, "particle_id": 1, "x": 100.0, "y": 100.0})
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+
+        all_boxes_by_frame = {frame: _boxes_frame([(100.0, 100.0)]) for frame in [0, 1, 3, 4]}
+        cfg = _make_cfg()
+        result = benchmark._run_bytetrack_metrics(all_boxes_by_frame, str(gt_path), cfg, "rf-detr")
+
+        assert result is not None
+        assert "mota" in result and "idf1" in result
+
+    def test_resolves_per_model_canonical_bytetrack_tuning(self, tmp_path):
+        """rf-detr/yolo (minimum_consecutive_frames=1) confirm a track on its
+        first matched frame; lodestar/trackpy (mcf=3) need 3 consecutive
+        matches first -- so an identical 2-frame-then-gap detection sequence
+        produces a confirmed track_id for rf-detr but not for lodestar."""
+        gt_rows = [{"frame": frame, "particle_id": 1, "x": 100.0, "y": 100.0} for frame in range(2)]
+        gt_path = tmp_path / "gt.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+        all_boxes_by_frame = {frame: _boxes_frame([(100.0, 100.0)]) for frame in range(2)}
+        cfg = _make_cfg()
+
+        rfdetr_result = benchmark._run_bytetrack_metrics(
+            all_boxes_by_frame, str(gt_path), cfg, "rf-detr"
+        )
+        lodestar_result = benchmark._run_bytetrack_metrics(
+            all_boxes_by_frame, str(gt_path), cfg, "lodestar"
+        )
+
+        # rf-detr (mcf=1) confirms immediately -> real matches, mota can be
+        # computed. lodestar (mcf=3) never confirms within 2 frames -> no
+        # tracks produced at all -> _run_bytetrack_metrics returns None.
+        assert rfdetr_result is not None
+        assert lodestar_result is None
+
+
+# ---------------------------------------------------------------------------
 # _run_tracking_metrics — per-model canonical tracking-tuning resolution
 # (2026-08-05 tracking-linker-parity plan: R3/R5/R6)
 # ---------------------------------------------------------------------------
@@ -2592,6 +2695,83 @@ class TestLinkDfKwargs:
         confirmed above, not a safe default."""
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
         assert benchmark._cfg_get(real_cfg, "tracking", "adaptive_stop") is None
+
+    def test_bridge_gap_absent_omits_bridge_kwargs(self):
+        cfg = {"tracking": {"search_range": 15, "memory": 3}}
+        kwargs = benchmark._link_df_kwargs(cfg, search_range=15, memory=3)
+        assert "bridge_gap" not in kwargs
+        assert "bridge_radius" not in kwargs
+
+    def test_bridge_gap_set_adds_bridge_kwargs(self):
+        cfg = {"tracking": {"bridge_gap": 5, "bridge_radius": 20.0}}
+        kwargs = benchmark._link_df_kwargs(cfg, search_range=15, memory=3)
+        assert kwargs["bridge_gap"] == 5
+        assert kwargs["bridge_radius"] == 20.0
+
+    def test_bridge_radius_defaults_to_none_when_only_gap_is_set(self):
+        # link_and_filter_tracks itself derives bridge_radius = 2*search_range
+        # when bridge_gap is set and bridge_radius is None -- this level just
+        # needs to pass None through, not compute the default itself.
+        cfg = {"tracking": {"bridge_gap": 5}}
+        kwargs = benchmark._link_df_kwargs(cfg, search_range=15, memory=3)
+        assert kwargs["bridge_gap"] == 5
+        assert kwargs["bridge_radius"] is None
+
+    def test_shipped_config_yaml_leaves_bridge_gap_disabled(self):
+        """Regression guard: bridge_gap must stay null/absent by default --
+        it's an opt-in reconnection step, not something that should silently
+        change every run's trajectory shapes."""
+        real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
+        assert benchmark._cfg_get(real_cfg, "tracking", "bridge_gap") is None
+
+
+class TestRunTrackingMetricsBridgeGap:
+    """bridge_gap/bridge_radius wired into _run_tracking_metrics's trackpy
+    link_kwargs (verification/config.yaml's tracking: block only -- not
+    per-model canonical tuning, since gap-bridging isn't swept per model).
+    NOTE: link_and_filter_tracks applies stub_filter BEFORE bridging, so
+    bridging can only reconnect fragments that already individually survive
+    stub_filter -- these tests use stub_filter=0 (via _make_cfg's default)
+    to isolate bridging's own effect from that ordering. Bridging also
+    cannot fabricate a detection for the still-missing frame itself, so
+    num_misses/num_fragmentations (both driven by whether GT has ANY
+    matched hypothesis at that frame) are unaffected either way -- what
+    bridging fixes is identity CONSISTENCY across the gap (num_switches/
+    idf1), by relabeling the post-gap fragment to keep the pre-gap
+    fragment's track_id instead of starting a new one."""
+
+    def test_bridge_gap_eliminates_the_identity_switch_across_a_dropped_frame(self, tmp_path):
+        gt_rows = []
+        for frame in range(6):
+            gt_rows.append({"frame": frame, "particle_id": 1, "x": 100.0, "y": 50.0})
+        gt_path = tmp_path / "ground_truth_tracks.csv"
+        _write_gt_tracks(gt_path, gt_rows)
+
+        # Frame 2 has no detection -- trackpy's own linker (memory=0) treats
+        # this as two separate fragments (frames 0-1 and frames 3-5), each
+        # getting its own track_id -- an identity switch from the GT
+        # particle's perspective, absent bridging.
+        detections = {}
+        for frame in range(6):
+            detections[frame] = np.zeros((0, 2)) if frame == 2 else np.array([[100.0, 50.0]])
+
+        cfg = _make_cfg(memory=0)
+        without_bridge = benchmark._run_tracking_metrics(detections, str(gt_path), cfg, "rf-detr")
+
+        cfg_bridged = _make_cfg(memory=0)
+        cfg_bridged["tracking"]["bridge_gap"] = 2
+        cfg_bridged["tracking"]["bridge_radius"] = 5.0
+        with_bridge = benchmark._run_tracking_metrics(
+            detections, str(gt_path), cfg_bridged, "rf-detr"
+        )
+
+        assert without_bridge is not None and with_bridge is not None
+        assert without_bridge["num_switches"] == 1
+        assert with_bridge["num_switches"] == 0
+        assert with_bridge["idf1"] > without_bridge["idf1"]
+        assert with_bridge["mota"] > without_bridge["mota"]
+        # Neither run can recover the genuinely missing frame-2 detection.
+        assert with_bridge["num_misses"] == without_bridge["num_misses"] == 1
 
 
 def _scattered_detections_and_gt(tmp_path, n_particles_per_frame, n_frames, spacing, seed=2):

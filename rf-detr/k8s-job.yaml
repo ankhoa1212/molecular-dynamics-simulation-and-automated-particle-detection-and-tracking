@@ -1,17 +1,17 @@
 # RF-DETR training job for Kubernetes (A40 48GB node)
 #
 # Before applying:
-#   1. Registry: ankhoa1212 (Docker Hub)
-#   2. Replace ryu-classroom with your cluster namespace
+#   1. Registry: your-registry (e.g. your Docker Hub username/org)
+#   2. Replace your-namespace with your cluster namespace
 #   3. Create the two PVCs below (or replace claimName with your existing ones)
 #   4. Copy the merged dataset to the data PVC:
-#        kubectl cp /mnt/d/Particle\ Tracking\ Data/2um-coco-merged <pod>:/data/
+#        kubectl cp ../data/2um-coco-merged <pod>:/data/
 #
 # Apply with:
-#   kubectl apply -f k8s-job.yaml -n ryu-classroom
+#   kubectl apply -f k8s-job.yaml -n your-namespace
 #
 # Stream logs:
-#   kubectl logs -f job/rf-detr-training -n ryu-classroom
+#   kubectl logs -f job/rf-detr-training -n your-namespace
 #
 # Copy checkpoints back:
 #   kubectl cp <pod>:/outputs/checkpoints ./checkpoints-a40
@@ -21,7 +21,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rf-detr-k8s-config
-  namespace: ryu-classroom
+  namespace: your-namespace  # REQUIRED: replace with your cluster namespace
 data:
   config.yaml: |
     dataset:
@@ -75,7 +75,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: rf-detr-training
-  namespace: ryu-classroom
+  namespace: your-namespace  # REQUIRED: replace with your cluster namespace
 spec:
   backoffLimit: 0                   # no retries — training failures should be investigated
   ttlSecondsAfterFinished: 86400    # clean up pod 24h after completion
@@ -97,7 +97,7 @@ spec:
                 - "569"             # driver > 569 = driver >= 570 (required for cu130 PyTorch wheels)
       containers:
         - name: trainer
-          image: ankhoa1212/rf-detr-trainer:latest
+          image: your-registry/rf-detr-trainer:latest  # REQUIRED: replace with your own built+pushed image
           command: ["python", "train.py", "--config", "/config/config.yaml"]
           resources:
             requests:

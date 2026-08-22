@@ -1,10 +1,14 @@
 #!/bin/bash
-# Launches RF-DETR training on the ryu-classroom Kubernetes cluster.
+# Launches RF-DETR training on a Kubernetes cluster.
 # Run from rf-detr/ directory. Safe to re-run — skips completed transfer batches.
 set -uo pipefail
 
-NAMESPACE="ryu-classroom"
-DATASET_SRC="/mnt/d/Particle Tracking Data/2um-coco-merged"
+# REQUIRED: export K8S_NAMESPACE=<your-cluster-namespace> before running (see rf-detr/README.md's "Kubernetes Training" section).
+NAMESPACE="${K8S_NAMESPACE:?Set K8S_NAMESPACE to your cluster namespace}"
+# Resolved relative to this repo's top-level data/ directory -- symlink or
+# copy your dataset there (see README.md's "Data & Model Availability" section):
+#   ln -s /path/to/your/2um-coco-merged ../data/2um-coco-merged
+DATASET_SRC="$(dirname "${BASH_SOURCE[0]}")/../data/2um-coco-merged"
 RESOLVED_SRC="/tmp/rf-detr-dataset-resolved"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BATCH_SIZE=100
@@ -66,7 +70,7 @@ kubectl get nodes &>/dev/null \
     || die "kubectl cannot reach the cluster. Check your kubeconfig."
 
 [ -d "$DATASET_SRC" ] \
-    || die "Dataset not found at: $DATASET_SRC\nMake sure /mnt/d/ is mounted."
+    || die "Dataset not found at: $DATASET_SRC\nSymlink or copy your dataset to ../data/2um-coco-merged (see README.md's \"Data & Model Availability\" section)."
 
 which rsync &>/dev/null \
     || die "rsync not found. Install it: sudo apt-get install rsync"
@@ -264,7 +268,7 @@ while true; do
         ImagePullBackOff|ErrImagePull)
             kubectl describe pod -n "$NAMESPACE" \
                 --selector=job-name=rf-detr-training 2>/dev/null | tail -20 || true
-            die "Cannot pull image ankhoa1212/rf-detr-trainer:latest. Check Docker Hub." ;;
+            die "Cannot pull image your-registry/rf-detr-trainer:latest. Check Docker Hub." ;;
     esac
 
     case "$PHASE" in

@@ -1,6 +1,6 @@
 {
     "model": "models/lodestar_model_15",
-    "input": "/mnt/d/Particle Tracking Data/2um/",
+    "input": "../data/2um/",
     "alpha": 0.9,
     "cutoff": 0.1,
     "nth": 5,

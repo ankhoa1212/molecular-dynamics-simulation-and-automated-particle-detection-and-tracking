@@ -97,6 +97,28 @@ def _parse_positions(atom_header, atoms):
     return positions
 
 
+def _ring_outer_zero_crossing(sigma, ring_center, ring_width, ring_depth):
+    """Outer zero-crossing radius r* of core(r) - ring_depth*ring_gaussian(r),
+    past ring_center -- shared by _gaussian_ring_profile (which centers its
+    erf cutoff there) and _gaussian_ring_extent (which sizes the pixel ROI
+    around it), so the two never drift apart if this formula is retuned.
+
+    Derived by equating the two Gaussians and taking logs, giving a
+    quadratic a*r^2 + b*r + c = 0; see _gaussian_ring_profile's docstring
+    for the full derivation.
+    """
+    a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
+    b = -(ring_center / ring_width**2)
+    c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
+    disc = b**2 - 4 * a * c
+    if a > 0 and disc >= 0:
+        # Larger root is the outer crossing (past ring_center).
+        return (-b + np.sqrt(disc)) / (2 * a)
+    # ring_width >= sigma or no real crossing: ring already dominates;
+    # push cutoff far out so it has no effect.
+    return ring_center + 5 * ring_width
+
+
 def _gaussian_ring_profile(
     r_grid, sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65
 ):
@@ -111,21 +133,49 @@ def _gaussian_ring_profile(
     offsets independently) -- the ring term is not separable into an outer
     product, or it produces a non-isotropic diamond-shaped artifact instead
     of a circular ring.
+
+    Beyond the dark ring's outer edge, a smooth erf cutoff suppresses the
+    faint secondary halo that would otherwise appear when the core Gaussian's
+    tail grows faster than the ring Gaussian's tail. The cutoff is centered
+    at the *outer zero-crossing* of (core - ring) -- the radius r* where the
+    two terms are exactly equal past the dip -- computed analytically from
+    the quadratic equation obtained by equating the two Gaussians:
+
+        0.5*(1/ring_width² - 1/sigma²)*r² - (ring_center/ring_width²)*r
+            + 0.5*(ring_center/ring_width)² - ln(ring_depth) = 0
+
+    For default params (sigma=4, ring_radius_factor=1, ring_width_factor=0.3,
+    ring_depth=0.65) this gives r*≈5.0px, whereas the previous cutoff was at
+    ring_center+3*ring_width=7.6px -- well past the rebound peak at 6.65px,
+    leaving most of the halo unattenuated. Centering the erf at r* means it
+    begins attenuating exactly where the rebound emerges from the dip.
     """
     ring_width = ring_width_factor * sigma
+    ring_center = ring_radius_factor * sigma
     core = np.exp(-0.5 * (r_grid / sigma) ** 2)
     if ring_depth > 0 and ring_width > 0:
-        ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_radius_factor * sigma) / ring_width) ** 2)
+        ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_center) / ring_width) ** 2)
+        outer_zero = _ring_outer_zero_crossing(sigma, ring_center, ring_width, ring_depth)
+        softness = 0.25 * ring_width
+        cutoff = 0.5 * (1 - erf((r_grid - outer_zero) / (np.sqrt(2) * softness)))
     else:
         ring = 0.0
-    return core - ring
+        cutoff = 1.0
+    return (core - ring) * cutoff
 
 
 def _gaussian_ring_extent(sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65):
-    """Pixel ROI radius needed to contain the core and the ring's outer tail."""
+    """Pixel ROI radius needed to contain the core, the ring, and the erf
+    cutoff's own transition tail at the outer zero-crossing."""
     ring_width = ring_width_factor * sigma
+    ring_center = ring_radius_factor * sigma
     core_extent = 3 * sigma
-    ring_extent = ring_radius_factor * sigma + 3 * ring_width
+    if ring_depth > 0 and ring_width > 0:
+        outer_zero = _ring_outer_zero_crossing(sigma, ring_center, ring_width, ring_depth)
+        softness = 0.25 * ring_width
+        ring_extent = outer_zero + 3 * softness
+    else:
+        ring_extent = ring_center + 3 * ring_width
     return int(max(core_extent, ring_extent)) + 1
 
 

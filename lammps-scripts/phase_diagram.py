@@ -145,11 +145,12 @@ if __name__ == "__main__":
     PARSER = argparse.ArgumentParser(
         description="Generate hexatic order phase diagram from LAMMPS trajectory files."
     )
+    # REQUIRED unless --test is given -- no default, pass your own data folder.
     PARSER.add_argument(
         "data_dir",
         nargs="?",
-        default="/home/austin/git/molecular-dynamics-simulation/lammps-scripts/1.0_temp",
-        help="Path to folder containing .lammpstrj files (default: ./data)",
+        default=None,
+        help="Path to folder containing .lammpstrj files (required unless --test is given)",
     )
     PARSER.add_argument(
         "--pattern",
@@ -164,6 +165,8 @@ if __name__ == "__main__":
     if ARGS.test:
         test_single_file(ARGS.test)
     else:
+        if ARGS.data_dir is None:
+            PARSER.error("data_dir is required unless --test is given")
         if ARGS.verbose:
             print(ARGS.data_dir)
         generate_stability_plot(ARGS.data_dir, ARGS.pattern, verbose=ARGS.verbose)
