@@ -37,7 +37,15 @@ dependencies = [
     # failed with ModuleNotFoundError before this was added, even though
     # trackpy itself needs no sibling-project venv (see README.md).
     "detectors-common",
-    "hypothesis>=6.165.10",
+    # Pinned exactly (not a range): hypothesis's collection-time "constant
+    # pooling" scan calls getattr(module, "__file__") on every loaded module,
+    # which forces deeptrack's lazy_import proxy for its tensorflow-only
+    # `generators` submodule to fully load and raise ImportError -- crashing
+    # pytest collection for the whole suite, not just these tests. This
+    # behavior isn't monotonic across patch releases in the affected range
+    # (e.g. 6.151.0 is clean but 6.151.14 crashes), so pin to a version
+    # directly verified clean rather than a version range.
+    "hypothesis==6.150.0",
 ]
 
 [build-system]
