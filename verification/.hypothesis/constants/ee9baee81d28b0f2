@@ -1,0 +1,4 @@
+# file: /home/ankhoa1212/.no-mistakes/worktrees/e95feb70f8b2/01M0NEK5Z4ZDECTX4KPKKG63VT/verification/../lammps-scripts/lammps_parser.py
+# hypothesis_version: 6.150.0
+
+['ITEM: ATOMS', 'ITEM: BOX BOUNDS', 'ITEM: TIMESTEP', 'atom_header', 'atoms', 'box_bounds', 'num_atoms', 'r', 'timestep', 'utf-8']

@@ -1,0 +1,4 @@
+# file: /home/ankhoa1212/.no-mistakes/worktrees/e95feb70f8b2/01M0NEK5Z4ZDECTX4KPKKG63VT/verification/render.py
+# hypothesis_version: 6.150.0
+
+[-0.5, 0.0, 0.25, 0.3, 0.5, 0.65, 1.0, 2.0, 2.355, 10.0, 200.0, 255, 65535, '#', '--config', '--fps', '--frames', '--lammps', '--lammps-in', '--seed', '--video', '..', 'ITEM: ATOMS', '__main__', 'atom_header', 'atoms', 'background_fraction', 'box_bounds', 'brightfield', 'brightfield_fast', 'config.yaml', 'depth', 'disk_rim', 'frame', 'gaussian_ring', 'gray', 'ground_truth.json', 'id', 'image_height', 'image_width', 'lammps-scripts', 'n_particles', 'name', 'output_dir', 'params', 'particle_id', 'peak_intensity', 'positions', 'preview.mp4', 'procedural', 'profiles', 'proportion', 'psf_sigma', 'radius_factor', 'readout_noise', 'render_strategy', 'ring', 'seed', 'shot_noise', 'store_true', 'synthetic', 'timestep', 'type', 'w', 'width_factor', 'x', 'xu', 'y', 'yu']

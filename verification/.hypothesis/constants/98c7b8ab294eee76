@@ -1,0 +1,4 @@
+# file: /home/ankhoa1212/.no-mistakes/worktrees/e95feb70f8b2/01M0NEK5Z4ZDECTX4KPKKG63VT/verification/render_random_placement.py
+# hypothesis_version: 6.150.0
+
+[0.0, 255, '--config', '--frames', '--output-dir', '--seed', '__main__', 'brightfield', 'brightfield_fast', 'config.yaml', 'frame', 'gray', 'ground_truth.json', 'image_height', 'image_width', 'n_particles', 'particle_id', 'positions', 'procedural', 'random_placement', 'render_strategy', 'synthetic', 'w', 'x', 'y']

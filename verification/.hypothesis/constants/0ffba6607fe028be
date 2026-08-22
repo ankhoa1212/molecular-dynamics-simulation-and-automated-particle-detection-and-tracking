@@ -1,0 +1,4 @@
+# file: /home/ankhoa1212/.no-mistakes/worktrees/e95feb70f8b2/01M0NEK5Z4ZDECTX4KPKKG63VT/trackers-common/trackers_common/linking.py
+# hypothesis_version: 6.150.0
+
+[0.95, 2.0, 200, 'adaptive_step', 'adaptive_stop', 'dist', 'frame', 'link_strategy', 'memory', 'particle', 'score', 'search_range', 'track_id', 'x', 'y']

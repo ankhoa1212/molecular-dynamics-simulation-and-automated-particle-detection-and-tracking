@@ -29,6 +29,7 @@ import numpy as np
 
 from render import (
     _dispatch_render,
+    _lj_to_pixels,
     _load_config,
     _stretch_to_uint8,
 )
@@ -163,15 +164,17 @@ def main():
         # See AGENTS.md's matplotlib footgun note.
         mplimg.imsave(str(png_path), img8, cmap="gray", vmin=0, vmax=255)
 
+        clipped_positions_px = _lj_to_pixels(positions_px, box, H, W)
+
         ground_truth.append(
             {
                 "frame": i,
                 "n_particles": n_particles,
-                "positions": positions_px.tolist(),
+                "positions": clipped_positions_px.tolist(),
             }
         )
 
-        for atom_id, (px, py) in zip(atom_ids, positions_px):
+        for atom_id, (px, py) in zip(atom_ids, clipped_positions_px):
             track_rows.append(
                 {
                     "frame": i,
