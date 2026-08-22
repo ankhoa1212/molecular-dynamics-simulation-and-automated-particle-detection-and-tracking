@@ -38,10 +38,10 @@ def _neutralize_deeptrack_lazy_modules():
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config, items):  # pylint: disable=unused-argument
     _neutralize_deeptrack_lazy_modules()
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_runtest_setup(item):
+def pytest_runtest_setup(item):  # pylint: disable=unused-argument
     _neutralize_deeptrack_lazy_modules()
