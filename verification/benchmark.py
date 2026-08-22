@@ -1571,6 +1571,15 @@ def main():
         default=30,
         help="Frames of trajectory history drawn in --save-video output",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=(
+            "Directory for output CSVs (accuracy_metrics_*.csv, tracking_metrics_*.csv, "
+            "tracking_visualization_*.mp4). Defaults to 'verification_output/' relative "
+            "to the current working directory, matching the historical behavior."
+        ),
+    )
     args = parser.parse_args()
 
     if args.lammps_in and not args.lammps:
@@ -1881,7 +1890,7 @@ def main():
 
     # Write per-frame CSV. Named per model_type — a fixed filename would let a
     # later run of the other model type silently overwrite these results.
-    output_dir = Path("verification_output")
+    output_dir = Path(args.output_dir) if args.output_dir else Path("verification_output")
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / f"accuracy_metrics_{model_type}.csv"
     if rows:

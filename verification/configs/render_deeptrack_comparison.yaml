@@ -1,0 +1,80 @@
+# DeepTrack comparison experiment config
+# Pins every parameter for both the physics-grounded (render.py) and
+# random-placement (render_random_placement.py) conditions so the comparison
+# is exactly reproducible from the commands below.
+#
+# Run both conditions in order:
+#
+# Step 1a: Physics-grounded condition (LAMMPS trajectory)
+#   cd verification/
+#   uv run python render.py \
+#     --lammps ../lammps-scripts/results/continuous_force_1500_5.0.lammpstrj \
+#     --frames 30 \
+#     --config configs/render_deeptrack_comparison.yaml \
+#     --seed 42
+#
+# Step 1b: Random-placement condition
+#   uv run python render_random_placement.py \
+#     --frames 30 \
+#     --config configs/render_deeptrack_comparison.yaml \
+#     --seed 42 \
+#     --output-dir verification_output/deeptrack_comparison/random/synthetic_frames/
+#
+# Step 2a: Benchmark physics-grounded frames
+#   uv run python benchmark.py \
+#     --frames verification_output/deeptrack_comparison/physics/synthetic_frames/ \
+#     --ground-truth verification_output/deeptrack_comparison/physics/ground_truth.json \
+#     --ground-truth-tracks verification_output/deeptrack_comparison/physics/ground_truth_tracks.csv \
+#     --config configs/render_deeptrack_comparison.yaml \
+#     --model-type rf-detr \
+#     --tracker bytetrack \
+#     --output-dir verification_output/deeptrack_comparison/physics/
+#
+# Step 2b: Benchmark random-placement frames
+#   uv run python benchmark.py \
+#     --frames verification_output/deeptrack_comparison/random/synthetic_frames/ \
+#     --ground-truth verification_output/deeptrack_comparison/random/ground_truth.json \
+#     --ground-truth-tracks verification_output/deeptrack_comparison/random/ground_truth_tracks.csv \
+#     --config configs/render_deeptrack_comparison.yaml \
+#     --model-type rf-detr \
+#     --tracker bytetrack \
+#     --output-dir verification_output/deeptrack_comparison/random/
+#
+# Step 3: Print comparison table
+#   uv run python compare_deeptrack_results.py \
+#     --physics verification_output/deeptrack_comparison/physics/accuracy_metrics_rf-detr.csv \
+#     --random  verification_output/deeptrack_comparison/random/accuracy_metrics_rf-detr.csv
+#
+# NOTE on MOTA/IDF1: --tracker bytetrack is preferred because trackpy hits
+# SubnetOversizeException at this dataset's density (~1446 particles/frame).
+# ByteTrack measured ~18s for physics-grounded frames. WARNING: the
+# random-placement condition may hit ByteTrack's 90s linking timeout —
+# a synthetic worst-case test with temporally incoherent positions measured
+# ~99s. If the random-placement MOTA/IDF1 step times out, the
+# accuracy_metrics_rf-detr.csv (F1/precision/recall) is still written and
+# is the primary placement-bias metric — MOTA/IDF1 are supplemental.
+# F1 is the primary metric because it directly captures whether the detector
+# sees the two spatial distributions differently, independent of tracking.
+#
+# NOTE on spatial statistics: the random-placement condition uses a Poisson
+# (i.i.d. uniform) spatial process; the physics-grounded condition uses
+# hard-sphere excluded-volume dynamics. These have different Ripley's K
+# statistics even at matched density — the random condition may show more
+# spatial clustering. This is a known limitation of matching density alone
+# and does not invalidate the comparison, since the paper's claim concerns
+# whether placement model choice affects evaluation metrics, not whether the
+# two spatial processes are identical.
+
+synthetic:
+  render_strategy: brightfield_fast  # matches paper's main benchmark run
+  output_dir: verification_output/deeptrack_comparison/physics/synthetic_frames/
+  # n_particles for random-placement condition: median particle count of
+  # continuous_force_1500_5.0.lammpstrj at 512x512, measured directly.
+  # The physics-grounded condition's count is the trajectory's own per-frame
+  # count (varies slightly around this median); the random condition is pinned
+  # to this value to keep density matched to within ±5% as required.
+  random_placement:
+    n_particles: 1446
+
+benchmark:
+  model_type: rf-detr  # paper's headline detector; only one model swept (scope boundary)
