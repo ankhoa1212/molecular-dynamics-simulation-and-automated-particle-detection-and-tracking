@@ -308,7 +308,7 @@ def test_comparison_table_structure(physics, random_cond):
 
 
 # ---------------------------------------------------------------------------
-# Example-based unit tests (task 6.6)
+# Example-based unit tests
 # ---------------------------------------------------------------------------
 
 

@@ -8,8 +8,8 @@ are identical to the physics-grounded condition.
 
 Output format exactly matches render.py:
   <output-dir>/frame_NNNNN.png      — 8-bit PNG previews
-  <output-dir>/../ground_truth.json  — pixel positions per frame (written by task 2.2)
-  <output-dir>/../ground_truth_tracks.csv — per-particle tracks (written by task 2.2)
+  <output-dir>/../ground_truth.json  — pixel positions per frame
+  <output-dir>/../ground_truth_tracks.csv — per-particle tracks
 
 Usage:
     uv run python render_random_placement.py --frames 30 --config config.yaml --seed 42
@@ -134,7 +134,7 @@ def main():
     ground_truth = []
     track_rows = []
 
-    print(f"Random-placement render")
+    print("Random-placement render")
     print(f"Image size:      {W}×{H} px")
     print(f"Particles/frame: {n_particles}")
     print(f"Render strategy: {strategy}")
@@ -184,7 +184,7 @@ def main():
         if i == 0 or (i + 1) % 10 == 0:
             print(f"  frame {i:4d}: {n_particles:4d} particles")
 
-    # --- Output files (task 2.2 territory, but written here per design) ---
+    # --- Output files ---
     gt_path = output_dir.parent / "ground_truth.json"
     with open(gt_path, "w") as f:
         json.dump(ground_truth, f)

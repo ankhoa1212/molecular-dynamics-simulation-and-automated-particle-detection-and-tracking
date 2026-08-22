@@ -167,7 +167,7 @@ def _print_table(table: list[dict], columns: list[str]) -> None:
         col_widths[col] = width + 2  # padding
 
     # Print sign convention note
-    print("# delta = random − physics  " "(positive = random better, negative = physics better)")
+    print("# delta = random − physics  (positive = random better, negative = physics better)")
     print()
 
     # Header row
