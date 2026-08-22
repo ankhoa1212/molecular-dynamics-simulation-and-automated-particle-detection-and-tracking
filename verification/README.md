@@ -11,6 +11,7 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
 8. **`run_density_ablation.sh`** — renders + benchmarks the default trajectory's particle count alongside 3 lower-density counts (same epsilon/box_size) against all 4 detector/tracker arms, without disturbing the real headline `verification_output/` numbers (backs them up and restores them on exit, even on failure).
 9. **`plot_density_ablation.py`** — plots per-model detection accuracy vs. particle count across `run_density_ablation.sh`'s sweep, reusing `plot_benchmark.py`'s aggregation and styling.
+10. **`trajectory_analysis.py`** — decomposes the sim-to-real trajectory gap into tracking-induced measurement error (GT-synthetic vs. tracked-synthetic) and domain gap (tracked-synthetic vs. tracked-real), reporting an MSD log-log scaling exponent (alpha, with an R²-gated `alpha_reliable` flag) plus secondary raw-slope diffusion coefficient and mean velocity for up to five legs (GT-synthetic, RF-DETR/YOLOv12 × synthetic/real). Reuses `compare.py`'s `compute_msd`/`_track_velocity_magnitudes`. See its module docstring for the full CLI and unit-scaling details.
 
 ## Setup
 
@@ -300,6 +301,10 @@ verification_output/
 ├── hexatic_order.png           # structural order comparison (from compare.py)
 ├── msd.png                     # MSD comparison (from compare.py)
 ├── velocity_dist.png           # velocity distribution comparison (from compare.py)
-└── density_ablation/            # per-N accuracy/tracking CSVs + plot (from run_density_ablation.sh, plot_density_ablation.py)
-    └── N{count}/                 # accuracy_metrics_*.csv / tracking_metrics_*.csv per swept particle count
+├── density_ablation/            # per-N accuracy/tracking CSVs + plot (from run_density_ablation.sh, plot_density_ablation.py)
+│   └── N{count}/                 # accuracy_metrics_*.csv / tracking_metrics_*.csv per swept particle count
+└── trajectory_analysis/        # sim-to-real decomposition (from trajectory_analysis.py)
+    ├── summary.json             # per-leg alpha/fit_quality/alpha_reliable/raw_slope_D/velocity
+    ├── msd_comparison.png       # log-log MSD across all legs
+    └── velocity_comparison.png  # mean |v| bar chart across all legs
 ```
