@@ -65,18 +65,483 @@
 # whether placement model choice affects evaluation metrics, not whether the
 # two spatial processes are identical.
 
-synthetic:
-  render_strategy: brightfield_fast  # matches paper's main benchmark run
-  output_dir: verification_output/deeptrack_comparison/physics/synthetic_frames/
-  image_width: 512
-  image_height: 512
-  # n_particles for random-placement condition: median particle count of
-  # continuous_force_1500_5.0.lammpstrj at 512x512, measured directly.
-  # The physics-grounded condition's count is the trajectory's own per-frame
-  # count (varies slightly around this median); the random condition is pinned
-  # to this value to keep density matched to within ±5% as required.
-  random_placement:
-    n_particles: 1446
+# Verification pipeline configuration
+# All paths are relative to the verification/ directory unless absolute.
 
+# Dataset scale profile: path to a YAML file with size_px/spacing_px (see
+# dataset-profiles/README.md). When set, drives box_size/nms_distance/
+# tile_size/diameter/search_range/memory derivation for any of those left
+# unset below. dataset-profiles/synthetic-default.yaml matches this file's
+# own synthetic default trajectory (continuous_force_1500_5.0.lammpstrj,
+# 512x512) exactly -- enabled here (U6) since LodeSTAR's fallback default
+# nms_distance (30px) suppresses almost every true detection at this
+# trajectory's real ~10.9px spacing (the same catastrophic-recall issue
+# already documented and fixed for the procedural strategy below, which
+# applies identically here since particle positions/density are the same
+# trajectory, only rendering differs).
+dataset_profile: ../dataset-profiles/synthetic-default.yaml
+
+# --- render.py: synthetic microscopy image generation ---
+synthetic:
+  render_strategy: brightfield_fast   # procedural | brightfield | brightfield_fast
+  image_width: 512              # output image width in pixels
+  image_height: 512             # output image height in pixels
+  psf_sigma: 4.0                # Gaussian PSF half-width in pixels (procedural strategy)
+  peak_intensity: 40000         # ADU at particle center (16-bit range: 0–65535)
+  background_fraction: 0.25     # uniform background baseline, as a fraction of peak_intensity
+                                 # (procedural strategy). Sized as a fraction (not a fixed ADU value)
+                                 # because peak_intensity is an arbitrary synthetic scale,
+                                 # not calibrated to real sensor
+                                 # counts; 0.25 matches the real reference video's background/peak
+                                 # ratio (median 1148 / max 3832 ADU). Set to 0 for the old flat-
+                                 # black canvas. See docs/superpowers/specs/2026-08-07-gray-
+                                 # background-default-design.md.
+  shot_noise: true              # add Poisson photon noise
+  readout_noise: 200.0          # Gaussian readout noise std dev (ADU). Raised from 15.0 --
+                                 # at the time, render.py's main() 8-bit PNG stretch used a
+                                 # per-frame true min/max ((img-lo)/(hi-lo)*255), and with
+                                 # peak_intensity: 40000 one 8-bit gray level was ~157 ADU, so
+                                 # 15 ADU of noise was invisible after the stretch (confirmed:
+                                 # >50% of pixels exactly 0.0 at the old default). 200.0 clears
+                                 # one gray level with margin. The stretch is now a fixed
+                                 # per-run reference, not per-frame (see _stretch_to_uint8 in
+                                 # render.py), but the same order-of-magnitude reasoning still
+                                 # applies. Starting-point value, not precision-fit -- confirm
+                                 # visually against a rendered frame and adjust if the
+                                 # background reads too grainy or still too flat. See
+                                 # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+                                 # and-noise-plan.md U3.
+  output_dir: verification_output/deeptrack_comparison/physics/synthetic_frames/  # deeptrack-comparison override: physics-grounded condition's frame dir
+  random_placement:
+    n_particles: 1446  # deeptrack-comparison override: median particle count of
+                       # continuous_force_1500_5.0.lammpstrj at 512x512, measured directly.
+                       # Pins the random-placement condition's density to match the
+                       # physics-grounded condition's trajectory to within +-5%.
+
+  # --- Dark ring for the procedural PSF stamp (render_strategy: procedural) ---
+  # Self-contained difference-of-Gaussians ring, parameterized as factors of
+  # psf_sigma (radius/width) and peak_intensity (depth) -- deliberately NOT
+  # fit against reference data, since keeping the procedural strategy self-
+  # contained (no curve-fit step, no dependency on real reference data) is
+  # the point of this code path.
+  #
+  # radius_factor/width_factor are sized against this dataset's own measured
+  # geometry, not picked freely: continuous_force_1500_5.0.lammpstrj's
+  # nearest-neighbor particle spacing is ~10.9px (median) at this config's
+  # 512x512 image size -- confirmed via a direct cKDTree query against the
+  # trajectory. The previous defaults (radius_factor: 2.2 -> ring center at
+  # 11px from each particle's own center) put the ring almost exactly on top
+  # of the *next* particle's center at typical spacing, so at production
+  # density neighboring particles' rings interconnected into a continuous
+  # dark mesh spanning the whole frame, rather than each particle showing
+  # its own distinct, locally-contained boundary -- confirmed directly by
+  # rendering both configurations side by side against the real trajectory.
+  # Pulling the ring in tight against the core (radius_factor: 1.0, close to
+  # the core's own falloff) keeps each particle's ring local to itself, so
+  # even closely-packed/touching particles stay visually distinct instead of
+  # forming a connected web. Re-derive the spacing measurement (see this
+  # file's git history for the query) if the default trajectory or
+  # image_width/image_height changes materially. See
+  # docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-design.md
+  # and (historical) docs/plans/2026-07-22-004-feat-procedural-renderer-ring-
+  # and-noise-plan.md U2.
+  ring:
+    radius_factor: 1.0    # ring center's distance from particle center, in units of psf_sigma
+    width_factor: 0.3     # ring Gaussian width, in units of psf_sigma
+    depth: 0.8            # ring depth, as a fraction of peak_intensity
+
+  # --- Multiple particle render profiles (render_strategy: procedural) ---
+  # Optional. When present, particles are assigned one of several named
+  # profiles (a shape `type` from render.py's _PARTICLE_PROFILES registry,
+  # plus that shape's own `params`) via a seeded weighted-random draw, keyed
+  # by LAMMPS atom_id and persisted for the whole render run -- not
+  # re-randomized per frame, and independent of any LAMMPS atom `type`
+  # column (works the same whether the trajectory has one atom type or many).
+  # Absent entirely (the default) -> every particle renders with the single
+  # gaussian_ring shape above (psf_sigma / ring.*), unchanged from before
+  # this feature existed. --lammps-in has no effect when this is configured
+  # (see main()'s warning above) -- each profile's own params already set
+  # its size explicitly.
+  # See docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md.
+  #
+  # particle_render_profiles:
+  #   seed: 42   # optional; defaults to 42
+  #   profiles:
+  #     - name: small
+  #       type: disk_rim
+  #       proportion: 0.7
+  #       params:
+  #         disk_radius_px: 17.5
+  #         blur_sigma_px: 3.0
+  #         rim_depth: 0.55
+  #         rim_width_px: 2.5
+  #         rim_offset_px: 1.5
+  #     - name: large
+  #       type: disk_rim
+  #       proportion: 0.3
+  #       params:
+  #         disk_radius_px: 22.5
+  #         blur_sigma_px: 3.0
+  #         rim_depth: 0.55
+  #         rim_width_px: 2.5
+  #         rim_offset_px: 1.5
+
+  # --- PSF parameters ---
+  # sigma_px is written here by: uv run python calibrate_psf.py --merge-config config.yaml
+  # Used as a fallback match-threshold reference (benchmark.py's
+  # _resolve_psf_sigma_px) when synthetic.psf_sigma isn't set.
+  psf:
+    sigma_px: 8.21  # empirical PSF sigma (px) — filled by calibrate_psf.py
+
+  # --- Spatially varying background (render_strategy: brightfield /
+  # brightfield_fast; also read directly by calibrate_psf.py) ---
+  # Calibrated (2026-07-22) via calibrate_psf.py --merge-config against 512x512
+  # crops of particle-tracking/data/raw/60% Intensity PS 5um Video Trial 1.tif.
+  background:
+    heterogeneity_scale: 203.1  # spatial scale of background variation (px)
+    amplitude: 705.0  # max background variation (ADU)
+
+  # --- sCMOS noise model (render_strategy: brightfield / brightfield_fast)
+  # --- Calibrated (2026-07-22), same source/command as background: above. No
+  # --dark-frames were available, so read_noise is estimated from image
+  # stats rather than a clean dark-frame measurement (calibrate_psf.py
+  # warns on this) -- revisit with real dark frames if this proves noisier
+  # than intended once compared visually via compare_renders.py.
+  noise:
+    gain_sigma: 0.02  # per-pixel gain variation (fraction of mean gain)
+    read_noise: 62.42  # Gaussian read noise std dev (ADU)
+
+  # --- render_strategy: brightfield ---
+  # Whole-frame coherent optical-field solve (DeepTrack2's Brightfield
+  # optics), NOT a per-particle stamp -- particles are placed at the
+  # LAMMPS trajectory's real x/y positions (already physically
+  # non-overlapping) rather than a synthetic placement layer; see
+  # render_brightfield.py's module docstring for why dt.NonOverlapping is
+  # not used. Small-batch/reference-quality by design, not a bulk
+  # generator -- see docs/brainstorms/2026-08-12-brightfield-particle-
+  # rendering-requirements.md and docs/plans/2026-08-12-002-feat-
+  # brightfield-particle-rendering-plan.md. Flat section (like psf/particle/
+  # noise above), not nested -- calibrate_psf.py's _merge_params_into_config
+  # only patches flat key: value lines per section.
+  brightfield:
+    max_particles: 50   # safety cap on particles rendered per frame. Per-frame
+                         # cost is real and highly variable even without
+                         # NonOverlapping -- locally measured 0.5-2.3s for
+                         # N=1-10 particles on a 128x128 canvas, while a single
+                         # N=60 attempt on the same canvas exceeded 120s. Frames
+                         # above this cap render a random max_particles-sized
+                         # subset (seeded, reproducible) with a warning, rather
+                         # than silently hanging. Revisit once calibrate_psf.py's
+                         # brightfield search loop (render_strategy: brightfield
+                         # calibration entry point) has real timing data at this
+                         # dataset's actual canvas size and defocus range.
+    intensity_scale: 20000.0   # ADU per unit of Brightfield's raw (unitless)
+                                # intensity output -- maps the optical solve onto
+                                # this pipeline's 16-bit ADU convention. Starting
+                                # point, not calibrated -- see calibrate_psf.py's
+                                # brightfield entry point.
+    coherence_blur_sigma_px: 2.0   # Gaussian blur (px) applied to the resolved
+                                # intensity before background/noise, approximating
+                                # partial spatial coherence (real microscope
+                                # illumination is never perfectly coherent, unlike
+                                # this module's single-plane-wave model) -- without
+                                # it, particles render a multi-ring Airy diffraction
+                                # pattern real reference images
+                                # (data-setup/models/lodestar_model_15/crops/,
+                                # lodestar_model_10/crops/) don't show, just one
+                                # soft halo around the core. 2.0px picked by direct
+                                # comparison against those crops; 0 disables it. See
+                                # render_brightfield.py's _apply_partial_coherence_blur.
+
+    # --- Optics params, passed directly to deeptrack.Brightfield ---
+    na: 1.0                       # numerical aperture
+    wavelength: 550e-9            # illumination wavelength (metres)
+    resolution: 100e-9            # pixel size (metres/pixel)
+    magnification: 1.0            # deeptrack.Brightfield's own default is 10, which combined
+                                   # with resolution/radius_min below renders each particle at
+                                   # 50px radius -- ~10x this dataset's own ~10.9px real
+                                   # interparticle spacing (see dataset-profiles/synthetic-
+                                   # default.yaml), invisible at small validation scales but
+                                   # catastrophic at production density (particles overlap
+                                   # dozens-deep, washing out all spatial structure). 1.0 makes
+                                   # voxel_size == resolution, giving 5px particle radius --
+                                   # matching every other render strategy's psf_sigma: 5.0 scale.
+    refractive_index_medium: 1.33 # surrounding medium (water)
+
+    # --- Per-particle physical properties (single particle type this
+    # iteration -- see origin doc Scope Boundaries) ---
+    radius_min: 0.5e-6              # metres, uniform [min, max]
+    radius_max: 0.5e-6
+    refractive_index_min: 1.45      # polystyrene ~1.45-1.60 at visible
+    refractive_index_max: 1.45      # wavelengths; starting point, not calibrated
+    z_min_px: -13.0                 # defocus range (deeptrack z units). Asymmetric, not the
+    z_max_px: 0.0                   # earlier +-13.0 -- direct measurement showed this dataset's
+                                     # coherent solve flips a particle's core from bright to dark
+                                     # (contrast-inverted) once z crosses roughly +0.4px, while
+                                     # negative z stays bright across the entire -13 to 0 range.
+                                     # All 10 real LodeSTAR reference crops (both model_15 and
+                                     # model_10 directories) show only bright-centered particles,
+                                     # none dark -- at the old +-13 range, ~91% of a real
+                                     # production frame's particles rendered dark-centered,
+                                     # contradicting every real reference image available. The
+                                     # earlier calibration search (compute_psd_similarity, a
+                                     # frequency-domain magnitude metric) couldn't have caught
+                                     # this: PSD is blind to contrast polarity, so it scored
+                                     # model_15's fitted z_max=+9.00 (deep in the dark-inverted
+                                     # region) no worse than model_10's z_max=-6.18 (bright) --
+                                     # "the average of the two" that produced +13.0 was silently
+                                     # averaging one good fit with one bad one. 0.0 keeps every
+                                     # sampled z on the bright side while preserving the full
+                                     # real defocus-blur variety the negative side already showed
+                                     # (from a faint bright core near z=0 to a strongly bright,
+                                     # heavily blurred core near z=-13).
+                                     # Earlier history: calibrate_psf.py --brightfield
+                                     # --real-frames fit model_15 crops to [-12.96, 9.00]px and
+                                     # model_10 crops to [-14.44, -6.18]px; "the average of the
+                                     # two, rounded" (+-13.0) was the prior value here. See
+                                     # docs/plans/2026-08-16-001-feat-brightfield-fast-render-
+                                     # path-plan.md's U4.
+
+    # --- Mie ground-truth tier (calibration only -- never used by the
+    # routine render_strategy: brightfield path) ---
+    mie_max_particles: 20   # MieScatterer evaluates each particle's field over
+                             # the *entire* padded canvas (no per-particle ROI);
+                             # measured super-linear and ~18s for 100 particles
+                             # on a small 256x256 canvas. This cap keeps a
+                             # calibration run's ground-truth generation
+                             # practical -- see render_brightfield.py's
+                             # generate_mie_ground_truth docstring.
+    mie_max_frames: 5        # small-batch by design; not a bulk dataset
+
+  # --- render_strategy: brightfield_fast ---
+  # Same coherent optics as `brightfield` above (physical params are read
+  # from the `brightfield` section above -- the two strategies render the
+  # same physical scene two different ways, so they share calibration
+  # rather than duplicating it), reimplemented directly in numpy/scipy with
+  # no deeptrack dependency, so per-frame cost is independent of particle
+  # count -- see render_brightfield_fast.py. This section holds only
+  # brightfield_fast-specific tuning knobs.
+  brightfield_fast:
+    max_particles: 5000   # safety cap -- unlike brightfield's own cap (a hard
+                           # necessity given its per-particle cost), this one
+                           # guards only against unbounded index-map memory use
+                           # at pathological densities, not compute cost.
+    n_z_slices: 10   # number of depth-buckets particles are grouped into for
+                      # defocus (synthetic.brightfield's z_min_px/z_max_px).
+                      # Coarser = faster but risks banding; finer costs more
+                      # linearly. A deliberate approximation of the slow
+                      # path's own (finer) physical voxel granularity, not a
+                      # match to it -- see render_brightfield_fast.py.
+
+# --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
-  model_type: rf-detr  # paper's headline detector; only one model swept (scope boundary)
+  model_type: rf-detr       # rf-detr | lodestar | yolo | trackpy — overridden by --model-type
+  # match_distance intentionally NOT set here -- leaving it unset derives it from
+  # tracking.matching_threshold_radii x synthetic.psf_sigma (same formula the
+  # MOTA/IDF1 tracking metrics already use), so a detection means the same thing
+  # for accuracy and tracking purposes. Previously a disconnected hardcoded 10px
+  # here let a detection count as a correct match for precision/recall/F1 while
+  # still failing tracking's stricter identity match purely from normal
+  # localization jitter (rf-detr's own mean position error is ~2.2px, close to
+  # the derived ~2.5px threshold) -- not a real accuracy-vs-tracking
+  # disagreement. Set match_distance here only to override the derived value
+  # for a specific investigation -- any value set here always wins.
+  # match_distance: 10
+
+  # --- model_type: rf-detr ---
+  # checkpoints/checkpoint_best_ema.pth (May) is an undertrained/stale run —
+  # confidence never exceeds ~0.04 on any input, real or synthetic, so it
+  # produces 0 detections at any reasonable threshold. checkpoints-a40/ is the
+  # completed K8s A40 training run (confidence up to ~0.74 on real data);
+  # verified via debugging session on 2026-07-17.
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
+  variant: large            # nano | small | medium | large
+  num_queries: 300
+  threshold: 0.08           # detection confidence threshold — re-swept against the
+                             # corrected imagery (flicker/ring/z-range fixes): F1 peaks at
+                             # 0.08 (F1=0.6698, P=0.8566, R=0.5499), a clean interior
+                             # optimum over 0.02-0.4 (0.02 -> 0.6397, 0.1 -> 0.6692,
+                             # 0.4 -> 0.6300) -- unchanged from the earlier (pre-fix-
+                             # imagery) sweep.
+
+  tiling:
+    enabled: true
+    # Must be < synthetic.image_width/image_height or detect_with_tiling's
+    # H<=tile_size and W<=tile_size guard short-circuits to a single
+    # full-frame predict() call, silently disabling tiling regardless of
+    # this enabled: true -- exactly the bug this value fixes. Previously
+    # 512, equal to the 512x512 default frame size, so tiling never
+    # actually engaged and every frame's ~1446 particles were capped at
+    # num_queries=300 detections (recall ~0.18). At 160px with 50px
+    # overlap, a 512x512 frame at this dataset's density (~0.0055
+    # particles/px^2) yields ~140 particles/tile -- comfortably under the
+    # 300-query cap with margin for local clustering. Re-tune if
+    # synthetic.image_width/image_height or particle density changes
+    # significantly. See docs/superpowers/specs/2026-08-07-rf-detr-
+    # tiling-fix-design.md.
+    # tile_size intentionally NOT set here -- leaving it unset lets benchmark.py
+    # derive it from dataset_profile's spacing_px (clamped to this run's own
+    # frame dimensions), falling back to today's 512 default if no profile is
+    # referenced. Set tile_size here only to override that derived/default
+    # value for a specific investigation -- any value set here always wins.
+    # tile_size: 160
+    overlap: 50
+    nms_threshold: 0.3
+
+  # --- model_type: lodestar (requires particle-tracking/.venv — run `uv sync` there first) ---
+  lodestar:
+    checkpoint: ../data-setup/models/lodestar_model_15/model.pt
+    threshold: 1.0e-20        # re-swept against the corrected imagery (flicker/ring/z-range
+                               # fixes): F1 kept climbing continuously as threshold dropped
+                               # across 13+ orders of magnitude (0.0005: F1=0.14 -> 1e-8:
+                               # F1=0.32 -> 1e-15: F1=0.37 -> 1e-20: F1=0.39), converging
+                               # (deltas shrinking to ~0.01 per further 10x drop) rather than
+                               # continuing to climb meaningfully -- effectively "keep every
+                               # local maximum regardless of confidence" (threshold=0.0 itself
+                               # raises a ValueError in skimage's h_maxima: "h = 0 is
+                               # ambiguous"). This is this checkpoint's real F1 ceiling on this
+                               # dataset, not an undertuned threshold: even at its best, ~0.39
+                               # is well below rf-detr (0.67), yolo (0.68), and trackpy (0.54)
+                               # -- a genuine detection-quality gap, most likely this
+                               # checkpoint's self-supervised feature detector (fit against
+                               # real photographic microscopy crops) not generalizing well to
+                               # this coherent-brightfield appearance, not a config problem.
+    alpha: 0.9                # weight score exponent
+    # nms_distance intentionally NOT set here -- leaving it unset lets benchmark.py
+    # derive it from dataset_profile's size_px/spacing_px, falling back to today's
+    # 30px default (detector_defaults.yaml's canonical lodestar value) if no profile
+    # is referenced. Set nms_distance here only to override that derived/default
+    # value for a specific investigation -- any value set here always wins.
+    # nms_distance: 5          # pixels. Was 30 (matching particle-tracking/{lodestar,multi_lodestar,
+                              # basic_lodestar}_config.yaml, tuned for a much sparser real dataset) --
+                              # at this dataset's ~10.9px median nearest-neighbor spacing (psf_sigma=5,
+                              # image_width=512), 30px suppressed almost every true detection down to
+                              # one per local cluster, which was the dominant cause of this model's
+                              # catastrophic recall (confirmed directly 2026-08-08: raw pre-NMS
+                              # detection count was essentially unaffected by nms_distance, but final
+                              # recall collapsed from ~0.51 at nms_distance=5 to ~0.12 at 30 on the
+                              # same raw detections -- see accuracy_metrics_lodestar.csv sweep).
+                              # 5px (~1x psf_sigma) stays well under the measured spacing so it still
+                              # suppresses genuine duplicate detections of the same particle without
+                              # merging distinct neighbors. F1 improves 0.077 -> 0.16 on the full
+                              # 151-frame default trajectory at this value alone (alpha/threshold left
+                              # unchanged -- see AGENTS.md for why more aggressive alpha/threshold
+                              # values were tried and reverted).
+                              # null (disabled) previously let unsuppressed detections balloon to 10x+ ground truth
+    # box_size intentionally NOT set here -- leaving it unset lets benchmark.py derive it
+    # from synthetic.psf_sigma/synthetic.psf.sigma_px (see docs/plans/2026-08-07-001-fix-
+    # lodestar-box-sizing-plan.md). Set box_size here only to override that derived value
+    # for a specific investigation -- any value set here always wins.
+    fp16: false                # run model in float16
+    device: null                # used only when --device is not passed on the CLI; --device always wins
+
+  # --- model_type: yolo (requires particle-tracking/.venv — run `uv sync` there first;
+  # same venv lodestar uses, since ultralytics/torch are already dependencies there) ---
+  yolo:
+    # Trained on the same LodeSTAR-labeled split RF-DETR uses (data-setup/yolo_split.py,
+    # yolov12/config.yaml's "fix: make RF-DETR/YOLOv12 training reproducible and directly
+    # comparable" run) -- 100/100 epochs, yolo12m, mAP50=0.752 on its own held-out val
+    # split. Copied here (not committed to git -- see .gitignore) from the MLflow run
+    # that produced it (yolov12/mlruns/160295411491071449/9e9c62d3da13402f97da3c522b46f9b9)
+    # into this stable, human-readable path matching what a local
+    # `uv run python train.py` under yolov12/config.yaml's current name: yolo12m-particles
+    # would have produced natively.
+    checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
+    threshold: 0.01            # re-swept against the corrected imagery (flicker/ring/z-range
+                                # fixes): F1 peaks at 0.01 (F1=0.6819, P=0.7634, R=0.6160),
+                                # a clean interior optimum (0.005 -> 0.6772, 0.015 -> 0.6798)
+                                # -- found by extending the search down twice after the
+                                # optimum kept landing at the tested range's lower boundary
+                                # (0.3, then 0.1, before settling at 0.01).
+    device: null                # used only when --device is not passed on the CLI; --device always wins
+
+  # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
+  # runs natively in verification/.venv, trackpy is already a dependency here) ---
+  trackpy:
+    diameter: 7                # re-swept against the corrected imagery (flicker/ring/z-range
+                                # fixes): F1 peaks at 7 (F1=0.5439, P=0.6132, R=0.4888), a
+                                # clean interior optimum over 5-21 (falls off both directions:
+                                # 5 -> 0.4926, 9 -> 0.4850, 21 -> 0.1734) -- unchanged from the
+                                # earlier (pre-fix-imagery) sweep. Smaller than the
+                                # dataset_profile-derived size_px (5.0 -> diameter 5) since
+                                # trackpy.locate's window needs to cover the particle's visible
+                                # ring extent, not just its core.
+    minmass: null               # minimum integrated brightness; null lets trackpy use its own default
+                                 # (0 — no mass-based filtering; trackpy.locate's percentile filter,
+                                 # default 64, still applies regardless of this value)
+    separation: null            # minimum pixel distance between distinct features; null lets trackpy
+                                 # default to diameter + 1
+
+# --- benchmark.py: tracking metrics (requires ground_truth_tracks.csv from render.py) ---
+tracking:
+  enabled: true
+  # search_range/memory/stub_filter (--tracker trackpy) and
+  # lost_track_buffer/minimum_consecutive_frames/track_activation_threshold
+  # (--tracker bytetrack) are intentionally NOT set here -- leaving them unset
+  # lets benchmark.py resolve each --model-type's real production-tuned
+  # values from trackers_common's canonical tracker_defaults.yaml (the same
+  # values particle-tracking/tracker_configs.py generates for real per-model
+  # production runs), instead of one generic value across all detectors. Set
+  # any of these here only to deliberately override the canonical per-model
+  # default for a specific investigation -- any value set here always wins
+  # over the canonical default.
+  matching_threshold_radii: 0.5 # motmetrics GT↔pred match threshold (× psf_sigma_px)
+  # trackpy.link_df's recursive subnet solver raises SubnetOversizeException
+  # when too many candidate particles are mutually within search_range of
+  # each other in the same frame-to-frame window -- e.g. once a detector's
+  # recall is high enough to actually recover a dense physical cluster (this
+  # dataset's continuous_force trajectory packs ~1400 of ~1446 particles into
+  # one mutually-connected subnet at its densest timesteps), not a
+  # synthetic-data edge case. benchmark.py's _link_df_with_fallback retries
+  # at a shrinking search_range (down to a 1.0px floor) on this exception
+  # instead of giving up outright -- confirmed directly (2026-08-08) this
+  # recovers real --save-video trajectories for RF-DETR/LodeSTAR where the
+  # pipeline used to fall back to boxes-only on the very first oversized
+  # subnet. If even the floor search_range is still oversized (or the whole
+  # retry doesn't finish within its own timeout), it degrades gracefully:
+  # skips MOTA/IDF1 for _run_tracking_metrics, draws boxes without
+  # trajectory traces for --save-video. _run_tracking_metrics also has a
+  # separate density/track-id-count guard that skips MOTA/IDF1 outright
+  # above a safe threshold, independent of this setting -- see AGENTS.md.
+  #
+  # adaptive_stop (off by default: null) is a SEPARATE, opt-in mechanism that
+  # retries an oversized subnet with a shrunken search_range down to this
+  # floor before giving up, mirroring particle-tracking/track.py's own
+  # tracking.adaptive_stop/adaptive_step knobs -- appropriate for moderately
+  # dense scenes. Do NOT enable it against this dataset's default trajectory:
+  # confirmed directly (2026-08-08) that retrying a ~1400-point subnet down
+  # from search_range=15 to adaptive_stop=3.0 in 0.95x steps exhausted this
+  # machine's 15GB RAM + 21GB swap and had to be killed -- each retry
+  # re-attempts neighbor-graph formation over the full frame, and subnet size
+  # does not necessarily shrink fast enough as search_range shrinks when
+  # particles are this tightly packed. See docs/superpowers/specs/2026-08-08-
+  # trackpy-subnet-oversize-guard-design.md.
+  adaptive_stop: null
+  adaptive_step: 0.95
+
+  # bridge_gap/bridge_radius (--tracker trackpy only) reconnect track
+  # fragments separated by at most bridge_gap frames, mirroring
+  # particle-tracking/track.py's own tracking.bridge_gap/tracking.bridge_radius
+  # knobs. Off by default (null) -- unlike search_range/memory/stub_filter,
+  # not swept per model in trackers_common/tracker_defaults.yaml, so this is
+  # the only place benchmark.py resolves it from. Applied AFTER stub_filter
+  # (link -> filter_stubs -> bridge), so it can only reconnect fragments that
+  # already individually survive stub_filter.
+  bridge_gap: null
+  bridge_radius: null  # spatial search radius in pixels (default: 2 × search_range)
+
+# --- compare.py: physics observable comparison ---
+compare:
+  lammps_file: null          # path to .lammpstrj (overridden by --lammps flag)
+  tracks_file: null          # path to tracks.csv  (overridden by --tracks flag)
+
+  # Unit conversion for MSD (required for µm² output):
+  pixel_scale: 0.108         # µm per pixel — measure from calibration slide for your objective
+  lj_to_um: 2.0              # µm per LJ unit (= particle diameter; 2 µm PS particles → lj_to_um=2.0)
+
+  # For velocity comparison — fill in after calibration:
+  # lj_timestep_s: null      # real seconds per LAMMPS timestep (needed to convert LJ v → µm/s)
+  # frame_dt_s: null          # real seconds per video frame (needed to convert track v → µm/s)
+
+  max_lag_frames: 50         # max lag τ for MSD computation (in frames / timesteps)
+  output_dir: verification_output/

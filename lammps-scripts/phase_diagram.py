@@ -4,6 +4,7 @@ hexatic order parameters.
 """
 
 import argparse
+import csv
 import glob
 import os
 import re
@@ -108,6 +109,16 @@ def generate_stability_plot(data_dir, pattern, verbose):
     if not epsilons:
         print("No valid data found to plot.")
         return
+
+    # Persist the grid values so prose claims and caption ranges are verifiable
+    csv_path = f"{os.path.basename(data_dir)}_hexatic_order_data.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["n_molecules", "epsilon", "psi6_final_frame"])
+        for n, eps, psi6 in sorted(zip(num_molecules, epsilons, _avg_psi6)):
+            writer.writerow([n, eps, round(psi6, 6)])
+    if verbose:
+        print(f"Saved grid data to {csv_path}")
 
     # Get max values
     max_epsilon = max(epsilons) * 1.05  # add 5% buffer to graph
