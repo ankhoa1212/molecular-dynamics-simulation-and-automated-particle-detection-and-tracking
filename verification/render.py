@@ -97,6 +97,28 @@ def _parse_positions(atom_header, atoms):
     return positions
 
 
+def _ring_outer_zero_crossing(sigma, ring_center, ring_width, ring_depth):
+    """Outer zero-crossing radius r* of core(r) - ring_depth*ring_gaussian(r),
+    past ring_center -- shared by _gaussian_ring_profile (which centers its
+    erf cutoff there) and _gaussian_ring_extent (which sizes the pixel ROI
+    around it), so the two never drift apart if this formula is retuned.
+
+    Derived by equating the two Gaussians and taking logs, giving a
+    quadratic a*r^2 + b*r + c = 0; see _gaussian_ring_profile's docstring
+    for the full derivation.
+    """
+    a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
+    b = -(ring_center / ring_width**2)
+    c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
+    disc = b**2 - 4 * a * c
+    if a > 0 and disc >= 0:
+        # Larger root is the outer crossing (past ring_center).
+        return (-b + np.sqrt(disc)) / (2 * a)
+    # ring_width >= sigma or no real crossing: ring already dominates;
+    # push cutoff far out so it has no effect.
+    return ring_center + 5 * ring_width
+
+
 def _gaussian_ring_profile(
     r_grid, sigma, ring_radius_factor=1.0, ring_width_factor=0.3, ring_depth=0.65
 ):
@@ -133,19 +155,7 @@ def _gaussian_ring_profile(
     core = np.exp(-0.5 * (r_grid / sigma) ** 2)
     if ring_depth > 0 and ring_width > 0:
         ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_center) / ring_width) ** 2)
-        # Outer zero-crossing: core(r) == ring_depth * ring_gaussian(r), past ring_center.
-        # Taking logs and rearranging gives a quadratic a*r² + b*r + c = 0.
-        a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
-        b = -(ring_center / ring_width**2)
-        c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
-        disc = b**2 - 4 * a * c
-        if a > 0 and disc >= 0:
-            # Larger root is the outer crossing (past ring_center).
-            outer_zero = (-b + np.sqrt(disc)) / (2 * a)
-        else:
-            # ring_width >= sigma or no real crossing: ring already dominates;
-            # push cutoff far out so it has no effect.
-            outer_zero = ring_center + 5 * ring_width
+        outer_zero = _ring_outer_zero_crossing(sigma, ring_center, ring_width, ring_depth)
         softness = 0.25 * ring_width
         cutoff = 0.5 * (1 - erf((r_grid - outer_zero) / (np.sqrt(2) * softness)))
     else:
@@ -161,14 +171,7 @@ def _gaussian_ring_extent(sigma, ring_radius_factor=1.0, ring_width_factor=0.3, 
     ring_center = ring_radius_factor * sigma
     core_extent = 3 * sigma
     if ring_depth > 0 and ring_width > 0:
-        a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
-        b = -(ring_center / ring_width**2)
-        c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
-        disc = b**2 - 4 * a * c
-        if a > 0 and disc >= 0:
-            outer_zero = (-b + np.sqrt(disc)) / (2 * a)
-        else:
-            outer_zero = ring_center + 5 * ring_width
+        outer_zero = _ring_outer_zero_crossing(sigma, ring_center, ring_width, ring_depth)
         softness = 0.25 * ring_width
         ring_extent = outer_zero + 3 * softness
     else:
