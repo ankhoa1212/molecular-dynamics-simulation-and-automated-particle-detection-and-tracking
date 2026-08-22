@@ -68,6 +68,8 @@
 synthetic:
   render_strategy: brightfield_fast  # matches paper's main benchmark run
   output_dir: verification_output/deeptrack_comparison/physics/synthetic_frames/
+  image_width: 512
+  image_height: 512
   # n_particles for random-placement condition: median particle count of
   # continuous_force_1500_5.0.lammpstrj at 512x512, measured directly.
   # The physics-grounded condition's count is the trajectory's own per-frame
