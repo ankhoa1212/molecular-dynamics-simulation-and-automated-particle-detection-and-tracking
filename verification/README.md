@@ -12,6 +12,8 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 8. **`run_density_ablation.sh`** — renders + benchmarks the default trajectory's particle count alongside 3 lower-density counts (same epsilon/box_size) against all 4 detector/tracker arms, without disturbing the real headline `verification_output/` numbers (backs them up and restores them on exit, even on failure).
 9. **`plot_density_ablation.py`** — plots per-model detection accuracy vs. particle count across `run_density_ablation.sh`'s sweep, reusing `plot_benchmark.py`'s aggregation and styling.
 10. **`trajectory_analysis.py`** — decomposes the sim-to-real trajectory gap into tracking-induced measurement error (GT-synthetic vs. tracked-synthetic) and domain gap (tracked-synthetic vs. tracked-real), reporting an MSD log-log scaling exponent (alpha, with an R²-gated `alpha_reliable` flag) plus secondary raw-slope diffusion coefficient and mean velocity for up to five legs (GT-synthetic, RF-DETR/YOLOv12 × synthetic/real). Reuses `compare.py`'s `compute_msd`/`_track_velocity_magnitudes`. See its module docstring for the full CLI and unit-scaling details.
+11. **`render_random_placement.py`** — generates DeepTrack-style random-placement frames (particles placed uniformly at random via `rng.uniform`, no LAMMPS trajectory) by reusing `render.py`'s `_dispatch_render`, so the renderer, PSF, and noise model are identical to the physics-grounded condition. Writes `ground_truth.json`/`ground_truth_tracks.csv` in the same format as `render.py`. See its module docstring for the full CLI.
+12. **`compare_deeptrack_results.py`** — reads both conditions' `accuracy_metrics_*.csv` (and, if present, `tracking_metrics_*.csv`) and prints/writes a physics/random/delta comparison table, for measuring whether physics-grounded vs. random particle placement biases detector/tracker evaluation. See `configs/render_deeptrack_comparison.yaml`'s header comment for the full render → benchmark → compare command sequence for this experiment.
 
 ## Setup
 
@@ -224,6 +226,7 @@ Options:
 | `--save-video` | off | Write `tracking_visualization_{model_type}.mp4` with detection boxes and trajectory traces overlaid. Uses `tracking.search_range`/`memory` from `--config` to link detections, independent of `--ground-truth-tracks` (only needed for MOTA/IDF1) |
 | `--video-fps` | `10.0` | Frame rate for `--save-video` output |
 | `--trace-length` | `30` | Frames of trajectory history drawn in `--save-video` output |
+| `--output-dir` | `verification_output` | Directory for output CSVs/video (accuracy/tracking metrics, `--save-video`'s `.mp4`); backwards-compatible, matches the historical default when omitted |
 
 Key settings in `config.yaml` under `tracking:`:
 

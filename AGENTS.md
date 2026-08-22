@@ -26,6 +26,7 @@ Domain terms (PSF, MOTA/IDF1, render strategies, box_size vs. psf_sigma_px, etc.
 ## Testing
 
 - Run tests from inside each subproject: `cd <subproject> && uv run pytest tests/ -v`. There is no root-level test command that covers everything.
+- **When making a targeted change, run only the test file(s) directly related to that change** — not the full subproject suite. Example: `cd verification && uv run pytest tests/test_render_random_placement.py -v`. The full suite can be slow; CI covers the rest on push.
 - CI (`.github/workflows/pylint.yml`) runs each of `rf-detr/`, `particle-tracking/`, `verification/`, `detectors-common/`, `data-setup/`, and `trackers-common/`'s test suites on every push and PR, blocking on failure. `yolov12/` has no `tests/` directory yet. `lammps-scripts/test/` contains only JSON fixtures, not a runnable pytest suite, and `lammps-scripts/` has its own `.venv/` despite earlier notes here claiming otherwise. Black is also blocking; pylint stays non-blocking until it installs each subproject's own dependencies instead of a shared root-level set (it currently reports import-resolution noise it can't otherwise avoid).
 - `verification/benchmark.py`'s MOTA/IDF1 tracking metrics (`--tracker trackpy|bytetrack`) link detections with the same `trackers_common` implementation `particle-tracking/track.py`'s production tracker uses; see `verification/README.md` for what still differs (config overrides, per-tracker tuning coverage) before treating those numbers as production tracking accuracy.
 

@@ -37,6 +37,7 @@ dependencies = [
     # failed with ModuleNotFoundError before this was added, even though
     # trackpy itself needs no sibling-project venv (see README.md).
     "detectors-common",
+    "hypothesis>=6.165.10",
 ]
 
 [build-system]
