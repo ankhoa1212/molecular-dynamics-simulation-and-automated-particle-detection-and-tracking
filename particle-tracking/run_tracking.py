@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import re
 import subprocess
 import time
@@ -12,8 +13,15 @@ from tracker_configs import parse_crop_dims, write_lodestar_config, write_rfdetr
 # ────────────────────────────────────────────────────────────
 # Constants
 # ────────────────────────────────────────────────────────────
-RESULTS_BASE = "/mnt/c/Users/AnKhoa/Desktop/results"
-_BASE_D = "/mnt/d/Particle Tracking Data/2um-automatic-particle-detection-lodestar-data"
+# Override via the RESULTS_BASE env var; defaults to a results/ dir alongside
+# this script so a fresh checkout works with no per-machine setup.
+RESULTS_BASE = os.environ.get("RESULTS_BASE", str(Path(__file__).parent / "results"))
+# Resolved relative to this repo's top-level data/ directory -- symlink or
+# copy your dataset there (see README.md's "Data & Model Availability"
+# section), or edit VIDEOS below to point at your own input videos.
+_BASE_D = str(
+    Path(__file__).parent.parent / "data" / "2um-automatic-particle-detection-lodestar-data"
+)
 
 VIDEOS: dict[str, str] = {
     "low-conc-100pct-3": (

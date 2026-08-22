@@ -1,5 +1,9 @@
 data:
-  dir: "/mnt/d/Particle Tracking Data/2um-yolov12-matched/"      # same images + train/val/test split as rf-detr/config.yaml (data-setup/yolo_split.py), for an apples-to-apples comparison
+  # Resolved relative to this repo's top-level data/ directory -- symlink or
+  # copy your dataset there (see README.md's "Data & Model Availability"
+  # section, or the HF dataset release for a downloadable copy):
+  #   ln -s /path/to/your/2um-yolov12-matched ../data/2um-yolov12-matched
+  dir: "../data/2um-yolov12-matched/"      # same images + train/val/test split as rf-detr/config.yaml (data-setup/yolo_split.py), for an apples-to-apples comparison
 
 model:
   weights: yolo12m.pt    # medium variant: better spatial feature depth for dense single-class detection

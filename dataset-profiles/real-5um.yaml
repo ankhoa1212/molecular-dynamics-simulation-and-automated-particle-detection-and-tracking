@@ -4,7 +4,7 @@ description: >
   Real 5um PS particle dataset (U8, R13): particle-tracking/data/raw/60% Intensity
   PS 5um Video Trial 1.tif -- a genuinely different real particle size than
   lodestar_model_15/detector_defaults.yaml's canonical tuning, which targets the
-  2um dataset referenced via /mnt/d/ paths. Both values measured directly from
+  2um dataset (see README.md's "Data & Model Availability" section). Both values measured directly from
   frames 0-2 (the first 3 pages) of that TIFF via
   verification/calibrate_psf.py's own detection/fitting functions, mirroring
   this repo's sanctioned one-time-offline "calibrated PSF fit" workflow for real

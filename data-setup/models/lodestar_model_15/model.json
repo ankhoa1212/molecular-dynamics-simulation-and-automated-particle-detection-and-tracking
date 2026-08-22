@@ -36,11 +36,11 @@
     "flip_lr": 0.5,
     "flip_ud": 0.5,
     "source_crops": [
-      "/home/ankhoa1212/git/molecular-dynamics-simulation/data-setup/models/lodestar_model_14/crops/crop_frame_00000_y0190_x0436.png",
-      "/home/ankhoa1212/git/molecular-dynamics-simulation/data-setup/models/lodestar_model_14/crops/crop_frame_00000_y0393_x0527.png",
-      "/home/ankhoa1212/git/molecular-dynamics-simulation/data-setup/models/lodestar_model_14/crops/crop_frame_00000_y1258_x2213.png",
-      "/home/ankhoa1212/git/molecular-dynamics-simulation/data-setup/models/lodestar_model_14/crops/crop_frame_00000_y1479_x0358.png",
-      "/home/ankhoa1212/git/molecular-dynamics-simulation/data-setup/models/lodestar_model_14/crops/crop_frame_00000_y1943_x2863.png"
+      "crop_frame_00000_y0190_x0436.png",
+      "crop_frame_00000_y0393_x0527.png",
+      "crop_frame_00000_y1258_x2213.png",
+      "crop_frame_00000_y1479_x0358.png",
+      "crop_frame_00000_y1943_x2863.png"
     ]
   }
 }

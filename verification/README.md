@@ -9,7 +9,9 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
 6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a grouped MOTA/IDF1/fragmentations bar panel by (model, tracker) and a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector and tracker performance side by side.
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
-8. **`trajectory_analysis.py`** — decomposes the sim-to-real trajectory gap into tracking-induced measurement error (GT-synthetic vs. tracked-synthetic) and domain gap (tracked-synthetic vs. tracked-real), reporting an MSD log-log scaling exponent (alpha, with an R²-gated `alpha_reliable` flag) plus secondary raw-slope diffusion coefficient and mean velocity for up to five legs (GT-synthetic, RF-DETR/YOLOv12 × synthetic/real). Reuses `compare.py`'s `compute_msd`/`_track_velocity_magnitudes`. See its module docstring for the full CLI and unit-scaling details.
+8. **`run_density_ablation.sh`** — renders + benchmarks the default trajectory's particle count alongside 3 lower-density counts (same epsilon/box_size) against all 4 detector/tracker arms, without disturbing the real headline `verification_output/` numbers (backs them up and restores them on exit, even on failure).
+9. **`plot_density_ablation.py`** — plots per-model detection accuracy vs. particle count across `run_density_ablation.sh`'s sweep, reusing `plot_benchmark.py`'s aggregation and styling.
+10. **`trajectory_analysis.py`** — decomposes the sim-to-real trajectory gap into tracking-induced measurement error (GT-synthetic vs. tracked-synthetic) and domain gap (tracked-synthetic vs. tracked-real), reporting an MSD log-log scaling exponent (alpha, with an R²-gated `alpha_reliable` flag) plus secondary raw-slope diffusion coefficient and mean velocity for up to five legs (GT-synthetic, RF-DETR/YOLOv12 × synthetic/real). Reuses `compare.py`'s `compute_msd`/`_track_velocity_magnitudes`. See its module docstring for the full CLI and unit-scaling details.
 
 ## Setup
 
@@ -233,6 +235,7 @@ Key settings in `config.yaml` under `tracking:`:
 | `matching_threshold_radii` | motmetrics GT↔pred match threshold (× `psf_sigma_px`) |
 | `adaptive_stop` / `adaptive_step` | Opt-in trackpy per-subnet shrinking (off by default: `null`) — see `config.yaml`'s own comment before enabling against a dense dataset |
 | `lost_track_buffer` / `minimum_consecutive_frames` / `track_activation_threshold` | ByteTrack (`--tracker bytetrack`) tuning — like `search_range`/`memory`/`stub_filter`, left unset by default to resolve from the per-model canonical default in `trackers_common/tracker_defaults.yaml` |
+| `bridge_gap` / `bridge_radius` | `--tracker trackpy` only: reconnect track fragments separated by at most `bridge_gap` frames within `bridge_radius` px (default: 2 × `search_range`). Off by default (`null`) — not swept per model like `search_range`/`memory`/`stub_filter`, so this is the only place it resolves from. Applied after `stub_filter` (link → filter_stubs → bridge), so it can only reconnect fragments that already individually survive it |
 
 ## Step 3 — Compare physics observables
 
@@ -298,6 +301,8 @@ verification_output/
 ├── hexatic_order.png           # structural order comparison (from compare.py)
 ├── msd.png                     # MSD comparison (from compare.py)
 ├── velocity_dist.png           # velocity distribution comparison (from compare.py)
+├── density_ablation/            # per-N accuracy/tracking CSVs + plot (from run_density_ablation.sh, plot_density_ablation.py)
+│   └── N{count}/                 # accuracy_metrics_*.csv / tracking_metrics_*.csv per swept particle count
 └── trajectory_analysis/        # sim-to-real decomposition (from trajectory_analysis.py)
     ├── summary.json             # per-leg alpha/fit_quality/alpha_reliable/raw_slope_D/velocity
     ├── msd_comparison.png       # log-log MSD across all legs

@@ -1,5 +1,9 @@
 dataset:
-  path: /mnt/d/Particle Tracking Data/2um-coco-merged/
+  # Resolved relative to this repo's top-level data/ directory -- symlink or
+  # copy your dataset there (see README.md's "Data & Model Availability"
+  # section, or the HF dataset release for a downloadable copy):
+  #   ln -s /path/to/your/2um-coco-merged ../data/2um-coco-merged
+  path: ../data/2um-coco-merged/
   train_experiments:
     # Higher Concentration (all 5 LI levels — only 1 video each, none held out)
     - "2um PS + Au Cit + NaCl 60%"           # Higher 60%

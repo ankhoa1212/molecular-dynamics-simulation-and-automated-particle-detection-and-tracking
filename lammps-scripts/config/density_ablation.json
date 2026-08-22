@@ -1,0 +1,14 @@
+{
+    "input_file": "continuous_force.in",
+    "output_dir": "results/density_ablation",
+    "molecules": "200",
+    "molecules_end": "1000",
+    "molecules_step": "400",
+    "var_epsilon": "5.0",
+    "var_epsilon_end": "5.0",
+    "var_epsilon_step": "1.0",
+    "t_start": "1.0",
+    "t_stop": "0.05",
+    "steps": "15000",
+    "vel_force_scale": "1"
+}

@@ -9,6 +9,7 @@ from unittest import mock
 import matplotlib.image as mplimg
 import numpy as np
 import pytest
+from scipy.special import erf
 
 # Make render.py importable without requiring lammps_parser on sys.path by
 # injecting a minimal stub before the import.
@@ -740,20 +741,37 @@ def _procedural_cfg(
 
 
 class TestGaussianRingProfileExtraction:
-    """Task 1: _gaussian_ring_profile/_gaussian_ring_extent, extracted from
-    render_frame's inline math with no behavior change."""
+    """Task 1: _gaussian_ring_profile/_gaussian_ring_extent, with erf cutoff
+    at the analytically computed outer zero-crossing."""
 
     def test_gaussian_ring_profile_matches_manual_core_minus_ring_math(self, render_module):
+        # sigma=4, ring_radius_factor=2.2 => ring_center=8.8, ring_width=2.0
+        # outer zero-crossing is computed from the quadratic; sample points
+        # well inside it so the erf cutoff is ~1.0 and doesn't affect the value.
         sigma = 4.0
-        r_grid = np.array([0.0, 2.0, 8.8, 20.0])
-        profile = render_module._gaussian_ring_profile(r_grid, sigma, 2.2, 0.5, 0.4)
+        ring_radius_factor, ring_width_factor, ring_depth = 2.2, 0.5, 0.4
+        ring_center = ring_radius_factor * sigma  # 8.8
+        ring_width = ring_width_factor * sigma  # 2.0
+        # Points: center, inside ring, at ring center. All well inside outer_zero.
+        r_grid = np.array([0.0, 2.0, ring_center])
+
+        profile = render_module._gaussian_ring_profile(
+            r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
+        )
 
         core = np.exp(-0.5 * (r_grid / sigma) ** 2)
-        ring_width = 0.5 * sigma
-        ring = 0.4 * np.exp(-0.5 * ((r_grid - 2.2 * sigma) / ring_width) ** 2)
-        expected = core - ring
+        ring = ring_depth * np.exp(-0.5 * ((r_grid - ring_center) / ring_width) ** 2)
+        # erf cutoff at outer zero-crossing: compute outer_zero the same way the function does.
+        a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
+        b = -(ring_center / ring_width**2)
+        c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
+        disc = b**2 - 4 * a * c
+        outer_zero = (-b + np.sqrt(disc)) / (2 * a)
+        softness = 0.25 * ring_width
+        cutoff = 0.5 * (1 - erf((r_grid - outer_zero) / (np.sqrt(2) * softness)))
+        expected = (core - ring) * cutoff
 
-        np.testing.assert_allclose(profile, expected)
+        np.testing.assert_allclose(profile, expected, rtol=1e-6)
 
     def test_gaussian_ring_profile_zero_depth_is_pure_core(self, render_module):
         sigma = 3.0
@@ -764,10 +782,43 @@ class TestGaussianRingProfileExtraction:
 
     def test_gaussian_ring_extent_matches_manual_formula(self, render_module):
         sigma = 6.0
-        extent = render_module._gaussian_ring_extent(sigma, 2.2, 0.5, 0.4)
-        ring_width = 0.5 * sigma
-        expected = int(max(3 * sigma, 2.2 * sigma + 3 * ring_width)) + 1
+        ring_radius_factor, ring_width_factor, ring_depth = 2.2, 0.5, 0.4
+        extent = render_module._gaussian_ring_extent(
+            sigma, ring_radius_factor, ring_width_factor, ring_depth
+        )
+        ring_center = ring_radius_factor * sigma
+        ring_width = ring_width_factor * sigma
+        a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
+        b = -(ring_center / ring_width**2)
+        c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
+        disc = b**2 - 4 * a * c
+        outer_zero = (-b + np.sqrt(disc)) / (2 * a)
+        softness = 0.25 * ring_width
+        expected = int(max(3 * sigma, outer_zero + 3 * softness)) + 1
         assert extent == expected
+
+    def test_gaussian_ring_profile_no_rebound_past_outer_zero(self, render_module):
+        """Regression: past the outer zero-crossing, the erf cutoff must
+        suppress the positive rebound to near-zero. For default params the
+        rebound peaks at ~0.194 without a cutoff; after the cutoff it must
+        be negligibly small (< 1e-3) everywhere beyond outer_zero + 3*softness."""
+        sigma, ring_radius_factor, ring_width_factor, ring_depth = 4.0, 1.0, 0.3, 0.65
+        ring_center = ring_radius_factor * sigma
+        ring_width = ring_width_factor * sigma
+        a = 0.5 * (1.0 / ring_width**2 - 1.0 / sigma**2)
+        b = -(ring_center / ring_width**2)
+        c = 0.5 * (ring_center / ring_width) ** 2 - np.log(ring_depth)
+        disc = b**2 - 4 * a * c
+        outer_zero = (-b + np.sqrt(disc)) / (2 * a)
+        softness = 0.25 * ring_width
+
+        r_grid = np.linspace(outer_zero + 3 * softness, outer_zero * 3, 500)
+        profile = render_module._gaussian_ring_profile(
+            r_grid, sigma, ring_radius_factor, ring_width_factor, ring_depth
+        )
+        assert np.all(
+            np.abs(profile) < 1e-3
+        ), f"Profile not suppressed past outer_zero+3*softness; max={np.abs(profile).max():.6f}"
 
 
 class TestDiskRimProfile:

@@ -4,7 +4,8 @@
 # Run from rf-detr/ directory.
 set -uo pipefail
 
-NAMESPACE="ryu-classroom"
+# REQUIRED: export K8S_NAMESPACE=<your-cluster-namespace> before running (see rf-detr/README.md's "Kubernetes Training" section).
+NAMESPACE="${K8S_NAMESPACE:?Set K8S_NAMESPACE to your cluster namespace}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 READER_POD="rf-detr-reader"
 

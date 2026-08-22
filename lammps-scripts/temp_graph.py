@@ -224,13 +224,10 @@ if __name__ == "__main__":
     PARSER = argparse.ArgumentParser(
         description="Plot drift-corrected temperature from LAMMPS trajectory"
     )
-    EX = (
-        "/home/austin/git/molecular-dynamics-simulation/"
-        "lammps-scripts/test_same/test.in_100_5.0.lammpstrj"
+    # REQUIRED: no default -- pass the path to your own .log/.lammpstrj file.
+    PARSER.add_argument(
+        "--filename", "-f", required=True, help="Path to a .log or .lammpstrj file (required)"
     )
-
-    # ex = '.../test_same/logs/test.in_100_5.0.log'
-    PARSER.add_argument("--filename", "-f", default=EX, help="Path to file")
     PARSER.add_argument("--output_dir", default=None, help="Output directory")
     PARSER.add_argument("--no-show", action="store_true", help="Do not display the graph")
     ARGS = PARSER.parse_args()

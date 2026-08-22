@@ -90,21 +90,13 @@ def convert_tif_to_frames(input_path, output_folder, image_format="png", nth=10)
     print(f"Successfully converted {saved_count} frames (every {nth}th) to {output_folder}")
 
 
-INPUT_PATH = (
-    "/mnt/c/Users/ankho/git/molecular-dynamics-simulation/raw_data/2024.07.02/"
-    "Trial 1 Au Citrate Best Trials/"
-    "Au Cit+1% of 2um PS+NaCl 20% Light Intensity Test Video 300 ms Trial 17_1"
-)
-
-
 if __name__ == "__main__":
 
     PARSER = argparse.ArgumentParser(description="Convert multi-page TIFF to image frames.")
+    # REQUIRED: no default -- pass the path to your own .tif file/directory.
     PARSER.add_argument(
         "input_path",
-        nargs="?",
-        default=INPUT_PATH,
-        help="Path to input .tif file or a directory containing .tif files",
+        help="Path to input .tif file or a directory containing .tif files (required)",
     )
     PARSER.add_argument("output_dir", nargs="?", default=None, help="Directory to save frames")
     PARSER.add_argument(
