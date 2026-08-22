@@ -66,3 +66,6 @@ CLAUDE.md
 # planning/brainstorm docs (local working notes, not shared repo content)
 docs/
 .worktrees
+
+# Kiro IDE spec/planning artifacts (local working notes, not shared repo content)
+.kiro/
