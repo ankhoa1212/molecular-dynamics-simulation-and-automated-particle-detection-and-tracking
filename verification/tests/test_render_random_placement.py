@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
@@ -321,6 +321,7 @@ class TestCliAcceptsAllFlags:
             [sys.executable, script, "--help"],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert (
             result.returncode == 0
@@ -332,6 +333,7 @@ class TestCliAcceptsAllFlags:
             [sys.executable, script, "--help"],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert "--frames" in result.stdout
         assert "--config" in result.stdout
@@ -345,7 +347,6 @@ class TestDispatchRenderCalledOncePerFrame:
 
     @pytest.mark.parametrize("n_frames", [1, 3])
     def test_dispatch_render_call_count(self, n_frames, tmp_path, monkeypatch):
-        import sys
         from unittest import mock
 
         # Ensure a fresh import
@@ -433,6 +434,7 @@ class TestBenchmarkOutputDirFlag:
             [sys.executable, benchmark_script, "--help"],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0
         assert (
