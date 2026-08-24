@@ -66,15 +66,11 @@ ln -s "/mnt/d/Particle Tracking Data" data
 
 After that one symlink, every package's `../data/<name>` reference (in `rf-detr/config.yaml`, `yolov12/config.yaml`, `particle-tracking/*.yaml`, `data-setup/yolo_split.py`, `rf-detr/k8s-launch.sh`) resolves correctly regardless of where your actual data lives on disk.
 
+<!--
 **Datasets and checkpoints used by this repo's reported results are also published on Hugging Face for anyone without access to the original raw microscopy data:**
 
-- Datasets: https://huggingface.co/datasets/anonymousresearchuser42/particle-detection-datasets
-  - `2um-coco-merged/` (`images/` + `annotations.json`, ~3.4GB) — trains the reported RF-DETR checkpoint. `split/{train,valid,test}/` is intentionally not included -- `rf-detr/train.py` regenerates it automatically on first run (see `rf-detr/README.md`'s "Dataset Format" section)
-  - `2um-yolov12-matched/` (~3.5GB) — trains the reported YOLOv12 checkpoint (same images/split as `2um-coco-merged`, converted to YOLO format, for a fair comparison)
-- Models: https://huggingface.co/anonymousresearchuser42/particle-detection-models
-  - RF-DETR (`checkpoint_best_ema.pth`), YOLOv12 (`best.pt`), LodeSTAR (`model.pt` + its 5 source training crops)
-
 Download and place these under `data/<name>` (datasets) or point the relevant `checkpoint:`/`weights:` config key at wherever you save the model files.
+-->
 
 ---
 
