@@ -34,7 +34,8 @@ _MODEL_COLORS = {
     "rf-detr": "#2a78d6",  # slot 1: blue
     "lodestar": "#008300",  # slot 2: green
     "trackpy": "#e87ba4",  # slot 3: pink
-    "yolo": "#eb6834",  # slot 6: orange
+    "yolo12m": "#eb6834",  # slot 4: orange
+    "yolo12n": "#4a3aa7",  # slot 5: purple
 }
 _GRID_COLOR = "#e1e0d9"
 _AXIS_COLOR = "#c3c2b7"

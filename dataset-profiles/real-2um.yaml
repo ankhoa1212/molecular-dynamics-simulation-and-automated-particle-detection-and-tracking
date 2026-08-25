@@ -1,0 +1,37 @@
+size_px: 11.37
+spacing_px: 71.92
+description: >
+  Real 2um PS particle dataset, matched-domain robustness check for the
+  2um->5um domain-shift confound flagged in wacv2027-paper's TODO.md item 59
+  (docs/plans/2026-08-25-001-fix-2um-5um-domain-confound-plan.md): both
+  RF-DETR and YOLOv12 checkpoints reported in the paper were trained on 2um
+  synthetic data, but the original sim-to-real trajectory validation
+  (trajectory-analysis-sim-real-validation-plan.md) tested the real leg
+  against a 5um video -- an uncontrolled particle-size confound alongside
+  the intended synthetic-vs-real domain gap. This profile derives from
+  particle-tracking/data/raw/scratch/real_2um_trajectory_analysis/frames_000-150.tif
+  (frames 0-150 of "NaCl + 2um PS + Au Cit 100% Light Intensity Trial 1
+  Redo_1_MMStack_Default.ome.tif", same acquisition batch/recipe as the
+  LodeSTAR training crops -- see data-setup/configs/autolabel_2um_lodestar_model_15.json).
+  size_px and spacing_px measured the same way as real-5um.yaml (see
+  real-5um-validation-results.md), via verification/calibrate_psf.py's
+  calibrate_from_frames() and _detect_particle_centers() against frames 0-2,
+  with the same min_area=100/max_area=4000/percentile=95.0 tuning (both
+  real bright-field PS-particle datasets). size_px is the fitted PSF sigma
+  (667 good 2D-Gaussian fits across 3 frames). spacing_px is the median
+  per-frame nearest-neighbor distance (scipy.spatial.cKDTree, k=2, pooled
+  across 909 candidates over 3 frames, 295-311 particles/frame) -- consistent
+  with a Poisson-random point pattern at this density (predicted mean NN
+  ~76.6px for rho=300/(2200*3200), measured median 71.9px), not a red flag
+  for clustering.
+  Notably size_px (11.37px) is LARGER than real-5um.yaml's (6.99px) despite
+  the smaller physical particle -- plausible given this dataset's deliberate
+  defocus-enhanced bright-core/dark-ring imaging (the same appearance
+  wacv2027-paper/sec/implementation.tex's brightfield renderer targets),
+  which broadens the apparent PSF blob well beyond the particle's geometric
+  diameter; not cross-checked against an independent calibration the way
+  real-5um.yaml's 6.99px was against config.yaml's 8.21px, since no such
+  second measurement exists yet for this dataset.
+  pixel_scale=0.108um/px (verification/config.yaml) is inherited unchanged
+  from the shared microscope/objective used for both the 2um and 5um real
+  datasets (real-5um.yaml's own description note).

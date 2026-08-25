@@ -40,11 +40,11 @@ class TestLoadTrackingConfig:
         # search_range/memory inherited from rf-detr's tuning (both are
         # box-based deep detectors); stub_filter=6 (not rf-detr's 90) is
         # independently measured -- see tracker_defaults.yaml's comment: at
-        # rf-detr's stub_filter=90, every yolo trajectory on the verification
-        # benchmark got filtered out (max measured track length was 77
-        # frames), so this proves stub_filter resolves its own real value
-        # rather than blindly inheriting rf-detr's.
-        result = load_tracking_config("yolo", {}, _KEY_PATH_MAP)
+        # rf-detr's stub_filter=90, every yolo12m trajectory on the
+        # verification benchmark got filtered out (max measured track length
+        # was 77 frames), so this proves stub_filter resolves its own real
+        # value rather than blindly inheriting rf-detr's.
+        result = load_tracking_config("yolo12m", {}, _KEY_PATH_MAP)
 
         assert result == {"search_range": 25, "memory": 5, "stub_filter": 6}
 
@@ -94,7 +94,7 @@ class TestLoadTrackingConfigBytetrack:
         assert result == _BYTETRACK_CANONICAL_VALUES
 
     def test_yolo_bytetrack_values_match_known_tuning(self):
-        result = load_tracking_config("yolo", {}, _BYTETRACK_KEY_PATH_MAP)
+        result = load_tracking_config("yolo12m", {}, _BYTETRACK_KEY_PATH_MAP)
 
         assert result == _BYTETRACK_CANONICAL_VALUES
 
