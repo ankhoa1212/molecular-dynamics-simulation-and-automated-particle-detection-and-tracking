@@ -104,7 +104,22 @@ lodestar:
 # lodestar's value, the other detector whose tracks are similarly short-
 # lived) keeps 2328 of the 10419 raw tracks rather than zero, while still
 # discarding single/double-frame noise blips.
-yolo:
+yolo12m:
+  search_range: 25
+  memory: 5
+  stub_filter: 6
+  adaptive_stop: 12
+  adaptive_step: 0.95
+  lost_track_buffer: 30
+  minimum_consecutive_frames: 1
+  track_activation_threshold: 0.3
+# yolo12n: YOLOv12 nano trained on tiled crops. Tracking tuning not yet
+# independently swept against this dataset -- inheriting yolo12m's values
+# as a starting point (both are box-based ultralytics detectors with
+# internal NMS; yolo12n's lower recall produces shorter tracks, matching
+# lodestar/trackpy's pattern, but stub_filter=6 from yolo12m is already
+# the low value used for those detectors so no change needed here).
+yolo12n:
   search_range: 25
   memory: 5
   stub_filter: 6

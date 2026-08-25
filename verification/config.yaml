@@ -363,9 +363,9 @@ benchmark:
     fp16: false                # run model in float16
     device: null                # used only when --device is not passed on the CLI; --device always wins
 
-  # --- model_type: yolo (requires particle-tracking/.venv — run `uv sync` there first;
+  # --- model_type: yolo12m (requires particle-tracking/.venv — run `uv sync` there first;
   # same venv lodestar uses, since ultralytics/torch are already dependencies there) ---
-  yolo:
+  yolo12m:
     # Trained on the same LodeSTAR-labeled split RF-DETR uses (data-setup/yolo_split.py,
     # yolov12/config.yaml's "fix: make RF-DETR/YOLOv12 training reproducible and directly
     # comparable" run) -- 100/100 epochs, yolo12m, mAP50=0.752 on its own held-out val
@@ -382,6 +382,18 @@ benchmark:
                                 # optimum kept landing at the tested range's lower boundary
                                 # (0.3, then 0.1, before settling at 0.01).
     device: null                # used only when --device is not passed on the CLI; --device always wins
+
+  # --- model_type: yolo12n (requires particle-tracking/.venv — same venv as yolo12m) ---
+  # YOLOv12 nano trained on tiled 640x640 crops (yolo_dataset_tiled_v2, 720 images).
+  # Inference runs tiled at 640px with IoU-based NMS to match training distribution.
+  yolo12n:
+    checkpoint: ../yolov12/runs/detect/best-alt/weights/best.pt
+    threshold: 0.05            # empirically tuned: F1 peaks at 0.05 on brightfield_fast
+                                # synthetic frames (F1=0.321 at conf=0.05 vs 0.272 at conf=0.01)
+    imgsz: 640                 # tile size matching training resolution
+    tile_overlap: 64           # overlap between tiles (px)
+    nms_iou: 0.4               # IoU threshold for cross-tile duplicate suppression
+    device: null               # used only when --device is not passed on the CLI; --device always wins
 
   # --- model_type: trackpy (classical brightness-thresholding baseline; no venv/checkpoint needed —
   # runs natively in verification/.venv, trackpy is already a dependency here) ---
