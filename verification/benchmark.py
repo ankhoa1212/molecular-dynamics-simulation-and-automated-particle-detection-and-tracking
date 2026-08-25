@@ -896,8 +896,8 @@ def _run_tracking_metrics(
         all_detections_by_frame: dict frame_idx → (N, 2) float array of pred (x, y)
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or
-            "trackpy") -- resolves search_range/memory/stub_filter from trackers_common's
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or "trackpy") --
+            resolves search_range/memory/stub_filter from trackers_common's
             canonical per-model tuning (trackers_common.tracker_defaults.yaml),
             the same values particle-tracking/tracker_configs.py generates for
             real per-model production runs. "trackpy" has no track.py-side
