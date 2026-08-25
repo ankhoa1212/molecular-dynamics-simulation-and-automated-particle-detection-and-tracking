@@ -9,7 +9,7 @@ End-to-end pipeline for validating the simulation → detection → tracking cha
 5. **`compare_renders.py`** — generates side-by-side visual and SNR/PSD comparison of all rendering strategies against a real reference frame.
 6. **`plot_benchmark.py`** — plots per-frame precision/recall/F1/mean position error/inference time across `benchmark.py`'s per-model-type outputs, plus a grouped MOTA/IDF1/fragmentations bar panel by (model, tracker) and a run-level summary bar chart (F1/MOTA/IDF1/fragmentations/ID switches/inference time), for comparing detector and tracker performance side by side.
 7. **`dataset_profile_builder.py`** — builds a dataset scale profile YAML (`size_px`/`spacing_px`) from a LAMMPS trajectory and a known `size_px`, computing `spacing_px` as the median per-particle nearest-neighbor distance. See `dataset-profiles/README.md` for the profile format and how `box_size`/`nms_distance`/`tile_size`/`search_range`/`diameter` derive from it.
-8. **`run_density_ablation.sh`** — renders + benchmarks the default trajectory's particle count alongside 3 lower-density counts (same epsilon/box_size) against all 4 detector/tracker arms, without disturbing the real headline `verification_output/` numbers (backs them up and restores them on exit, even on failure).
+8. **`run_density_ablation.sh`** — renders + benchmarks the default trajectory's particle count alongside 3 lower-density counts (same epsilon/box_size) against all 5 detector/tracker arms, without disturbing the real headline `verification_output/` numbers (backs them up and restores them on exit, even on failure).
 9. **`plot_density_ablation.py`** — plots per-model detection accuracy vs. particle count across `run_density_ablation.sh`'s sweep, reusing `plot_benchmark.py`'s aggregation and styling.
 10. **`trajectory_analysis.py`** — decomposes the sim-to-real trajectory gap into tracking-induced measurement error (GT-synthetic vs. tracked-synthetic) and domain gap (tracked-synthetic vs. tracked-real), reporting an MSD log-log scaling exponent (alpha, with an R²-gated `alpha_reliable` flag) plus secondary raw-slope diffusion coefficient and mean velocity for up to five legs (GT-synthetic, RF-DETR/YOLOv12 × synthetic/real). Reuses `compare.py`'s `compute_msd`/`_track_velocity_magnitudes`. See its module docstring for the full CLI and unit-scaling details.
 11. **`render_random_placement.py`** — generates DeepTrack-style random-placement frames (particles placed uniformly at random via `rng.uniform`, no LAMMPS trajectory) by reusing `render.py`'s `_dispatch_render`, so the renderer, PSF, and noise model are identical to the physics-grounded condition. Writes `ground_truth.json`/`ground_truth_tracks.csv` in the same format as `render.py`. See its module docstring for the full CLI.
@@ -26,7 +26,7 @@ uv sync
 
 ```bash
 cd ../rf-detr && uv sync             # --model-type rf-detr (default)
-cd ../particle-tracking && uv sync   # --model-type lodestar or yolo
+cd ../particle-tracking && uv sync   # --model-type lodestar, yolo12m, or yolo12n
 # --model-type trackpy needs nothing further — runs natively in verification/.venv
 ```
 
@@ -156,11 +156,17 @@ uv run python benchmark.py \
     --ground-truth verification_output/ground_truth.json \
     --model-type lodestar
 
-# Detection only, YOLOv12
+# Detection only, YOLOv12m
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
     --ground-truth verification_output/ground_truth.json \
-    --model-type yolo
+    --model-type yolo12m
+
+# Detection only, YOLOv12n (trained/inferred on tiled 640x640 crops)
+uv run python benchmark.py \
+    --frames verification_output/synthetic_frames/ \
+    --ground-truth verification_output/ground_truth.json \
+    --model-type yolo12n
 
 # Detection only, trackpy (classical baseline, no venv/checkpoint needed)
 uv run python benchmark.py \
@@ -207,10 +213,11 @@ synthetic dataset; a real dataset's `size_px`/`spacing_px` come from `calibrate_
 |----------------|-------------------|----------------|-------|
 | `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
 | `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
-| `yolo` | `benchmark.yolo.*` (`checkpoint`, `threshold`, `device`) | `particle-tracking/.venv` | Always runs full-frame — ultralytics applies its own internal NMS/detection cap (`max_det=5000`), so tiling doesn't apply |
+| `yolo12m` | `benchmark.yolo12m.*` (`checkpoint`, `threshold`, `device`) | `particle-tracking/.venv` | Always runs full-frame — ultralytics applies its own internal NMS/detection cap (`max_det=5000`), so tiling doesn't apply |
+| `yolo12n` | `benchmark.yolo12n.*` (`checkpoint`, `threshold`, `imgsz`, `tile_overlap`, `nms_iou`, `device`) | `particle-tracking/.venv` | Trained on tiled 640x640 crops — inference always runs tiled at `imgsz`, merging cross-tile duplicates via IoU-based NMS (`nms_iou`) |
 | `trackpy` | `benchmark.trackpy.*` (`diameter`, `minmass`, `separation`) | none — runs natively in `verification/.venv` | Classical brightness-thresholding baseline (`trackpy.locate`), not a learned model; no checkpoint file, no loaded model object |
 
-`--device` is shared across model types; `benchmark.lodestar.device`/`benchmark.yolo.device` override it for LodeSTAR/YOLOv12 specifically when set. `trackpy` is CPU-only and ignores `--device`.
+`--device` is shared across model types; `benchmark.lodestar.device`/`benchmark.yolo12m.device`/`benchmark.yolo12n.device` override it for LodeSTAR/YOLOv12 specifically when set. `trackpy` is CPU-only and ignores `--device`.
 
 Options:
 
@@ -220,7 +227,7 @@ Options:
 | `--ground-truth` | *(required)* | `ground_truth.json` from render.py |
 | `--ground-truth-tracks` | *(optional)* | `ground_truth_tracks.csv` from render.py — enables tracking metrics |
 | `--config` | `config.yaml` | Config file |
-| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, `yolo`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
+| `--model-type` | `rf-detr` | `rf-detr`, `lodestar`, `yolo12m`, `yolo12n`, or `trackpy` — overridden by `benchmark.model_type` in config when the flag is omitted |
 | `--tracker` | `trackpy` | `trackpy` or `bytetrack` — which `trackers_common` linker computes tracking metrics; no `config.yaml` equivalent to `benchmark.model_type` yet |
 | `--device` | `0` | CUDA device index or `cpu` |
 | `--save-video` | off | Write `tracking_visualization_{model_type}.mp4` with detection boxes and trajectory traces overlaid. Uses `tracking.search_range`/`memory` from `--config` to link detections, independent of `--ground-truth-tracks` (only needed for MOTA/IDF1) |

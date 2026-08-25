@@ -1,0 +1,37 @@
+# Trajectory-analysis pipeline (docs/plans/2026-08-25-001-fix-2um-5um-domain-confound-plan.md).
+# YOLOv12 + trackpy on a real 2um video -- matched-domain robustness check:
+# both checkpoints were trained on 2um synthetic data, so this replaces the
+# original real_5um_trajectory_analysis_yolo.yaml's 5um real leg (a
+# particle-size confound) with a real leg at the same particle size the
+# detector/synthetic legs already use. dataset_profile derives
+# box_size/nms_distance/search_range -- no manual overrides.
+input: "data/raw/scratch/real_2um_trajectory_analysis/frames_000-150.tif"
+
+dataset_profile: ../dataset-profiles/real-2um.yaml
+
+model:
+  type: yolo
+  checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
+  device: "0"
+
+crop:
+
+tiling:
+  enabled: true
+  overlap: 100
+  nms_threshold: 0.3
+
+detection:
+  threshold: 0.3
+
+tracking:
+  tracker: trackpy
+  memory: 5
+  stub_filter: 10
+  adaptive_stop: 1.0
+  adaptive_step: 0.95
+
+output:
+  dir: output/trajectory_analysis/real_2um_yolo
+  save_video: false
+  save_trajectory_image: true

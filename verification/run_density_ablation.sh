@@ -27,10 +27,17 @@ cd "$(dirname "$0")"  # always run from verification/
 VENV_PY="./.venv/bin/python"
 OUT=verification_output
 ABLATION_DIR="$OUT/density_ablation"
-MODELS=(rf-detr yolo lodestar trackpy)
+MODELS=(rf-detr yolo12m yolo12n lodestar trackpy)
 DENSITIES=(200 600 1000)
 FRAMES=151
 LAMMPS_OUT_DIR="../lammps-scripts/results/density_ablation"
+# This script never passes --tracker to benchmark.py, so every invocation
+# below uses its trackpy default; benchmark.py names its tracking-metrics
+# output tracking_metrics_{model}_{tracker}.csv (since the ByteTrack-support
+# commit), so all tracking_metrics filenames in this script carry this
+# suffix -- a bare tracking_metrics_{model}.csv is a pre-ByteTrack relic that
+# benchmark.py no longer writes.
+TRACKER=trackpy
 
 mkdir -p "$ABLATION_DIR"
 
@@ -38,17 +45,41 @@ mkdir -p "$ABLATION_DIR"
 mkdir -p "$ABLATION_DIR/N1446"
 for m in "${MODELS[@]}"; do
     [ -f "$OUT/accuracy_metrics_$m.csv" ] && cp "$OUT/accuracy_metrics_$m.csv" "$ABLATION_DIR/N1446/"
-    [ -f "$OUT/tracking_metrics_$m.csv" ] && cp "$OUT/tracking_metrics_$m.csv" "$ABLATION_DIR/N1446/"
+    [ -f "$OUT/tracking_metrics_${m}_${TRACKER}.csv" ] && cp "$OUT/tracking_metrics_${m}_${TRACKER}.csv" "$ABLATION_DIR/N1446/"
 done
 
 restore_baseline() {
     echo "Restoring the real N~1446 baseline CSVs to $OUT/ ..."
     for m in "${MODELS[@]}"; do
         [ -f "$ABLATION_DIR/N1446/accuracy_metrics_$m.csv" ] && cp "$ABLATION_DIR/N1446/accuracy_metrics_$m.csv" "$OUT/"
-        [ -f "$ABLATION_DIR/N1446/tracking_metrics_$m.csv" ] && cp "$ABLATION_DIR/N1446/tracking_metrics_$m.csv" "$OUT/"
+        [ -f "$ABLATION_DIR/N1446/tracking_metrics_${m}_${TRACKER}.csv" ] && cp "$ABLATION_DIR/N1446/tracking_metrics_${m}_${TRACKER}.csv" "$OUT/"
     done
 }
 trap restore_baseline EXIT
+
+# --- 0b. Backfill N=1446 baseline CSVs for yolo12m and yolo12n. ---
+# These models were not in the original MODELS array, so their CSVs may not
+# exist in $OUT/ yet. Run benchmark.py against the existing production frames,
+# ground_truth.json, and ground_truth_tracks.csv to produce them so the
+# Phase 0 backup (already executed above) can be re-run retroactively -- but
+# we must also copy them into N1446/ now, since Phase 0 already ran before
+# these existed.
+echo "=== Phase 0b: Backfilling N=1446 CSVs for yolo12m and yolo12n ==="
+for m in yolo12m yolo12n; do
+    if [ ! -f "$OUT/accuracy_metrics_$m.csv" ]; then
+        echo "=== [N=1446] Benchmarking $m (backfill) ==="
+        "$VENV_PY" benchmark.py \
+            --frames "$OUT/synthetic_frames" \
+            --ground-truth "$OUT/ground_truth.json" \
+            --ground-truth-tracks "$OUT/ground_truth_tracks.csv" \
+            --model-type "$m"
+    else
+        echo "=== [N=1446] $m CSV already exists, skipping backfill ==="
+    fi
+    # File into N1446/ so the restore trap can recover them on subsequent runs.
+    [ -f "$OUT/accuracy_metrics_$m.csv" ] && cp "$OUT/accuracy_metrics_$m.csv" "$ABLATION_DIR/N1446/"
+    [ -f "$OUT/tracking_metrics_${m}_${TRACKER}.csv" ] && cp "$OUT/tracking_metrics_${m}_${TRACKER}.csv" "$ABLATION_DIR/N1446/"
+done
 
 # --- 1. Run the LAMMPS molecule-count sweep (N=200,600,1000 @ epsilon=5.0). ---
 echo "=== Running LAMMPS density sweep (N=200,600,1000) ==="
@@ -100,7 +131,7 @@ PYEOF
     # overwrites them.
     for m in "${MODELS[@]}"; do
         [ -f "$OUT/accuracy_metrics_$m.csv" ] && cp "$OUT/accuracy_metrics_$m.csv" "$N_DIR/"
-        [ -f "$OUT/tracking_metrics_$m.csv" ] && cp "$OUT/tracking_metrics_$m.csv" "$N_DIR/"
+        [ -f "$OUT/tracking_metrics_${m}_${TRACKER}.csv" ] && cp "$OUT/tracking_metrics_${m}_${TRACKER}.csv" "$N_DIR/"
     done
 
     # Drop the rendered frames after benchmarking -- large (tens of MB) and

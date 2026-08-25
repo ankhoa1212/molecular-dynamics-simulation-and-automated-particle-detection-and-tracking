@@ -344,7 +344,7 @@ uv run python render.py \
     --frames 151 \
     --config configs/render_procedural.yaml
 
-for model in rf-detr yolo lodestar trackpy; do
+for model in rf-detr yolo12m lodestar trackpy; do
   uv run python benchmark.py \
       --frames verification_output/synthetic_frames/ \
       --ground-truth verification_output/ground_truth.json \

@@ -8,7 +8,7 @@ and color/style conventions directly rather than re-deriving them, so this
 figure stays visually and numerically consistent with benchmark_comparison.png.
 
 CLI: uv run python plot_density_ablation.py [--ablation-dir verification_output/density_ablation/]
-     [--models rf-detr yolo]
+     [--models rf-detr yolo12m]
 """
 import argparse
 import re
@@ -89,6 +89,11 @@ def main():
             per_model[model_type]["n"].append(n_value)
             for key, _ in _METRICS:
                 per_model[model_type]["series"][key].append(aggregate[key])
+
+    # --- Per-model discovery confirmation ---
+    for model_type in model_types:
+        if len(per_model[model_type]["n"]) == len(densities):
+            print(f"Found all N-points for '{model_type}'")
 
     # --- Summary table (stdout) ---
     header = f"{'model':<10} {'N':>6} {'precision':>10} {'recall':>8} {'f1':>8} {'mean_err_px':>12}"

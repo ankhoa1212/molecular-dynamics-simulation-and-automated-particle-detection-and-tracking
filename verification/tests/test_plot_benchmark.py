@@ -402,7 +402,7 @@ class TestMainEndToEnd:
         monkeypatch.chdir(tmp_path)
         out_dir = tmp_path / "verification_output"
         out_dir.mkdir()
-        for model_type in ("rf-detr", "lodestar", "trackpy", "yolo"):
+        for model_type in ("rf-detr", "lodestar", "trackpy", "yolo12m"):
             _write_accuracy_csv_rows(
                 out_dir / f"accuracy_metrics_{model_type}.csv",
                 [_row(i, inference_ms=10.0) for i in range(3)],
@@ -414,5 +414,5 @@ class TestMainEndToEnd:
         assert (out_dir / "benchmark_summary.png").exists()
         # Every known model type keeps its own fixed color, never reassigned.
         seen = list(pb._MODEL_COLORS.keys())
-        for model_type in ("rf-detr", "lodestar", "trackpy", "yolo"):
+        for model_type in ("rf-detr", "lodestar", "trackpy", "yolo12m"):
             assert pb._color_for(model_type, seen) == pb._MODEL_COLORS[model_type]

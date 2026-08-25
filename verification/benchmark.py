@@ -26,8 +26,9 @@ tracks detections online, per-frame, via trackers_common.bytetrack.run_bytetrack
 uses), resolving lost_track_buffer/minimum_consecutive_frames/
 track_activation_threshold from trackers_common's canonical defaults through the
 same mechanism -- independently swept per model, same as trackpy's tuning (see
-trackers_common/tracker_defaults.yaml's comments: rf-detr/yolo converge on
-minimum_consecutive_frames=1, lodestar/trackpy on minimum_consecutive_frames=3).
+trackers_common/tracker_defaults.yaml's comments: rf-detr/yolo12m/yolo12n
+converge on minimum_consecutive_frames=1, lodestar/trackpy on
+minimum_consecutive_frames=3).
 Both trackers' canonical values still honor verification/config.yaml's tracking:
 section as an override when set explicitly. Every --model-type, including
 trackpy (a classical detector with no particle-tracking/track.py model_type of
@@ -52,7 +53,7 @@ Usage:
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
-        [--model-type rf-detr|lodestar|yolo|trackpy] [--tracker trackpy|bytetrack]
+        [--model-type rf-detr|lodestar|yolo12m|yolo12n|trackpy] [--tracker trackpy|bytetrack]
 """
 
 import os
@@ -79,7 +80,10 @@ _MODEL_VENV_DIRS = {
     # Same venv as lodestar -- ultralytics/torch are already dependencies of
     # particle-tracking/.venv (that's where track.py's own yolo support runs
     # from), no separate venv needed.
-    "yolo": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
+    "yolo12m": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
+    # yolo12n: YOLOv12 nano, trained on tiled 640x640 crops -- same venv as
+    # yolo12m (same ultralytics/torch stack, different checkpoint).
+    "yolo12n": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
     "trackpy": None,
 }
 _DEFAULT_MODEL_TYPE = "rf-detr"
@@ -241,7 +245,7 @@ def get_yolo_model(checkpoint):
     via the shared loader."""
     from detectors_common.yolo_loader import get_yolo_model as _impl
 
-    return _impl(checkpoint, inject_venv_site_packages=_MODEL_VENV_DIRS["yolo"])
+    return _impl(checkpoint, inject_venv_site_packages=_MODEL_VENV_DIRS["yolo12m"])
 
 
 def detect_yolo(model, frame, threshold, device):
@@ -892,8 +896,8 @@ def _run_tracking_metrics(
         all_detections_by_frame: dict frame_idx → (N, 2) float array of pred (x, y)
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", "yolo", or "trackpy") --
-            resolves search_range/memory/stub_filter from trackers_common's
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or
+            "trackpy") -- resolves search_range/memory/stub_filter from trackers_common's
             canonical per-model tuning (trackers_common.tracker_defaults.yaml),
             the same values particle-tracking/tracker_configs.py generates for
             real per-model production runs. "trackpy" has no track.py-side
@@ -1182,11 +1186,11 @@ def _run_bytetrack_metrics(
             for --save-video).
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", "yolo", or
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or
             "trackpy") — resolves lost_track_buffer/minimum_consecutive_frames/
             track_activation_threshold from trackers_common's canonical
             per-model tuning (trackers_common.tracker_defaults.yaml), each
-            independently swept against real data. rf-detr/yolo converge on
+            independently swept against real data. rf-detr/yolo12m converge on
             minimum_consecutive_frames=1; lodestar/trackpy (noisier per-frame
             confidence) converge on minimum_consecutive_frames=3 instead.
         derived_psf_sigma_px: if given, overrides cfg's synthetic.psf_sigma /
@@ -1672,25 +1676,35 @@ def main():
         # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
         # read them (print, get_rfdetr_model, detect_with_tiling) are all gated
         # behind `model_type != "lodestar"`, so no placeholder values are needed here.
-    elif model_type == "yolo":
+    elif model_type == "yolo12m":
         checkpoint = Path(
             _cfg_get(
                 cfg,
-                "yolo",
+                "yolo12m",
                 "checkpoint",
                 default="../yolov12/runs/detect/yolo12m-particles/weights/best.pt",
             )
         )
-        # 0.25: ultralytics' own conventional default conf threshold -- not yet
-        # empirically tuned against this checkpoint's own score distribution
-        # (unlike e.g. lodestar's threshold, read from a fitted cutoff file above).
-        threshold = _cfg_get(cfg, "yolo", "threshold", default=0.25)
-        device_raw = args.device or _cfg_get(cfg, "yolo", "device", default=None)
-        # variant/num_queries/tiling_* are RF-DETR-only — gated behind
-        # `model_type not in ("lodestar", "yolo")` below, so no placeholder
-        # values needed here. Ultralytics applies its own internal NMS -- no
-        # external box_size/nms_distance/tiling step, same reasoning as
-        # LodeSTAR's "fully-convolutional with no query cap" tiling exemption.
+        threshold = _cfg_get(cfg, "yolo12m", "threshold", default=0.25)
+        device_raw = args.device or _cfg_get(cfg, "yolo12m", "device", default=None)
+        # Ultralytics applies its own internal NMS -- no external tiling step,
+        # same reasoning as LodeSTAR's "fully-convolutional with no query cap"
+        # tiling exemption.
+    elif model_type == "yolo12n":
+        checkpoint = Path(
+            _cfg_get(
+                cfg,
+                "yolo12n",
+                "checkpoint",
+                default="../yolov12/runs/detect/best-alt/weights/best.pt",
+            )
+        )
+        threshold = _cfg_get(cfg, "yolo12n", "threshold", default=0.05)
+        device_raw = args.device or _cfg_get(cfg, "yolo12n", "device", default=None)
+        # yolo12n was trained on tiled 640x640 crops — run inference tiled too.
+        yolo12n_imgsz = _cfg_get(cfg, "yolo12n", "imgsz", default=640)
+        yolo12n_tile_overlap = _cfg_get(cfg, "yolo12n", "tile_overlap", default=64)
+        yolo12n_nms_iou = _cfg_get(cfg, "yolo12n", "nms_iou", default=0.4)
     elif model_type == "trackpy":
         # trackpy has no checkpoint file and no loaded model object — a real
         # absence, not a placeholder path (see plan KTDs). device is computed
@@ -1740,7 +1754,7 @@ def main():
         print(f"Error: no frame_*.png files in {frames_dir}")
         sys.exit(1)
 
-    if model_type not in ("lodestar", "yolo", "trackpy"):
+    if model_type not in ("lodestar", "yolo12m", "yolo12n", "trackpy"):
         # tile_size: explicit benchmark.tiling.tile_size config value always
         # wins; otherwise derive from dataset_profile (clamped to this run's
         # own frame dimensions), else this file's own long-standing literal
@@ -1766,18 +1780,23 @@ def main():
     else:
         print(f"Checkpoint: {checkpoint}")
     print(f"Frames:     {len(tiff_files)}")
-    if model_type in ("lodestar", "yolo", "trackpy"):
+    if model_type in ("lodestar", "yolo12m", "trackpy"):
         print(
             "Tiling:     n/a (LodeSTAR is fully-convolutional with no query cap to tile around; "
-            "YOLO applies its own internal NMS with no query cap either; "
+            "YOLO12m applies its own internal NMS with no query cap either; "
             "trackpy is a classical algorithm with no detection cap at all)"
+        )
+    elif model_type == "yolo12n":
+        print(
+            f"Tiling:     enabled (imgsz={yolo12n_imgsz}, overlap={yolo12n_tile_overlap}px, "
+            f"nms_iou={yolo12n_nms_iou}) — yolo12n trained on tiled 640px crops"
         )
     else:
         print(f"Tiling:     {'enabled' if tiling_enabled else 'disabled'} (tile_size={tile_size})")
 
     if model_type == "lodestar":
         model = get_lodestar_model(checkpoint, device, fp16=fp16)
-    elif model_type == "yolo":
+    elif model_type in ("yolo12m", "yolo12n"):
         model = get_yolo_model(checkpoint)
     elif model_type == "trackpy":
         model = None
@@ -1823,8 +1842,70 @@ def main():
                 nms_distance=nms_distance,
                 box_size=box_size,
             )
-        elif model_type == "yolo":
+        elif model_type == "yolo12m":
             dets = detect_yolo(model, img_rgb, threshold, device)
+        elif model_type == "yolo12n":
+            # yolo12n was trained on tiled 640x640 crops — tile at inference
+            # to match training distribution. Uses torchvision IoU-based NMS
+            # to merge cross-tile duplicate detections (distance-based NMS
+            # over-suppresses at this dataset's dense packing).
+            import torch
+            import supervision as sv
+
+            H, W = img_rgb.shape[:2]
+            tile_size_n = yolo12n_imgsz
+            stride_n = tile_size_n - yolo12n_tile_overlap
+
+            def _tile_starts_n(length):
+                if length <= tile_size_n:
+                    return [0]
+                starts = list(range(0, length - tile_size_n, stride_n))
+                starts.append(length - tile_size_n)
+                return starts
+
+            _all_xyxy, _all_conf = [], []
+            for _y0 in _tile_starts_n(H):
+                for _x0 in _tile_starts_n(W):
+                    _tile = img_rgb[_y0 : _y0 + tile_size_n, _x0 : _x0 + tile_size_n]
+                    _ph = tile_size_n - _tile.shape[0]
+                    _pw = tile_size_n - _tile.shape[1]
+                    if _ph > 0 or _pw > 0:
+                        import cv2
+
+                        _tile = cv2.copyMakeBorder(
+                            _tile, 0, _ph, 0, _pw, cv2.BORDER_CONSTANT, value=0
+                        )
+                    _r = model.predict(
+                        _tile,
+                        conf=threshold,
+                        device=device,
+                        verbose=False,
+                        max_det=5000,
+                        imgsz=tile_size_n,
+                    )[0]
+                    if _r.boxes is not None and len(_r.boxes):
+                        _xyxy = _r.boxes.xyxy.cpu().numpy().copy()
+                        _xyxy[:, [0, 2]] += _x0
+                        _xyxy[:, [1, 3]] += _y0
+                        _all_xyxy.append(_xyxy)
+                        _all_conf.append(_r.boxes.conf.cpu().numpy())
+            if _all_xyxy:
+                from torchvision.ops import nms as _tv_nms
+
+                _xyxy_all = np.concatenate(_all_xyxy)
+                _conf_all = np.concatenate(_all_conf)
+                _keep = _tv_nms(
+                    torch.from_numpy(_xyxy_all).float(),
+                    torch.from_numpy(_conf_all).float(),
+                    iou_threshold=yolo12n_nms_iou,
+                ).numpy()
+                dets = sv.Detections(
+                    xyxy=_xyxy_all[_keep],
+                    confidence=_conf_all[_keep],
+                    class_id=np.zeros(len(_keep), dtype=int),
+                )
+            else:
+                dets = sv.Detections.empty()
         elif model_type == "trackpy":
             # Must stay before `elif tiling_enabled:` below — tiling_enabled is
             # only ever assigned in the rf-detr branch of config resolution
