@@ -8,15 +8,48 @@ Validates:
   error message.
 """
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# Insert the scripts directory so regen_fig15 can be imported.
-_SCRIPTS_DIR = str(Path(__file__).parent.parent.parent.parent / "wacv2027-paper" / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+# Locate the wacv2027-paper/scripts directory containing regen_fig15.py. This
+# repo is not the sole owner of that sibling checkout, so its location
+# relative to this repo varies across machines, worktrees, and CI runners:
+# search a small set of plausible spots and allow an env var override rather
+# than hardcoding a single layout.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _find_scripts_dir() -> Path | None:
+    env_override = os.environ.get("WACV2027_PAPER_DIR")
+    candidates = []
+    if env_override:
+        candidates.append(Path(env_override) / "scripts")
+    candidates.extend(
+        [
+            _REPO_ROOT.parent / "wacv2027-paper" / "scripts",
+            _REPO_ROOT.parent.parent / "wacv2027-paper" / "scripts",
+        ]
+    )
+    for candidate in candidates:
+        if (candidate / "regen_fig15.py").is_file():
+            return candidate
+    return None
+
+
+_SCRIPTS_DIR = _find_scripts_dir()
+if _SCRIPTS_DIR is None:
+    pytest.skip(
+        "wacv2027-paper/scripts/regen_fig15.py not found (searched sibling "
+        "directories of this repo and its parent; set WACV2027_PAPER_DIR to "
+        "override). Skipping regen_fig15 tests.",
+        allow_module_level=True,
+    )
+
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import regen_fig15  # noqa: E402 — must come after path manipulation
 
