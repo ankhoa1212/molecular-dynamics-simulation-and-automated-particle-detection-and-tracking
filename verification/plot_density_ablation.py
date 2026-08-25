@@ -90,6 +90,11 @@ def main():
             for key, _ in _METRICS:
                 per_model[model_type]["series"][key].append(aggregate[key])
 
+    # --- Per-model discovery confirmation ---
+    for model_type in model_types:
+        if len(per_model[model_type]["n"]) == len(densities):
+            print(f"Found all N-points for '{model_type}'")
+
     # --- Summary table (stdout) ---
     header = f"{'model':<10} {'N':>6} {'precision':>10} {'recall':>8} {'f1':>8} {'mean_err_px':>12}"
     print(header)

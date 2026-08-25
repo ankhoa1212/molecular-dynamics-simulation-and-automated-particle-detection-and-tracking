@@ -1,0 +1,38 @@
+# Trajectory-analysis pipeline (docs/plans/2026-08-21-001-feat-trajectory-analysis-sim-real-validation-plan.md, U2).
+# RF-DETR + trackpy on the real 5um video -- tiling DISABLED for robustness check.
+# Copy of real_5um_trajectory_analysis_rfdetr.yaml with tiling.enabled: false and
+# a distinct output.dir so the submitted tiled run's artifacts are never overwritten.
+# See yolo-tiling-ablation-fix spec, Requirements 9.1 and 9.3.
+input: "data/raw/scratch/real_5um_trajectory_analysis/frames_000-150.tif"
+
+dataset_profile: ../dataset-profiles/real-5um.yaml
+
+model:
+  type: rf-detr
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
+  variant: large
+  num_classes: 2
+  num_queries: 300
+  device: "0"
+
+crop:
+
+tiling:
+  enabled: false
+  overlap: 100
+  nms_threshold: 0.3
+
+detection:
+  threshold: 0.3
+
+tracking:
+  tracker: trackpy
+  memory: 5
+  stub_filter: 10
+  adaptive_stop: 1.0
+  adaptive_step: 0.95
+
+output:
+  dir: output/trajectory_analysis/real_rfdetr_notiling
+  save_video: false
+  save_trajectory_image: true
