@@ -162,7 +162,7 @@ uv run python benchmark.py \
     --ground-truth verification_output/ground_truth.json \
     --model-type yolo12m
 
-# Detection only, YOLOv12n (trained/inferred on tiled 640x640 crops)
+# Detection only, YOLOv12n (tiled inference — trained on 640x640 crops)
 uv run python benchmark.py \
     --frames verification_output/synthetic_frames/ \
     --ground-truth verification_output/ground_truth.json \
@@ -214,7 +214,7 @@ synthetic dataset; a real dataset's `size_px`/`spacing_px` come from `calibrate_
 | `rf-detr` (default) | `benchmark.checkpoint`, `.variant`, `.num_queries`, `.threshold`, `.tiling.*` | `rf-detr/.venv` | Tiled by default for frames with >300 particles (RF-DETR's query cap) |
 | `lodestar` | `benchmark.lodestar.*` (`checkpoint`, `threshold`, `alpha`, `nms_distance`, `box_size`, `fp16`, `device`) | `particle-tracking/.venv` | Always runs full-frame — LodeSTAR is fully-convolutional with no per-frame detection cap, so tiling doesn't apply |
 | `yolo12m` | `benchmark.yolo12m.*` (`checkpoint`, `threshold`, `device`) | `particle-tracking/.venv` | Always runs full-frame — ultralytics applies its own internal NMS/detection cap (`max_det=5000`), so tiling doesn't apply |
-| `yolo12n` | `benchmark.yolo12n.*` (`checkpoint`, `threshold`, `imgsz`, `tile_overlap`, `nms_iou`, `device`) | `particle-tracking/.venv` | Trained on tiled 640x640 crops — inference always runs tiled at `imgsz`, merging cross-tile duplicates via IoU-based NMS (`nms_iou`) |
+| `yolo12n` | `benchmark.yolo12n.*` (`checkpoint`, `threshold`, `imgsz`, `tile_overlap`, `nms_iou`, `device`) | `particle-tracking/.venv` | Tiled at `imgsz` (default 640px, matching training crops) with IoU-based NMS merging cross-tile duplicates |
 | `trackpy` | `benchmark.trackpy.*` (`diameter`, `minmass`, `separation`) | none — runs natively in `verification/.venv` | Classical brightness-thresholding baseline (`trackpy.locate`), not a learned model; no checkpoint file, no loaded model object |
 
 `--device` is shared across model types; `benchmark.lodestar.device`/`benchmark.yolo12m.device`/`benchmark.yolo12n.device` override it for LodeSTAR/YOLOv12 specifically when set. `trackpy` is CPU-only and ignores `--device`.

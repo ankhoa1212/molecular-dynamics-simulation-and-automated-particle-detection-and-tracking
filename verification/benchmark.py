@@ -2,11 +2,12 @@
 """Benchmark detection accuracy on synthetic frames from render.py.
 
 Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR (with
-optional tiling), LodeSTAR (full-frame, no tiling), YOLO (full-frame, own
-internal NMS, no tiling), or trackpy (classical brightness-thresholding
-baseline, no venv/checkpoint needed) via --model-type, matches detections to
-known particle positions, and reports per-frame precision/recall/F1 and mean
-position error.
+optional tiling), LodeSTAR (full-frame, no tiling), YOLO12m (full-frame, own
+internal NMS, no tiling), YOLO12n (tiled at its 640px training resolution,
+IoU-based NMS merges cross-tile duplicates), or trackpy (classical
+brightness-thresholding baseline, no venv/checkpoint needed) via --model-type,
+matches detections to known particle positions, and reports per-frame
+precision/recall/F1 and mean position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
 --ground-truth-tracks is supplied (CSV from render.py U1), for either tracker
@@ -1828,8 +1829,8 @@ def main():
         # Times only the detector's own call -- not image loading or the
         # matching/scoring below -- so this is comparable across model
         # types regardless of how much of this loop's other work a given
-        # backend happens to share. GPU-backed detectors (rf-detr/yolo/
-        # lodestar) already block on their own result-materialization (numpy
+        # backend happens to share. GPU-backed detectors (rf-detr/yolo12m/
+        # yolo12n/lodestar) already block on their own result-materialization (numpy
         # conversion), so no explicit CUDA sync is needed here.
         inference_start = time.perf_counter()
         if model_type == "lodestar":
@@ -1991,7 +1992,7 @@ def main():
     if not np.isnan(overall_err):
         print(f"Mean position error: {overall_err:.2f} px")
     if all_inference_times_ms:
-        # Median alongside mean: GPU-backed detectors (rf-detr/yolo/lodestar)
+        # Median alongside mean: GPU-backed detectors (rf-detr/yolo12m/yolo12n/lodestar)
         # typically pay a one-time CUDA warm-up cost on their first inference
         # call, which the mean absorbs into the whole run but the median
         # (robust to a single outlier frame) does not -- both are reported so

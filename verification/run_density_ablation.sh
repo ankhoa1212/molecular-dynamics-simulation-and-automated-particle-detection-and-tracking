@@ -3,7 +3,7 @@
 # 1000) at the same epsilon=5.0/box_size=200 as the existing default
 # verification trajectory (continuous_force_1500_5.0.lammpstrj, N~1446
 # packed particles after boundary effects), renders + benchmarks each
-# against all 4 detector/tracker arms, and files results next to a copy of
+# against all 5 detector/tracker arms, and files results next to a copy of
 # the existing N~1446 baseline so plot_density_ablation.py can plot all 4
 # density points together.
 #
