@@ -26,8 +26,9 @@ tracks detections online, per-frame, via trackers_common.bytetrack.run_bytetrack
 uses), resolving lost_track_buffer/minimum_consecutive_frames/
 track_activation_threshold from trackers_common's canonical defaults through the
 same mechanism -- independently swept per model, same as trackpy's tuning (see
-trackers_common/tracker_defaults.yaml's comments: rf-detr/yolo converge on
-minimum_consecutive_frames=1, lodestar/trackpy on minimum_consecutive_frames=3).
+trackers_common/tracker_defaults.yaml's comments: rf-detr/yolo12m/yolo12n
+converge on minimum_consecutive_frames=1, lodestar/trackpy on
+minimum_consecutive_frames=3).
 Both trackers' canonical values still honor verification/config.yaml's tracking:
 section as an override when set explicitly. Every --model-type, including
 trackpy (a classical detector with no particle-tracking/track.py model_type of
@@ -52,7 +53,7 @@ Usage:
         --frames verification_output/synthetic_frames/ \\
         --ground-truth verification_output/ground_truth.json \\
         --ground-truth-tracks verification_output/ground_truth_tracks.csv \\
-        [--model-type rf-detr|lodestar|yolo|trackpy] [--tracker trackpy|bytetrack]
+        [--model-type rf-detr|lodestar|yolo12m|yolo12n|trackpy] [--tracker trackpy|bytetrack]
 """
 
 import os
@@ -895,8 +896,8 @@ def _run_tracking_metrics(
         all_detections_by_frame: dict frame_idx → (N, 2) float array of pred (x, y)
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or "trackpy") --
-            resolves search_range/memory/stub_filter from trackers_common's
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or
+            "trackpy") -- resolves search_range/memory/stub_filter from trackers_common's
             canonical per-model tuning (trackers_common.tracker_defaults.yaml),
             the same values particle-tracking/tracker_configs.py generates for
             real per-model production runs. "trackpy" has no track.py-side

@@ -5,7 +5,7 @@
 # tracker_configs.py and verification/benchmark.py -- see this package's README.
 #
 # trackpy (verification's classical blob detector) has no track.py-side model_type
-# of its own -- unlike rf-detr/lodestar/yolo, tracker_configs.py's writers never
+# of its own -- unlike rf-detr/lodestar/yolo12m, tracker_configs.py's writers never
 # generate a config for it. It has its own tuned entry below anyway (U6), keyed
 # by the same "trackpy" model_type string benchmark.py already uses, so its
 # tracking-linkage tuning isn't silently coupled to rf-detr's.
@@ -30,13 +30,13 @@
 # track_activation_threshold in {0.1,0.3}) was run against each detector's
 # real detections.
 #
-# rf-detr and yolo converged on the identical optimum (lost_track_buffer=30,
+# rf-detr and yolo12m converged on the identical optimum (lost_track_buffer=30,
 # minimum_consecutive_frames=1, track_activation_threshold=0.3) --
-# rf-detr: MOTA 0.397->0.400, IDF1 0.373->0.389; yolo: MOTA 0.359->0.371,
+# rf-detr: MOTA 0.397->0.400, IDF1 0.373->0.389; yolo12m: MOTA 0.359->0.371,
 # IDF1 0.313->0.354 vs. the prior unmeasured 60/1/0.1 defaults.
 #
 # lodestar and trackpy instead converged on minimum_consecutive_frames=3, not
-# 1 -- the opposite of rf-detr/yolo's optimum. trackpy: MOTA 0.135->0.165,
+# 1 -- the opposite of rf-detr/yolo12m's optimum. trackpy: MOTA 0.135->0.165,
 # IDF1 0.306->0.315 (mcf=1 -> mcf=3, lost_track_buffer=30 in both). lodestar:
 # MOTA -0.680->-0.566, IDF1 0.034->0.035 (still deeply negative either way --
 # lodestar's own detection quality, F1~0.10, is the bottleneck, not tracker
@@ -44,18 +44,18 @@
 # lost_track_buffer value tried, so it's still the honest value to report).
 # track_activation_threshold made no measured difference for either detector
 # (0.1 and 0.3 tied exactly at every lost_track_buffer/mcf combination) --
-# kept at 0.3 for consistency with rf-detr/yolo since the sweep gives no
+# kept at 0.3 for consistency with rf-detr/yolo12m since the sweep gives no
 # reason to differ.
 #
 # The mcf divergence tracks each detector's own raw detection density:
-# rf-detr/yolo run 900-1500 detections/frame (high-confidence, box-based,
+# rf-detr/yolo12m run 900-1500 detections/frame (high-confidence, box-based,
 # internal NMS); lodestar/trackpy run closer to 1100-1250/frame but with far
 # noisier per-frame confidence (lodestar's F1~0.10; trackpy is a classical
 # brightness threshold with no learned confidence at all). Requiring 3
 # consecutive frames before confirming a track filters more of that noise
 # before it can start a spurious identity than 1 frame does, at the cost of
 # slightly later track confirmation -- a tradeoff that pays off for noisier
-# detectors but not for rf-detr/yolo's already-clean detections (where the
+# detectors but not for rf-detr/yolo12m's already-clean detections (where the
 # extra 2-frame lag just delays legitimate track starts for no filtering
 # benefit).
 
@@ -69,7 +69,7 @@ rf-detr:
                     # its only empirically-grounded value (see
                     # dataset-profiles/stress-test-results.md): rf-detr's own detection
                     # density (~900-1500/frame) sustains long unbroken tracks unlike
-                    # yolo/lodestar/trackpy's much shorter ones, so it doesn't need
+                    # yolo12m/lodestar/trackpy's much shorter ones, so it doesn't need
                     # (and shouldn't share) their much lower stub_filter.
   adaptive_stop: 12
   adaptive_step: 0.95
@@ -134,7 +134,7 @@ yolo12n:
 # rf-detr's stub_filter=90 zeroed out every trackpy trajectory (MOTA/IDF1
 # both 0.0, 0 fragmentations) -- trackpy's own tracks are much shorter-lived
 # than rf-detr's, so rf-detr's value was never appropriate for it. Given its
-# own explicit entry now (U6), matching lodestar/yolo's stub_filter=6, so
+# own explicit entry now (U6), matching lodestar/yolo12m's stub_filter=6, so
 # rf-detr's tuning stays untouched and decoupled from trackpy's fallback.
 trackpy:
   search_range: 25

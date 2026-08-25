@@ -335,7 +335,7 @@ synthetic:
 
 # --- benchmark.py: detection accuracy on synthetic frames ---
 benchmark:
-  model_type: rf-detr       # rf-detr | lodestar | yolo | trackpy — overridden by --model-type
+  model_type: rf-detr       # rf-detr | lodestar | yolo12m | yolo12n | trackpy — overridden by --model-type
   # match_distance intentionally NOT set here -- leaving it unset derives it from
   # tracking.matching_threshold_radii x synthetic.psf_sigma (same formula the
   # MOTA/IDF1 tracking metrics already use), so a detection means the same thing
@@ -401,7 +401,7 @@ benchmark:
                                # raises a ValueError in skimage's h_maxima: "h = 0 is
                                # ambiguous"). This is this checkpoint's real F1 ceiling on this
                                # dataset, not an undertuned threshold: even at its best, ~0.39
-                               # is well below rf-detr (0.67), yolo (0.68), and trackpy (0.54)
+                               # is well below rf-detr (0.67), yolo12m (0.68), and trackpy (0.54)
                                # -- a genuine detection-quality gap, most likely this
                                # checkpoint's self-supervised feature detector (fit against
                                # real photographic microscopy crops) not generalizing well to
@@ -435,9 +435,9 @@ benchmark:
     fp16: false                # run model in float16
     device: null                # used only when --device is not passed on the CLI; --device always wins
 
-  # --- model_type: yolo (requires particle-tracking/.venv — run `uv sync` there first;
+  # --- model_type: yolo12m (requires particle-tracking/.venv — run `uv sync` there first;
   # same venv lodestar uses, since ultralytics/torch are already dependencies there) ---
-  yolo:
+  yolo12m:
     # Trained on the same LodeSTAR-labeled split RF-DETR uses (data-setup/yolo_split.py,
     # yolov12/config.yaml's "fix: make RF-DETR/YOLOv12 training reproducible and directly
     # comparable" run) -- 100/100 epochs, yolo12m, mAP50=0.752 on its own held-out val

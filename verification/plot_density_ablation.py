@@ -8,7 +8,7 @@ and color/style conventions directly rather than re-deriving them, so this
 figure stays visually and numerically consistent with benchmark_comparison.png.
 
 CLI: uv run python plot_density_ablation.py [--ablation-dir verification_output/density_ablation/]
-     [--models rf-detr yolo]
+     [--models rf-detr yolo12m]
 """
 import argparse
 import re
