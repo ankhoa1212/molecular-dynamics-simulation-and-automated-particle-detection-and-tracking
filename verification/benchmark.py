@@ -1851,21 +1851,15 @@ def main():
             # over-suppresses at this dataset's dense packing).
             import torch
             import supervision as sv
+            from detectors_common.tiling import tile_starts as _tile_starts
 
             H, W = img_rgb.shape[:2]
             tile_size_n = yolo12n_imgsz
             stride_n = tile_size_n - yolo12n_tile_overlap
 
-            def _tile_starts_n(length):
-                if length <= tile_size_n:
-                    return [0]
-                starts = list(range(0, length - tile_size_n, stride_n))
-                starts.append(length - tile_size_n)
-                return starts
-
             _all_xyxy, _all_conf = [], []
-            for _y0 in _tile_starts_n(H):
-                for _x0 in _tile_starts_n(W):
+            for _y0 in _tile_starts(H, tile_size_n, stride_n):
+                for _x0 in _tile_starts(W, tile_size_n, stride_n):
                     _tile = img_rgb[_y0 : _y0 + tile_size_n, _x0 : _x0 + tile_size_n]
                     _ph = tile_size_n - _tile.shape[0]
                     _pw = tile_size_n - _tile.shape[1]
