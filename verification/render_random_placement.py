@@ -33,6 +33,7 @@ from render import (
     _load_config,
     _stretch_to_uint8,
 )
+from run_provenance import write_manifest
 
 
 def generate_random_positions(W, H, N, rng):
@@ -197,6 +198,25 @@ def main():
         writer = csv.DictWriter(f, fieldnames=["frame", "particle_id", "x", "y"])
         writer.writeheader()
         writer.writerows(track_rows)
+
+    # Alongside ground_truth.json, not inside output_dir -- keeps this
+    # separate from benchmark.py's own benchmark_manifest_{model_type}.json
+    # written later into the same experiment root. See run_provenance.py.
+    write_manifest(
+        output_dir.parent,
+        "render_manifest.json",
+        script="render_random_placement.py",
+        cli_args=dict(vars(args)),
+        resolved_params={
+            "placement": "i.i.d. uniform",
+            "n_particles": n_particles,
+            "render_strategy": strategy,
+            "seed": args.seed,
+            "frames": args.frames,
+            **cfg,
+        },
+        repo_root=Path(__file__).resolve().parent.parent,
+    )
 
     print(f"\nRendered {len(ground_truth)} frames → {output_dir}")
     print(f"Ground truth  → {gt_path}")
