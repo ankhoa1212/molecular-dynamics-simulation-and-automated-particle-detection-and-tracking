@@ -105,7 +105,7 @@ Point `particle-tracking/config.yaml` at the best checkpoint:
 ```yaml
 model:
   type: yolo
-  checkpoint: ../yolov12/runs/detect/yolov11n-custom5/weights/best.pt
+  checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
 ```
 
 Then run tracking:

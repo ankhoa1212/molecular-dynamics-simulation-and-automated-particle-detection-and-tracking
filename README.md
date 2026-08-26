@@ -27,7 +27,7 @@ molecular-dynamics-simulation/
 │   ├── rf-detr-base.pth     # Pretrained base weights
 │   └── rf-detr-large-2026.pth
 ├── yolov12/                 # YOLOv12 training, evaluation, and weights
-│   ├── runs/detect/train/weights/best.pt
+│   ├── runs/detect/yolo12m-particles/weights/best.pt
 │   └── processed_data/      # Train/validation image splits
 ├── detectors-common/        # Shared detector-loading/tiling/config-merge package (rf-detr/, particle-tracking/)
 ├── trackers-common/         # Shared trackpy-linking/ByteTrack-tracking/tracking-tuning package (particle-tracking/, verification/, rf-detr/)
