@@ -27,7 +27,7 @@ molecular-dynamics-simulation/
 │   ├── rf-detr-base.pth     # Pretrained base weights
 │   └── rf-detr-large-2026.pth
 ├── yolov12/                 # YOLOv12 training, evaluation, and weights
-│   ├── runs/detect/train/weights/best.pt
+│   ├── runs/detect/yolo12m-particles/weights/best.pt
 │   └── processed_data/      # Train/validation image splits
 ├── detectors-common/        # Shared detector-loading/tiling/config-merge package (rf-detr/, particle-tracking/)
 ├── trackers-common/         # Shared trackpy-linking/ByteTrack-tracking/tracking-tuning package (particle-tracking/, verification/, rf-detr/)
@@ -65,6 +65,8 @@ ln -s "/mnt/d/Particle Tracking Data" data
 ```
 
 After that one symlink, every package's `../data/<name>` reference (in `rf-detr/config.yaml`, `yolov12/config.yaml`, `particle-tracking/*.yaml`, `data-setup/yolo_split.py`, `rf-detr/k8s-launch.sh`) resolves correctly regardless of where your actual data lives on disk.
+
+`data-setup/mlflow.db` is likewise not tracked in git -- see `data-setup/README.md`'s MLflow section for details.
 
 <!--
 **Datasets and checkpoints used by this repo's reported results are also published on Hugging Face for anyone without access to the original raw microscopy data:**

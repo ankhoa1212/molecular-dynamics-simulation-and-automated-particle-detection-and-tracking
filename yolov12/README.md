@@ -105,7 +105,7 @@ Point `particle-tracking/config.yaml` at the best checkpoint:
 ```yaml
 model:
   type: yolo
-  checkpoint: ../yolov12/runs/detect/yolov11n-custom5/weights/best.pt
+  checkpoint: ../yolov12/runs/detect/yolo12m-particles/weights/best.pt
 ```
 
 Then run tracking:
@@ -117,7 +117,7 @@ uv run python track.py --input /path/to/video.tif
 
 ## MLflow
 
-Training metrics are logged to the shared MLflow database at `../data-setup/mlflow.db`.
+Training metrics are logged to the shared MLflow database at `../data-setup/mlflow.db`, which is not tracked in git (see `data-setup/README.md`'s MLflow section for details).
 
 View runs:
 

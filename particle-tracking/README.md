@@ -16,7 +16,7 @@ Unified particle tracking pipeline that runs a detection model on microscopy dat
 | Backend | Weights location | Notes |
 |---|---|---|
 | RF-DETR | `../rf-detr/checkpoints/` | Uses the venv in `../rf-detr/.venv` |
-| YOLOv12 | `../yolov12/runs/detect/train/weights/best.pt` | Loaded via `ultralytics` |
+| YOLOv12 | `../yolov12/runs/detect/yolo12m-particles/weights/best.pt` | Loaded via `ultralytics` |
 | LodeSTAR | `../data-setup/models/lodestar_model_*/model.pt` | No retraining needed; uses autolabeling model |
 
 For `.lammpstrj` input the detection step is skipped entirely — LAMMPS atom IDs are used directly as track IDs.
@@ -45,7 +45,7 @@ rf-detr/
 └── rf-detr-large-2026.pth   # Pretrained large weights
 
 yolov12/
-├── runs/detect/train/
+├── runs/detect/yolo12m-particles/
 │   └── weights/best.pt      # Trained YOLOv12 weights
 └── processed_data/          # Train/validation splits used for training
 
@@ -136,7 +136,7 @@ uv run python track.py \
 # YOLOv12
 uv run python track.py \
   --model-type yolo \
-  --checkpoint ../yolov12/runs/detect/train/weights/best.pt \
+  --checkpoint ../yolov12/runs/detect/yolo12m-particles/weights/best.pt \
   --input data/raw/trial1.tif
 
 # LodeSTAR (no detection model training needed)

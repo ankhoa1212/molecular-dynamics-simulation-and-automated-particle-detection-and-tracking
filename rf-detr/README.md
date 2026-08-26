@@ -126,6 +126,8 @@ bash k8s-retrieve.sh    # pulls results back (works mid-training or after comple
 
 ## Viewing Results
 
+`../data-setup/mlflow.db` is a local MLflow tracking store, not tracked in git -- see `data-setup/README.md`'s MLflow section for details.
+
 ```bash
 uv run mlflow ui --backend-store-uri sqlite:///../data-setup/mlflow.db
 ```

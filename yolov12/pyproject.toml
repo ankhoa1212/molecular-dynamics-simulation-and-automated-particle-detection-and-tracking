@@ -12,6 +12,18 @@ dependencies = [
     "torchvision>=0.20.0",
 ]
 
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# This is a flat layout of top-level scripts (main.py, train.py, ...), not an
+# importable package -- explicit py-modules avoids setuptools' flat-layout
+# auto-discovery, which errors on multiple top-level modules/dirs (e.g. the
+# gitignored runs/, mlruns/ output directories that exist locally but not in
+# a fresh checkout).
+[tool.setuptools]
+py-modules = ["main", "mlflow_utils", "evaluate", "process", "train"]
+
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
