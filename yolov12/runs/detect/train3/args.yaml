@@ -103,4 +103,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: /home/austin/git/molecular-dynamics-simulation/yolov12/runs/detect/train3
+save_dir: <repo_root>/yolov12/runs/detect/train3
