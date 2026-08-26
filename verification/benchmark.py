@@ -2,11 +2,12 @@
 """Benchmark detection accuracy on synthetic frames from render.py.
 
 Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR (with
-optional tiling), LodeSTAR (full-frame, no tiling), YOLO (full-frame, own
-internal NMS, no tiling), or trackpy (classical brightness-thresholding
-baseline, no venv/checkpoint needed) via --model-type, matches detections to
-known particle positions, and reports per-frame precision/recall/F1 and mean
-position error.
+optional tiling), LodeSTAR (full-frame, no tiling), YOLO12m (full-frame, own
+internal NMS, no tiling), YOLO12n (tiled at its 640px training resolution,
+IoU-based NMS merges cross-tile duplicates), or trackpy (classical
+brightness-thresholding baseline, no venv/checkpoint needed) via --model-type,
+matches detections to known particle positions, and reports per-frame
+precision/recall/F1 and mean position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
 --ground-truth-tracks is supplied (CSV from render.py U1), for either tracker
@@ -896,8 +897,8 @@ def _run_tracking_metrics(
         all_detections_by_frame: dict frame_idx → (N, 2) float array of pred (x, y)
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or
-            "trackpy") -- resolves search_range/memory/stub_filter from trackers_common's
+        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or "trackpy") --
+            resolves search_range/memory/stub_filter from trackers_common's
             canonical per-model tuning (trackers_common.tracker_defaults.yaml),
             the same values particle-tracking/tracker_configs.py generates for
             real per-model production runs. "trackpy" has no track.py-side
@@ -1828,8 +1829,8 @@ def main():
         # Times only the detector's own call -- not image loading or the
         # matching/scoring below -- so this is comparable across model
         # types regardless of how much of this loop's other work a given
-        # backend happens to share. GPU-backed detectors (rf-detr/yolo/
-        # lodestar) already block on their own result-materialization (numpy
+        # backend happens to share. GPU-backed detectors (rf-detr/yolo12m/
+        # yolo12n/lodestar) already block on their own result-materialization (numpy
         # conversion), so no explicit CUDA sync is needed here.
         inference_start = time.perf_counter()
         if model_type == "lodestar":
@@ -1851,21 +1852,15 @@ def main():
             # over-suppresses at this dataset's dense packing).
             import torch
             import supervision as sv
+            from detectors_common.tiling import tile_starts as _tile_starts
 
             H, W = img_rgb.shape[:2]
             tile_size_n = yolo12n_imgsz
             stride_n = tile_size_n - yolo12n_tile_overlap
 
-            def _tile_starts_n(length):
-                if length <= tile_size_n:
-                    return [0]
-                starts = list(range(0, length - tile_size_n, stride_n))
-                starts.append(length - tile_size_n)
-                return starts
-
             _all_xyxy, _all_conf = [], []
-            for _y0 in _tile_starts_n(H):
-                for _x0 in _tile_starts_n(W):
+            for _y0 in _tile_starts(H, tile_size_n, stride_n):
+                for _x0 in _tile_starts(W, tile_size_n, stride_n):
                     _tile = img_rgb[_y0 : _y0 + tile_size_n, _x0 : _x0 + tile_size_n]
                     _ph = tile_size_n - _tile.shape[0]
                     _pw = tile_size_n - _tile.shape[1]
@@ -1997,7 +1992,7 @@ def main():
     if not np.isnan(overall_err):
         print(f"Mean position error: {overall_err:.2f} px")
     if all_inference_times_ms:
-        # Median alongside mean: GPU-backed detectors (rf-detr/yolo/lodestar)
+        # Median alongside mean: GPU-backed detectors (rf-detr/yolo12m/yolo12n/lodestar)
         # typically pay a one-time CUDA warm-up cost on their first inference
         # call, which the mean absorbs into the whole run but the median
         # (robust to a single outlier frame) does not -- both are reported so

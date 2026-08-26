@@ -1,11 +1,23 @@
-"""RF-DETR tiling + NMS merge, shared by particle-tracking/track.py and
-verification/benchmark.py. Uses the bounds-guarded tile_starts (the
+"""Tiling-bounds arithmetic + RF-DETR NMS merge, shared by
+particle-tracking/track.py and verification/benchmark.py (both the RF-DETR and
+YOLO12n inference paths). Uses the bounds-guarded tile_starts (the
 `if length <= tile_size: return [0]` guard) — verification's prior standalone
 copy was missing this guard, which produced a negative tile-start index
 (silently wrapping into a slice from the end of the array) whenever a frame
 was tiling-eligible overall but fit within tile_size in exactly one
 dimension.
 """
+
+
+def tile_starts(length, tile_size, stride):
+    """Compute tile start offsets covering `length` with `tile_size`-wide
+    tiles spaced `stride` apart, always including a final tile flush with the
+    end of the axis."""
+    if length <= tile_size:
+        return [0]
+    starts = list(range(0, length - tile_size, stride))
+    starts.append(length - tile_size)
+    return starts
 
 
 def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshold):
@@ -24,16 +36,9 @@ def detect_with_tiling(model, frame, threshold, tile_size, overlap, nms_threshol
 
     stride = tile_size - overlap
 
-    def tile_starts(length):
-        if length <= tile_size:
-            return [0]
-        starts = list(range(0, length - tile_size, stride))
-        starts.append(length - tile_size)
-        return starts
-
     all_xyxy, all_conf, all_class_id = [], [], []
-    for y0 in tile_starts(H):
-        for x0 in tile_starts(W):
+    for y0 in tile_starts(H, tile_size, stride):
+        for x0 in tile_starts(W, tile_size, stride):
             tile = frame[y0 : y0 + tile_size, x0 : x0 + tile_size]
             dets = model.predict(tile, threshold=threshold)
             if len(dets) > 0:
