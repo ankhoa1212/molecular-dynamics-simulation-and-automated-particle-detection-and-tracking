@@ -208,12 +208,12 @@ def main():
         script="render_random_placement.py",
         cli_args=dict(vars(args)),
         resolved_params={
+            **cfg,
             "placement": "i.i.d. uniform",
             "n_particles": n_particles,
             "render_strategy": strategy,
             "seed": args.seed,
             "frames": args.frames,
-            **cfg,
         },
         repo_root=Path(__file__).resolve().parent.parent,
     )

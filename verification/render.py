@@ -732,12 +732,12 @@ def main():
         script="render.py",
         cli_args=dict(vars(args)),
         resolved_params={
+            **cfg,
             "render_strategy": strategy,
             "seed": args.seed,
             "frames_limit": args.frames,
             "lammps_path": args.lammps,
             "lammps_in": args.lammps_in,
-            **cfg,
         },
         repo_root=Path(__file__).resolve().parent.parent,
     )
