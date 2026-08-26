@@ -304,7 +304,9 @@ verification_output/
 │   └── frame_NNNNN.png
 ├── ground_truth.json           # pixel positions per frame (from render.py)
 ├── ground_truth_tracks.csv     # stable per-particle tracks (from render.py)
+├── render_manifest.json        # git commit + resolved render params (from render.py / render_random_placement.py)
 ├── accuracy_metrics_{model_type}.csv   # per-frame precision/recall/F1/inference_time_ms (from benchmark.py)
+├── benchmark_manifest_{model_type}.json   # git commit + resolved benchmark params (from benchmark.py)
 ├── tracking_metrics_{model_type}_{tracker}.csv   # MOTA/IDF1/fragmentation, tracker=trackpy|bytetrack (from benchmark.py)
 ├── tracking_visualization_{model_type}.mp4  # detection boxes + trajectory traces (from benchmark.py --save-video)
 ├── benchmark_comparison.png    # per-frame metrics across model types, plus a MOTA/IDF1/fragmentations bar panel by (model, tracker) (from plot_benchmark.py)
