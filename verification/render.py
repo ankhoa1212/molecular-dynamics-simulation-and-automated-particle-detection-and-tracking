@@ -42,6 +42,7 @@ import yaml
 from scipy.special import erf
 
 from frames_to_video import frames_to_video
+from run_provenance import write_manifest
 
 # lammps_parser.py lives in lammps-scripts/ (pure Python, no venv needed)
 sys.path.insert(0, str(Path(__file__).parent / ".." / "lammps-scripts"))
@@ -721,6 +722,25 @@ def main():
     gt_path = output_dir.parent / "ground_truth.json"
     with open(gt_path, "w") as f:
         json.dump(ground_truth, f)
+
+    # Alongside ground_truth.json, not inside output_dir -- keeps this
+    # separate from benchmark.py's own benchmark_manifest_{model_type}.json
+    # written later into the same experiment root. See run_provenance.py.
+    write_manifest(
+        output_dir.parent,
+        "render_manifest.json",
+        script="render.py",
+        cli_args=dict(vars(args)),
+        resolved_params={
+            **cfg,
+            "render_strategy": strategy,
+            "seed": args.seed,
+            "frames_limit": args.frames,
+            "lammps_path": args.lammps,
+            "lammps_in": args.lammps_in,
+        },
+        repo_root=Path(__file__).resolve().parent.parent,
+    )
 
     # Validate atom ID stability (required for tracking ground truth)
     if all_frame_ids:

@@ -164,6 +164,8 @@ import matplotlib.image as mplimg
 import numpy as np
 from scipy.spatial import cKDTree
 
+from run_provenance import write_manifest
+
 # Re-exported from trackers_common — edit there, not here. Unlike
 # detectors_common below, trackers-common has no CUDA-sensitive dependencies
 # (trackpy/motmetrics/pandas only), so verification/pyproject.toml installs it
@@ -1795,6 +1797,40 @@ def main():
     else:
         print(f"Tiling:     {'enabled' if tiling_enabled else 'disabled'} (tile_size={tile_size})")
 
+    # Mirrors the print banner above -- same resolved values, persisted instead
+    # of only appearing in the terminal. See run_provenance.py.
+    if model_type == "trackpy":
+        resolved_params = {"diameter": diameter, "minmass": minmass, "separation": separation}
+    elif model_type == "lodestar":
+        resolved_params = {
+            "checkpoint": str(checkpoint),
+            "threshold": threshold,
+            "nms_distance": nms_distance,
+            "box_size": box_size,
+            "fp16": fp16,
+        }
+    elif model_type == "yolo12n":
+        resolved_params = {
+            "checkpoint": str(checkpoint),
+            "threshold": threshold,
+            "imgsz": yolo12n_imgsz,
+            "tile_overlap": yolo12n_tile_overlap,
+            "nms_iou": yolo12n_nms_iou,
+        }
+    elif model_type == "yolo12m":
+        resolved_params = {"checkpoint": str(checkpoint), "threshold": threshold}
+    else:
+        resolved_params = {
+            "checkpoint": str(checkpoint),
+            "variant": variant,
+            "num_queries": num_queries,
+            "threshold": threshold,
+            "tiling_enabled": tiling_enabled,
+            "tile_size": tile_size,
+            "overlap": overlap,
+            "nms_threshold": nms_threshold,
+        }
+
     if model_type == "lodestar":
         model = get_lodestar_model(checkpoint, device, fp16=fp16)
     elif model_type in ("yolo12m", "yolo12n"):
@@ -1968,6 +2004,18 @@ def main():
     # later run of the other model type silently overwrite these results.
     output_dir = Path(args.output_dir) if args.output_dir else Path("verification_output")
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Named per model_type, matching accuracy_metrics_{model_type}.csv -- a
+    # fixed filename would let a later run of another model type into the
+    # same output_dir (e.g. run_density_ablation.sh's multi-model sweep)
+    # silently overwrite this one's provenance.
+    write_manifest(
+        output_dir,
+        f"benchmark_manifest_{model_type}.json",
+        script="benchmark.py",
+        cli_args=dict(vars(args)),
+        resolved_params=resolved_params,
+        repo_root=SCRIPT_DIR.parent,
+    )
     csv_path = output_dir / f"accuracy_metrics_{model_type}.csv"
     if rows:
         with open(csv_path, "w", newline="") as f:
