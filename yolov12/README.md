@@ -117,7 +117,7 @@ uv run python track.py --input /path/to/video.tif
 
 ## MLflow
 
-Training metrics are logged to the shared MLflow database at `../data-setup/mlflow.db`. This file is a local tracking store, not tracked in git -- it's regenerated automatically the first time you run training.
+Training metrics are logged to the shared MLflow database at `../data-setup/mlflow.db`, which is not tracked in git (see `data-setup/README.md`'s MLflow section for details).
 
 View runs:
 
