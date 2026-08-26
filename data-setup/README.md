@@ -394,6 +394,8 @@ Click **Label Mode** in the top-left. The purple overlay boxes are the model's p
 Training runs are automatically tracked with MLflow for comparing different models and augmentation settings.
 
 ### Viewing Runs Locally
+`mlflow.db` is a local MLflow tracking store, not tracked in git -- it's regenerated automatically the first time you run training.
+
 To start the MLflow dashboard and inspect your training history:
 
 1. Navigate to the `data-setup/` directory.
