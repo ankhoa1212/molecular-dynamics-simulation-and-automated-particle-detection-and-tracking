@@ -79,6 +79,19 @@ LEG_LABELS = {
     "yolo_synthetic": "Tracked-synthetic (YOLOv12)",
     "yolo_real": "Tracked-real (YOLOv12)",
 }
+# (linestyle, linewidth) per leg -- a second, non-color discriminative
+# feature per WACV's reviewer guidance on color vision deficiency (colors
+# alone must not be the only thing separating two curves, e.g. the
+# yolo_real/yolo_synthetic and rfdetr_real/gt_synthetic pairs that a
+# red-green-colorblind reader could otherwise conflate). Every leg gets a
+# distinct dash pattern, not just a distinct color.
+LEG_STYLES = {
+    "gt_synthetic": ((0, (6, 2)), 2.2),  # long dash, black
+    "rfdetr_synthetic": ("solid", 1.8),
+    "rfdetr_real": ((0, (4, 1, 1, 1)), 1.8),  # dash-dot
+    "yolo_synthetic": ((0, (1, 1)), 2.0),  # densely dotted
+    "yolo_real": ((0, (2, 2)), 1.8),  # even dash
+}
 
 
 def _lammps_box_width(lammps_path):
@@ -169,22 +182,52 @@ def analyze_leg(df, id_col, scale, max_lag):
     )
 
 
-def plot_msd(results, output_path):
-    fig, ax = plt.subplots(figsize=(7, 5))
+def plot_msd(
+    results, output_path, summary=None, keys=None, title=None, figsize=(7, 5), labels=None
+):
+    """Plot MSD log-log curves.
+
+    summary: optional {key: stats} (from analyze_leg) -- when given, each
+        curve's alpha is appended to its legend label, e.g. "GT-synthetic
+        (alpha=1.65)".
+    keys: optional ordered subset of results to plot (default: all of
+        results, in dict order) -- lets a caller render a smaller panel
+        (e.g. just the real-footage legs) from the same results dict.
+    labels: optional {key: label} overriding LEG_LABELS for this call (e.g.
+        a shorter "RF-DETR" instead of "Tracked-real (RF-DETR)" when the
+        panel's own title/caption already establishes the real-footage
+        context).
+    """
+    keys = list(results.keys()) if keys is None else keys
+    labels = labels or {}
+    fig, ax = plt.subplots(figsize=figsize)
     plotted = False
-    for key, (lags, msd) in results.items():
+    for key in keys:
+        if key not in results:
+            continue
+        lags, msd = results[key]
         mask = ~np.isnan(msd) & (msd > 0) & (lags > 0)
         if mask.sum() < MIN_MSD_POINTS:
             continue
-        style = "--" if key == "gt_synthetic" else "-"
-        ax.loglog(lags[mask], msd[mask], style, color=LEG_COLORS[key], lw=2, label=LEG_LABELS[key])
+        linestyle, lw = LEG_STYLES[key]
+        label = labels.get(key, LEG_LABELS[key])
+        if summary is not None and summary.get(key, {}).get("alpha") is not None:
+            label = f"{label} ($\\alpha$={summary[key]['alpha']:.2f})"
+        ax.loglog(
+            lags[mask],
+            msd[mask],
+            linestyle=linestyle,
+            color=LEG_COLORS[key],
+            lw=lw,
+            label=label,
+        )
         plotted = True
     if not plotted:
         plt.close(fig)
         return
     ax.set_xlabel("Lag (frames)")
     ax.set_ylabel("MSD (µm²)")
-    ax.set_title("Mean Squared Displacement: sim-to-real trajectory decomposition")
+    ax.set_title(title or "Mean Squared Displacement: sim-to-real trajectory decomposition")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3, which="both")
     plt.tight_layout()
@@ -243,7 +286,11 @@ def run(inputs, lammps_path, image_width, lj_to_um, pixel_scale_real, max_lag, o
             f"v_mean={stats['velocity_mean']}, v_std={stats['velocity_std']}"
         )
 
-    plot_msd(msd_curves, output_dir / "msd_comparison.png")
+    # regen_fig18.py (wacv2027-paper) copies this exact filename for the
+    # paper's supplementary MSD figure; alpha is folded into every label by
+    # default now (see plot_msd), so there's no longer a plain vs.
+    # alpha-labeled variant to keep in sync -- just the one file.
+    plot_msd(msd_curves, output_dir / "msd_comparison_legend_alpha.png", summary=summary)
     plot_velocity(summary, output_dir / "velocity_comparison.png")
 
     summary_meta = {

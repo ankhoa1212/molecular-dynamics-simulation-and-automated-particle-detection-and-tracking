@@ -27,6 +27,7 @@ from plot_benchmark import (
     _MUTED,
     _aggregate_from_csv,
     _color_for,
+    _marker_for,
 )
 
 _N_DIR_RE = re.compile(r"^N(\d+)$")
@@ -108,7 +109,11 @@ def main():
             )
 
     # --- Plot: one panel per metric, one line per model, vs. particle count ---
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+    # Font sizes are large relative to typical matplotlib defaults because this
+    # figure is printed at \columnwidth (~3.5in) from an 11in-wide canvas --
+    # AGENTS.md's legibility rule (>=8pt effective print size) requires
+    # matplotlib fontsize >= 8 / (3.5/11) =~ 25pt at this canvas width.
+    fig, axes = plt.subplots(2, 2, figsize=(11, 9.5))
     axes = axes.flatten()
 
     for ax, (key, label) in zip(axes, _METRICS):
@@ -120,24 +125,26 @@ def main():
                 data["series"][key],
                 label=model_type,
                 color=_color_for(model_type, per_model.keys()),
-                linewidth=1.75,
-                marker="o",
-                markersize=4,
+                linewidth=3.0,
+                # Marker shape (not just color) distinguishes series -- WACV
+                # reviewer guidance on color vision deficiency.
+                marker=_marker_for(model_type, per_model.keys()),
+                markersize=9,
                 solid_capstyle="round",
             )
-        ax.set_title(label, fontsize=10, color=_INK)
-        ax.set_xlabel("particles per frame (N)", fontsize=9, color=_MUTED)
+        ax.set_title(label, fontsize=26, color=_INK)
+        ax.set_xlabel("particles per frame (N)", fontsize=24, color=_MUTED)
         ax.grid(True, color=_GRID_COLOR, linewidth=0.8)
         ax.set_axisbelow(True)
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
         for spine in ("left", "bottom"):
             ax.spines[spine].set_color(_AXIS_COLOR)
-        ax.tick_params(colors=_MUTED, labelsize=8)
+        ax.tick_params(colors=_MUTED, labelsize=22)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=len(per_model), frameon=False)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.legend(handles, labels, loc="upper center", ncol=len(per_model), frameon=False, fontsize=24)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
 
     png_path = ablation_dir / "density_ablation.png"
     fig.savefig(str(png_path), dpi=100)

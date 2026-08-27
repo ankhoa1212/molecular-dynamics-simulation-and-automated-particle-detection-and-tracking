@@ -12,7 +12,12 @@ create_box      1 box
 
 # Define default molecule count if not passed via command line
 variable        molecules index 100
-create_atoms    1 random ${molecules} 12345 NULL overlap 3.9 maxtry 50
+# RNG seed for both atom placement and initial velocities: default 12345
+# (unchanged from before this was parameterized) reproduces every existing
+# trajectory in this repo; override via -var seed <N> for cross-seed variance
+# runs (e.g. verification/paper_provenance's trajectory-analysis seed sweep).
+variable        seed index 12345
+create_atoms    1 random ${molecules} ${seed} NULL overlap 3.9 maxtry 50
 
 # --- Variables ---
 # Define default variables if not passed via command line
@@ -54,7 +59,7 @@ pair_style      lj/expand 2.5
 pair_coeff      1 1 ${epsilon} ${sigma} ${delta} ${cutoff}
 
 # --- Initialize Velocities ---
-velocity        all create ${tstart} 12345 dist gaussian mom yes rot yes
+velocity        all create ${tstart} ${seed} dist gaussian mom yes rot yes
 
 # --- Integration and Forces ---
 fix             1 all nve
