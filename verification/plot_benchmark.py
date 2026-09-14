@@ -322,7 +322,7 @@ def main():
 
     per_model = {}
     # Keyed by (model_type, tracker) — a model can have 0, 1, or 2 tracker
-    # results present (trackpy, bytetrack, or both); see U5's
+    # results present (trackpy, bytetrack, or both); see the
     # tracking_metrics_{model_type}_{tracker}.csv naming scheme.
     per_tracking = {}
     for model_type in model_types:
@@ -417,8 +417,8 @@ def main():
     print(f"\nPlot -> {png_path}")
 
     # --- Summary bar chart: one bar per model per metric, six run-level
-    # scalars (unlike the per-frame line plots above) that the U6/U7-era
-    # sweeps only ever printed as text -- F1, MOTA, IDF1, fragmentations, ID
+    # scalars (unlike the per-frame line plots above) that earlier sweeps
+    # only ever printed as text -- F1, MOTA, IDF1, fragmentations, ID
     # switches, and inference time all need to be visually comparable across
     # all four methods too, not just readable off a table.
     summary_path = _plot_summary_bars(per_model, per_tracking, out)

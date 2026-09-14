@@ -21,8 +21,7 @@ physical units (um), using two different pixel_scale values:
     px-per-LJ-unit mapping (W / box_width), combined with lj_to_um -- see
     _synth_pixel_scale().
   - real legs (tracked-real): the confirmed real-video pixel_scale (shared
-    optics with the 2um dataset -- see docs/plans/2026-08-21-001-feat-
-    trajectory-analysis-sim-real-validation-plan.md U4).
+    optics with the 2um dataset).
 GT-synthetic's velocity is derived from position-based finite differences on
 ground_truth_tracks.csv (mirroring _track_velocity_magnitudes), NOT from the
 raw LAMMPS vx/vy columns (compare.py's _sim_velocity_magnitudes) -- the
@@ -60,10 +59,7 @@ MIN_MSD_POINTS = 5  # below this, a log-log fit's R^2 is degenerate (e.g. a
 # 2-point fit always has zero residual, i.e. fit_quality=1.0 regardless of
 # whether the data follows a power law) and can't gate alpha_reliable
 # meaningfully.
-MIN_FIT_QUALITY = 0.90  # R^2 floor below which alpha is unreliable (see
-# docs/plans/2026-08-21-001-feat-trajectory-analysis-
-# sim-real-validation-plan.md's doc-review findings
-# on fit_quality gating and lag-regime mismatch).
+MIN_FIT_QUALITY = 0.90  # R^2 floor below which alpha is unreliable
 
 LEG_COLORS = {
     "gt_synthetic": "black",

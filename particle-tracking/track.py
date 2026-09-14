@@ -864,9 +864,10 @@ def main():
         )
     )
     # memory: explicit config value -> trackers_common's per-model canonical
-    # tuning (tracker_defaults.yaml) -- never derived from the profile itself
-    # (R9: occlusion/blinking tolerance has no spatial grounding), but still
-    # resolved through the same profile-aware call shape for consistency.
+    # tuning (tracker_defaults.yaml) -- never derived from the profile
+    # itself (occlusion/blinking tolerance has no spatial grounding), but
+    # still resolved through the same profile-aware call shape for
+    # consistency.
     memory = (
         args.memory
         if args.memory is not None
@@ -920,7 +921,7 @@ def main():
     # alpha falls back through detector_defaults.yaml's canonical value (via
     # the shared key-path-mapped merge) before this file's own None default —
     # CLI arg still wins over everything. alpha is not part of scale
-    # derivation (R6 only covers box_size/nms_distance/tile_size).
+    # derivation (which only covers box_size/nms_distance/tile_size).
     _lodestar_defaults = load_detector_config("lodestar", cfg, _LODESTAR_KEY_MAP)
     lodestar_alpha = (
         args.lodestar_alpha

@@ -4,8 +4,7 @@
 Mirrors particle-tracking/track.py's cv2.VideoWriter pattern (mp4v fourcc,
 RGB->BGR conversion before write) rather than shelling out to a system
 ffmpeg binary. Usable both from render.py's --video flag and standalone
-against any existing frame directory. See docs/plans/2026-07-22-003-feat-
-frames-to-video-plan.md.
+against any existing frame directory.
 
 Usage:
     uv run python frames_to_video.py --frames verification_output/synthetic_frames/ \

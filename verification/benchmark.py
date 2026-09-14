@@ -3,51 +3,22 @@
 
 Loads synthetic PNG frames and their ground_truth.json, runs RF-DETR (with
 optional tiling), LodeSTAR (full-frame, no tiling), YOLO12m (full-frame, own
-internal NMS, no tiling), YOLO12n (tiled at its 640px training resolution,
-IoU-based NMS merges cross-tile duplicates), or trackpy (classical
-brightness-thresholding baseline, no venv/checkpoint needed) via --model-type,
-matches detections to known particle positions, and reports per-frame
-precision/recall/F1 and mean position error.
+internal NMS), YOLO12n (tiled at its 640px training resolution, IoU-based NMS
+merges cross-tile duplicates), or trackpy (classical brightness-thresholding
+baseline) via --model-type, matches detections to known particle positions,
+and reports per-frame precision/recall/F1 and mean position error.
 
 Optionally computes MOTA/IDF1/fragmentation via py-motmetrics when
---ground-truth-tracks is supplied (CSV from render.py U1), for either tracker
-selected via --tracker {trackpy,bytetrack} (default trackpy) -- orthogonal to
---model-type, the detector.
+--ground-truth-tracks is supplied, for either tracker selected via --tracker
+{trackpy,bytetrack} (default trackpy) -- orthogonal to --model-type.
 
---tracker trackpy links detections with trackers_common.linking.link_and_filter_tracks
--- the same trackpy-linking implementation particle-tracking/track.py's production
-tracker uses -- resolving search_range/memory/stub_filter/bridge_gap/bridge_radius
-from trackers_common's canonical per-model tuning (the same values
-particle-tracking/tracker_configs.py generates for real per-model production
-comparison runs; bridge_gap/bridge_radius come from verification/config.yaml's
-tracking: block instead, since gap-bridging isn't swept per model -- off by
-default), not a generic value shared across all detectors. --tracker bytetrack
-tracks detections online, per-frame, via trackers_common.bytetrack.run_bytetrack
-(the same implementation particle-tracking/track.py's own --tracker bytetrack
-uses), resolving lost_track_buffer/minimum_consecutive_frames/
-track_activation_threshold from trackers_common's canonical defaults through the
-same mechanism -- independently swept per model, same as trackpy's tuning (see
-trackers_common/tracker_defaults.yaml's comments: rf-detr/yolo12m/yolo12n
-converge on minimum_consecutive_frames=1, lodestar/trackpy on
-minimum_consecutive_frames=3).
-Both trackers' canonical values still honor verification/config.yaml's tracking:
-section as an override when set explicitly. Every --model-type, including
-trackpy (a classical detector with no particle-tracking/track.py model_type of
-its own), has its own tuned entry in tracker_defaults.yaml for both trackers --
-none falls back to rf-detr's tuning by default anymore.
-
-One fairness caveat: track_activation_threshold has no effect on the `trackpy`
-detector specifically, since detect_trackpy's synthesized confidence (always
-1.0) exceeds any plausible threshold value.
-
-NOTE: link_and_filter_tracks applies stub_filter BEFORE bridge_gap (link ->
-filter_stubs -> bridge), so --tracker trackpy's bridge_gap can only reconnect
-fragments that already individually survive stub_filter -- it cannot rescue a
-detector whose raw fragments are all shorter than stub_filter to begin with
-(e.g. rf-detr's stub_filter=90 against this dataset's collapsed ~3px
-search_range, where the longest raw fragment measured was 77 frames). For that
-case, --tracker bytetrack is the fix, not bridging -- it tracks online with no
-comparable filter-then-bridge ordering.
+Both trackers link/track via the same trackers_common implementations
+particle-tracking/track.py's production trackers use, resolving their
+per-model parameters from trackers_common's canonical tuning
+(trackers_common/tracker_defaults.yaml), which verification/config.yaml's
+tracking: block can still override explicitly. bridge_gap/bridge_radius are
+the exception -- sourced only from config.yaml's tracking: block, since
+gap-bridging isn't swept per model.
 
 Usage:
     uv run python benchmark.py \\
@@ -66,24 +37,18 @@ import yaml
 SCRIPT_DIR = Path(__file__).parent
 
 # Venv holding each model type's compiled dependencies (torch, torchvision, and
-# either `rfdetr` or `deeplay`/`supervision`). Both run a different Python minor
-# version than this script's own venv, so C extensions compiled there won't
-# load under a mismatched interpreter without a matching-version re-exec.
-# The keys here are the single source of truth for valid --model-type values —
-# argparse's `choices` and this dict's default fallback both read from it.
+# either `rfdetr` or `deeplay`/`supervision`), each on a different Python minor
+# version than this script's own venv -- re-exec is needed for the C
+# extensions compiled there to load. Keys are the single source of truth for
+# valid --model-type values; argparse's `choices` reads from them.
 #
-# A value of None means "no compiled/CUDA dependency — runs natively in this
-# script's own venv, skip re-exec entirely" (see trackpy below, which is
-# already a plain dependency of verification/pyproject.toml).
+# None means no compiled/CUDA dependency -- runs natively in this script's own
+# venv, no re-exec needed (trackpy, already a plain verification dependency).
 _MODEL_VENV_DIRS = {
     "rf-detr": SCRIPT_DIR / ".." / "rf-detr" / ".venv",
     "lodestar": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
-    # Same venv as lodestar -- ultralytics/torch are already dependencies of
-    # particle-tracking/.venv (that's where track.py's own yolo support runs
-    # from), no separate venv needed.
+    # Same venv as lodestar: ultralytics/torch are already dependencies there.
     "yolo12m": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
-    # yolo12n: YOLOv12 nano, trained on tiled 640x640 crops -- same venv as
-    # yolo12m (same ultralytics/torch stack, different checkpoint).
     "yolo12n": SCRIPT_DIR / ".." / "particle-tracking" / ".venv",
     "trackpy": None,
 }
@@ -94,8 +59,7 @@ def _resolve_model_type(argv):
     """Pre-parse --model-type (or config.yaml's benchmark.model_type) ahead of
     the real argparse.ArgumentParser, so the correct venv can be selected
     before any heavy import happens. Must stay consistent with main()'s
-    --model-type default/choices, both sourced from _MODEL_VENV_DIRS /
-    _DEFAULT_MODEL_TYPE."""
+    --model-type default/choices, both sourced from _MODEL_VENV_DIRS."""
     for i, arg in enumerate(argv):
         if arg == "--model-type" and i + 1 < len(argv):
             return argv[i + 1]
@@ -109,11 +73,9 @@ def _resolve_model_type(argv):
         elif arg.startswith("--config="):
             config_path = arg.split("=", 1)[1]
 
-    # SCRIPT_DIR-anchored default (matching particle-tracking/track.py's
-    # --config default), matching _load_config()'s resolution in main() — both
-    # must agree on which file they're reading, or the pre-parse can pick the
-    # wrong venv while main() loads a config naming a different model_type. An
-    # explicit --config value (relative or absolute) is still resolved as-is.
+    # Must match _load_config()'s resolution in main() -- otherwise the
+    # pre-parse could pick the wrong venv while main() loads a config naming a
+    # different model_type.
     config_path = Path(config_path)
     if config_path.exists():
         with open(config_path) as f:
@@ -126,16 +88,11 @@ def _resolve_model_type(argv):
 
 
 def _reexec_for_model_venv(model_type):
-    """Re-exec into the resolved model's venv Python whenever one exists — not only
-    when the current interpreter's version differs. detectors_common (which every
-    rf-detr/lodestar model-loading call below depends on) is installed only inside
-    the model venvs (rf-detr/.venv, particle-tracking/.venv), never in
-    verification/.venv itself. verification/pyproject.toml has no .python-version
-    pin (unlike rf-detr/particle-tracking, both pinned to 3.11), so its own venv's
-    resolved version matching theirs is not guaranteed to differ — skipping re-exec
-    on a version match left detectors_common unimportable in that case. Landing in
-    the target venv unconditionally handles both the original ABI-compatibility
-    motivation and this package-availability requirement with one mechanism.
+    """Re-exec into the resolved model's venv Python whenever one exists. Needed
+    unconditionally, not just on an interpreter-version mismatch: detectors_common
+    (which every rf-detr/lodestar model-loading call below depends on) is
+    installed only inside the model venvs (rf-detr/.venv, particle-tracking/.venv),
+    never in verification/.venv itself.
 
     Only called when running as __main__ — importing this module (e.g. from tests)
     must never re-exec the process, since re-exec blindly reuses sys.argv, which is
@@ -166,13 +123,10 @@ from scipy.spatial import cKDTree
 
 from run_provenance import write_manifest
 
-# Re-exported from trackers_common — edit there, not here. Unlike
-# detectors_common below, trackers-common has no CUDA-sensitive dependencies
-# (trackpy/motmetrics/pandas only), so verification/pyproject.toml installs it
-# directly and this is a plain module-scope import, safe regardless of
-# whether this process later re-execs into rf-detr/.venv or
-# particle-tracking/.venv for model loading — trackers-common is installed in
-# all three venvs. See trackers-common/README.md.
+# Re-exported from trackers_common — edit there, not here. It has no
+# CUDA-sensitive dependencies (trackpy/motmetrics/pandas only), so it's a
+# plain module-scope import here, safe regardless of which venv this process
+# later re-execs into for model loading -- it's installed in all three venvs.
 from trackers_common.linking import link_and_filter_tracks
 from trackers_common.defaults import DEFAULT_KEY_PATH_MAP, load_tracking_config
 from trackers_common.scale_derivation import resolve_search_range, resolve_diameter, resolve_memory
@@ -182,25 +136,19 @@ from trackers_common.dataset_profile import load_dataset_profile as load_trackin
 # Re-exported from detectors_common — edit there, not here.
 #
 # verification/.venv never installs detectors_common (only rf-detr/.venv and
-# particle-tracking/.venv do), and it only becomes reachable once this
-# script's own re-exec above has landed in one of those venvs. Every wrapper
-# below therefore imports detectors_common lazily inside its own body rather
-# than at module scope — a module-scope import would make `import benchmark`
-# (used directly by this file's own test suite, which never re-execs) fail
-# with ModuleNotFoundError before a single test runs.
+# particle-tracking/.venv do), reachable only after the re-exec above lands in
+# one of those venvs. Every wrapper below imports it lazily inside its own
+# body rather than at module scope, so `import benchmark` (used by this
+# file's own test suite, which never re-execs) doesn't fail immediately.
 # ---------------------------------------------------------------------------
 
 
 def _normalize_device(device):
-    """Deliberately NOT re-exported from detectors_common, unlike everything
-    else in this section: this helper has zero external dependencies (pure
-    string mapping, no torch/rfdetr/deeplay), but main() calls it
-    unconditionally on every invocation regardless of --model-type. Lazily
-    importing it from a package verification/.venv never installs would force
-    every test that exercises main() to mock this one dependency-free
-    function — friction with no corresponding drift risk, since there's
-    nothing here that can drift the way venv-injection or model-loading
-    logic can. Kept identical to detectors_common.rfdetr_loader's copy."""
+    """Deliberately NOT re-exported from detectors_common like everything else
+    in this section: it has zero external dependencies (pure string mapping),
+    but main() calls it unconditionally regardless of --model-type, so a lazy
+    import would force every test exercising main() to mock it. Kept
+    identical to detectors_common.rfdetr_loader's copy."""
     if device is None:
         return None
     s = str(device).strip()
@@ -269,16 +217,11 @@ def load_detection_profile(path):
     return _impl(path)
 
 
-# resolve_box_size/resolve_nms_distance/resolve_tile_size below each short-
-# circuit on the explicit-value and no-profile tiers *before* importing
-# detectors_common.scale_derivation -- unlike the other detectors_common
-# wrappers above, these three must stay import-safe even when no model venv
-# has been entered (this file's own test suite exercises them directly,
-# never re-execs, and verification/.venv never installs detectors_common).
-# The lazy import is only reached once a dataset profile is actually
-# referenced, at which point detectors_common is genuinely needed to derive
-# the value -- callers exercising profile derivation must be running under
-# (or mocking) a venv that has it, same as detect_lodestar/get_rfdetr_model.
+# resolve_box_size/resolve_nms_distance/resolve_tile_size short-circuit on the
+# explicit-value and no-profile tiers *before* importing
+# detectors_common.scale_derivation, so they stay import-safe even when no
+# model venv has been entered (this file's own test suite exercises them
+# directly, never re-execs).
 
 
 def resolve_box_size(explicit_value, profile, hardcoded_default=40):
@@ -317,24 +260,19 @@ def resolve_tile_size(explicit_value, profile, frame_width, frame_height, hardco
 # trackpy detection (tp.locate itself) — NOT re-exported from
 # detectors_common. Unlike RF-DETR and LodeSTAR, trackpy has no
 # CUDA/compiled-extension dependency and is already a native dependency of
-# verification/pyproject.toml (used today for the tracking-metrics pass
-# below), so it needs no cross-venv site-packages injection and no re-exec
-# (see _MODEL_VENV_DIRS["trackpy"] = None above). tp.locate() itself has
-# exactly one consumer (this file), so routing it through the shared package
-# would add indirection with no sharing benefit -- but its point-to-box
-# synthesis step (points_to_xyxy, below) DOES have a second consumer
-# (detect_lodestar) and lives in detectors_common for that reason; see
-# detectors_common/point_to_box.py's own docstring.
+# verification/pyproject.toml, so it needs no cross-venv injection or re-exec.
+# tp.locate() has exactly one consumer (this file); its point-to-box
+# synthesis step (points_to_xyxy, below) lives in detectors_common instead,
+# since detect_lodestar is a second consumer of that piece.
 # ---------------------------------------------------------------------------
 
 
 def detect_trackpy(frame, diameter, minmass=None, separation=None):
     """Locate particles with trackpy's classical brightness-thresholding
     algorithm and return an sv.Detections object shaped like the other
-    detectors' output (xyxy boxes, confidence a constant 1.0 -- see plan KTDs
-    on why trackpy's `mass` isn't surfaced as a confidence score instead; the
-    constant is needed so ByteTrack, which requires confidence to be set, can
-    run against trackpy's detections)."""
+    detectors' output (xyxy boxes, confidence a constant 1.0 so ByteTrack,
+    which requires confidence to be set, can run against trackpy's
+    detections)."""
     import trackpy as tp
     import supervision as sv
 
@@ -398,18 +336,10 @@ def _resolve_psf_sigma_px(cfg):
 def _resolve_match_distance(cfg, full_cfg):
     """Accuracy metrics' (precision/recall/F1) match_distance, derived from
     the SAME tracking.matching_threshold_radii x psf_sigma_px formula the
-    tracking metrics (MOTA/IDF1) already use -- not a disconnected hardcoded
-    literal. Without this, a detection can count as a correct match for
-    accuracy (a loose radius) while failing the tracking metrics' stricter
-    identity match (a tighter, unrelated radius) purely from normal
-    localization jitter, not a real accuracy-vs-tracking disagreement --
-    confirmed directly: rf-detr's own mean position error (~2.2px) sits close
-    to the derived ~2.5px default, so a meaningful fraction of genuinely
-    correct detections were failing the old disconnected 10px-vs-2.5px split.
-
-    `benchmark.match_distance` in config.yaml, when explicitly set, still
-    wins over this derived value, matching this file's established
-    explicit-value-always-wins override convention.
+    tracking metrics (MOTA/IDF1) already use, so a detection isn't scored
+    correct under one metric and incorrect under the other purely from
+    normal localization jitter. `benchmark.match_distance` in config.yaml,
+    when explicitly set, still wins over this derived value.
     """
     threshold_radii = _cfg_get(full_cfg, "tracking", "matching_threshold_radii", default=0.5)
     return _cfg_get(
@@ -475,14 +405,10 @@ def _link_df_kwargs(cfg, search_range, memory):
     trackers_common's per-model canonical tuning, which only
     _run_tracking_metrics consumes). adaptive_stop/adaptive_step let trackpy
     retry an oversized subnet with a shrunken search_range instead of
-    raising SubnetOversizeException -- a real failure mode once a detector's
-    recall is high enough to recover a genuinely dense physical cluster
-    (see tracking.adaptive_stop's config.yaml comment), not a synthetic-only
-    edge case. Mirrors particle-tracking/track.py's own adaptive_stop/
-    adaptive_step threading. bridge_gap/bridge_radius mirror track.py's own
-    --bridge-gap/--bridge-radius (tracking.bridge_gap/tracking.bridge_radius
-    here) -- off by default (None), since reconnecting fragments changes
-    trace continuity in the output video, not something to silently turn on."""
+    raising SubnetOversizeException, mirroring particle-tracking/track.py's
+    own threading of the same options. bridge_gap/bridge_radius mirror
+    track.py's --bridge-gap/--bridge-radius; off by default (None), since
+    reconnecting fragments changes trace continuity in the output video."""
     kwargs = {"search_range": search_range, "memory": memory}
     adaptive_stop = _cfg_get(cfg, "tracking", "adaptive_stop", default=None)
     if adaptive_stop is not None:
@@ -497,73 +423,46 @@ def _link_df_kwargs(cfg, search_range, memory):
 
 def _link_df_with_fallback_impl(det_df, link_kwargs, conn):
     """Retry loop body for _link_df_with_fallback -- runs inside the
-    subprocess that function spawns (see its docstring for why a
-    subprocess+timeout wraps this rather than calling it directly).
+    subprocess that function spawns (see its docstring for why).
 
     link_kwargs is an already-resolved dict of search_range/memory/
-    stub_filter/adaptive_stop/adaptive_step/bridge_gap/bridge_radius -- either the plain
-    verification/config.yaml tracking: block (--save-video, via
+    stub_filter/adaptive_stop/adaptive_step/bridge_gap/bridge_radius, from
+    either verification/config.yaml's tracking: block (--save-video, via
     _link_df_kwargs) or trackers_common's per-model canonical tuning
-    (_run_tracking_metrics). Both routes call the same shared
+    (_run_tracking_metrics). Both routes call the same
     trackers_common.linking.link_and_filter_tracks the production
-    particle-tracking/track.py linker uses, wrapped in this module's own
-    subprocess/timeout/memory-safety retry loop.
+    particle-tracking/track.py linker uses.
 
     Sends (linked DataFrame, search_range actually used) down conn on
     success, or (None, None) if even the floor search_range still raises
-    SubnetOversizeException. Each step halves search_range from the
-    configured value down to a floor of 1.0px (matched to this dataset's
-    own measured frame-to-frame displacement -- median ~1.0px, p99
-    ~3.0px -- so even the floor still captures most genuine motion; it
-    undercounts links only in the very densest, most ambiguous pockets,
-    which is the intended tradeoff: a fragmented-but-present trajectory
-    beats none at all)."""
+    SubnetOversizeException. Each step halves search_range down to a floor
+    of 1.0px, matched to this dataset's own measured frame-to-frame
+    displacement (median ~1.0px) -- a fragmented-but-present trajectory
+    beats none at all."""
     import resource
 
     import trackpy as tp
     import trackpy.linking.linking as tp_linking
 
-    # link_and_filter_tracks is already imported at module scope (line ~139);
-    # "spawn" re-imports this module fresh in the child, so it's available
-    # here without a redundant local import.
-
     # Hard memory ceiling on this child, independent of the wall-clock
-    # timeout in _link_df_with_fallback. Confirmed directly (2026-08-08):
-    # trackpy's recursive subnet solver can grow memory near-linearly at
-    # multiple GB per ~10s on some real (noisy) detector output -- by the
-    # time the outer 90s timeout fires and terminate()s the child, RSS had
-    # already passed 12GB and was climbing, i.e. the wall-clock timeout
-    # alone reacts too late to prevent serious system memory pressure.
+    # timeout in _link_df_with_fallback -- trackpy's recursive subnet solver
+    # can grow memory faster than a wall-clock timeout alone can react to.
     # RLIMIT_AS makes the next over-limit allocation raise MemoryError
-    # immediately (caught below), failing this attempt cleanly well before
-    # the child can threaten the rest of the system.
+    # immediately (caught below), failing this attempt cleanly.
     resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
 
     tp.quiet()
     # Force trackpy's pure-Python 'recursive' subnet solver instead of its
-    # default numba-JIT 'hybrid' one. This subprocess is forked from a
-    # parent that has already loaded torch/CUDA/numba to run the detector
-    # model -- confirmed directly (2026-08-08) that numba's JIT'd solver
-    # becomes pathologically slow (not just slower -- effectively hung,
-    # burning the full 90s timeout) specifically inside that forked child,
-    # while the identical call in a fresh (non-forked) process or with
-    # NUMBA_AVAILABLE forced off completes in ~1-2s. This matches a known
-    # class of fork-safety hazard: LLVM/numba's JIT keeps internal
-    # thread/lock state that a fork() (which duplicates only the calling
-    # thread) can leave inconsistent in the child. Only affects this
-    # subprocess's own trackpy.linking module state, not the parent
-    # process's.
+    # default numba-JIT 'hybrid' one: numba's JIT becomes pathologically slow
+    # when forked from a parent that has already loaded torch/CUDA/numba to
+    # run the detector model -- a known fork-safety hazard (LLVM/numba's JIT
+    # keeps internal thread/lock state that fork() can leave inconsistent in
+    # the child). Only affects this subprocess's own trackpy.linking state.
     tp_linking.NUMBA_AVAILABLE = False
-    # Also lower trackpy's default MAX_SUB_NET_SIZE (30) so a subnet
-    # that's merely oversized (not astronomically so) is rejected FAST
-    # instead of grinding through slow recursive branch-and-bound first --
-    # confirmed directly: a 32-point subnet at the default cap of 30 took
-    # 45.7s to raise SubnetOversizeException (recursive assignment search
-    # is worst-case exponential in subnet size, and "just over the cap" is
-    # still deep enough to be slow); at cap=20 the same case raised in
-    # <0.1s. That per-attempt cost is what let the outer retry loop below
-    # blow through its whole time budget on 1-2 large search_range
-    # attempts without ever reaching a small, fast, successful one.
+    # Lower trackpy's default MAX_SUB_NET_SIZE (30) so a merely-oversized
+    # subnet is rejected fast instead of grinding through slow recursive
+    # branch-and-bound first, which could otherwise burn the outer retry
+    # loop's whole time budget on one or two large search_range attempts.
     tp_linking.Linker.MAX_SUB_NET_SIZE = 20
     search_range = link_kwargs["search_range"]
     attempt_range = float(search_range)
@@ -593,36 +492,23 @@ def _link_df_with_fallback_impl(det_df, link_kwargs, conn):
 def _link_df_with_fallback(det_df, link_kwargs, timeout_s=90):
     """Call trackers_common.linking.link_and_filter_tracks, retrying with a
     smaller search_range on SubnetOversizeException instead of giving up
-    outright -- in a
-    subprocess with a hard wall-clock timeout, mirroring
-    _compute_motmetrics_with_timeout's pattern for the same reason: this
-    dataset's near-cap-sized subnets (just under trackpy's default
-    MAX_SUB_NET_SIZE=30) can drive the recursive solver's branch-and-bound
-    into exponential blowup without ever raising SubnetOversizeException to
-    trigger our own outer retry -- confirmed directly (2026-08-08) against
-    real (not ground-truth) LodeSTAR detections at tuned alpha/threshold:
-    RAM climbed to the full 15GB+swap and stayed pegged there rather than
-    completing or raising. A signal-based timeout can't reliably interrupt
-    this for the same reason motmetrics' can't (the cost is inside
-    trackpy's recursive/numba subnet solver, which doesn't check for
-    pending Python signals until a subnet resolves), so this uses the same
-    OS-level process termination.
+    outright, in a subprocess with a hard wall-clock timeout (mirroring
+    _compute_motmetrics_with_timeout's pattern): this dataset's near-cap-sized
+    subnets can drive the recursive solver's branch-and-bound into
+    exponential blowup without ever raising SubnetOversizeException to
+    trigger the retry. A signal-based timeout can't reliably interrupt this
+    (the cost is inside trackpy's recursive/numba subnet solver, which
+    doesn't check for pending signals until a subnet resolves), so this uses
+    OS-level process termination instead.
 
-    This is an OUTER retry across independent tp.link_df calls -- not the
-    internal per-subnet adaptive_stop shrinking trackpy also offers. That
-    distinction matters: adaptive_stop retries shrinking search_range
-    *within* a single oversized subnet, re-attempting neighbor-graph
-    formation over the full frame each step, which was separately confirmed
-    to exhaust this machine's RAM+swap on this dataset's ~1400-point
-    subnets (see tracking.adaptive_stop's config.yaml comment). A full
-    outer re-run at a smaller search_range is comparatively cheap when it
-    doesn't hit the near-cap-subnet pathology above -- confirmed directly
-    against this repo's default trajectory (ground-truth positions, median
-    nearest-neighbor spacing ~10.9px at psf_sigma=5): every fallback step
-    completed in a few seconds at the full 151-frame/~1446-particles-per-
-    frame density. Real detector output isn't always this well-behaved
-    (noisier, denser at times) hence the timeout as a backstop rather than
-    relying on the outer retry's typical-case speed alone.
+    This is an OUTER retry across independent tp.link_df calls, not the
+    internal per-subnet adaptive_stop shrinking trackpy also offers:
+    adaptive_stop retries shrinking search_range *within* a single oversized
+    subnet, re-forming the full-frame neighbor graph each step, which can
+    itself exhaust memory on this dataset's largest subnets. A full outer
+    re-run at a smaller search_range is comparatively cheap when it avoids
+    the near-cap-subnet pathology above, hence the timeout as a backstop
+    rather than relying on the outer retry's typical-case speed alone.
 
     Returns:
         (linked DataFrame, search_range actually used) on success.
@@ -633,16 +519,12 @@ def _link_df_with_fallback(det_df, link_kwargs, timeout_s=90):
 
     # "spawn", not "fork": by the time this runs, the parent process has
     # already loaded and run a CUDA-backed detector model (RF-DETR or
-    # LodeSTAR), so it holds a live CUDA context. Confirmed directly
-    # (2026-08-08): forking a subprocess after that leaves the *child* with
-    # a corrupted-but-not-crashing CUDA/driver state that made trackpy's
-    # linking (which itself never touches CUDA) hang for the full 90s
-    # timeout on data that linked in ~1-2s in a fresh, non-forked process --
-    # a known fork-after-CUDA hazard (NVIDIA's own docs warn a forked
-    # child's CUDA context is undefined), not specific to trackpy or numba.
-    # "spawn" starts a genuinely fresh interpreter with no inherited CUDA
-    # state, at the cost of re-pickling det_df/link_kwargs -- cheap here (at
-    # most a few hundred thousand rows of two floats).
+    # LodeSTAR), so it holds a live CUDA context, and forking after that
+    # leaves the child with undefined CUDA/driver state (NVIDIA's own docs
+    # warn a forked child's CUDA context is undefined) -- this can hang
+    # trackpy's linking even though linking itself never touches CUDA.
+    # "spawn" starts a fresh interpreter with no inherited CUDA state, at the
+    # cost of re-pickling det_df/link_kwargs (cheap here).
     ctx = mp.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe()
     proc = ctx.Process(
@@ -651,15 +533,11 @@ def _link_df_with_fallback(det_df, link_kwargs, timeout_s=90):
     )
     proc.start()
     # poll(timeout_s) here, NOT proc.join(timeout_s) -- a linked DataFrame
-    # can be large enough (tens of thousands of rows) to exceed the OS
-    # pipe's buffer (~64KB on Linux). join() only waits for the child to
-    # exit; it never reads the pipe, so a child blocked mid-write on a full
-    # buffer and a parent blocked in join() deadlock each other for the
-    # entire timeout -- confirmed directly (2026-08-08): the child's debug
-    # trace showed link_df returning almost immediately, but the parent
-    # still hit the full 90s timeout because nothing ever drained the pipe.
-    # poll() unblocks the moment the child starts writing, which lets the
-    # child's send() complete too.
+    # can be large enough to exceed the OS pipe's buffer. join() only waits
+    # for the child to exit; it never reads the pipe, so a child blocked
+    # mid-write on a full buffer and a parent blocked in join() deadlock each
+    # other for the entire timeout. poll() unblocks the moment the child
+    # starts writing, which lets the child's send() complete too.
     if parent_conn.poll(timeout_s):
         try:
             result = parent_conn.recv()
@@ -685,17 +563,13 @@ def _motmetrics_compute_worker(acc, metrics, conn):
 
     import motmetrics as mm
 
-    # See _link_df_with_fallback_impl's identical guard for the full
-    # rationale (near-cap combinatorial solvers can grow memory far faster
-    # than a wall-clock timeout alone can react to). scipy's
-    # linear_sum_assignment here has the same failure shape. 6GB (was 2GB):
-    # this machine has ~14GB free, and this subprocess never runs
-    # concurrently with _build_accumulator_with_timeout's own 8GB-bounded
+    # See _link_df_with_fallback_impl's identical guard: a near-cap
+    # combinatorial solver (here, scipy's linear_sum_assignment) can grow
+    # memory far faster than a wall-clock timeout alone can react to. 6GB
+    # gives headroom for dense detectors' much larger track-ID counts,
+    # without overlapping _build_accumulator_with_timeout's own 8GB-bounded
     # subprocess (the accumulator is fully built and back in the parent
-    # before this one starts) -- raised to give real headroom for YOLO's
-    # ~9000-track-ID case (2GB was tuned against the original ~1700-track
-    # incident; this dataset's post-max_det-fix YOLO detections fragment
-    # into far more tracks than that).
+    # before this one starts).
     resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
 
     try:
@@ -708,30 +582,19 @@ def _motmetrics_compute_worker(acc, metrics, conn):
 
 def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=300):
     """Run motmetrics' mh.compute() in a subprocess with a hard wall-clock
-    timeout, terminating it if exceeded. 300s (was 90s): IDF1's global
-    identity-assignment cost scales with distinct track-ID count, and this
-    dataset's detectors can now produce far more tracks (~9000 for YOLO)
-    than the ~1700 the original 90s budget was tuned against.
-
-    IDF1's global identity-assignment can scale very poorly with the number
-    of distinct GT/predicted track IDs -- confirmed directly (2026-08-08):
-    ~1446 GT particles against ~1700 distinct trackpy track IDs (fragmented
-    by this dataset's density) exhausted this machine's RAM+swap and had to
-    be killed manually. A signal-based timeout can't reliably interrupt this
-    -- the actual cost is inside a blocking C-extension call
+    timeout, terminating it if exceeded. IDF1's global identity-assignment
+    cost scales with distinct track-ID count, which can grow very poorly for
+    dense detectors' fragmented tracks and exhaust memory if run
+    unprotected. A signal-based timeout can't reliably interrupt this -- the
+    actual cost is inside a blocking C-extension call
     (scipy.optimize.linear_sum_assignment) that doesn't check for pending
     Python signals until it returns -- so this uses OS-level process
-    termination instead, which works regardless of what the call is doing.
+    termination instead.
 
-    Uses "spawn", not "fork", and polls the connection before joining --
-    both for the same reasons as _link_df_with_fallback (fork-after-CUDA
-    hazard; join-before-poll pipe deadlock on a payload big enough to fill
-    the OS pipe buffer). Confirmed directly (2026-08-08) that this
-    function's original fork+join-first form was reached and hung/ballooned
-    memory once _link_df_with_fallback's own fix let trackpy linking
-    succeed on real (dense, GPU-computed) detector output where it used to
-    fail fast -- this dormant bug was previously masked by that earlier
-    failure, not actually fixed by it.
+    Uses "spawn", not "fork", and polls the connection before joining, for
+    the same reasons as _link_df_with_fallback (fork-after-CUDA hazard;
+    join-before-poll pipe deadlock on a payload big enough to fill the OS
+    pipe buffer).
 
     Returns:
         dict of the single-row summary (column -> value), or None if the
@@ -756,17 +619,12 @@ def _compute_motmetrics_with_timeout(acc, metrics, timeout_s=300):
 
 
 # RLIMIT_AS for _motmetrics_build_worker -- generous relative to this
-# machine's ~14GB free (leaves the rest of the system untouched even in the
-# worst case) while giving real headroom above the per-frame dist_matrix
-# cost at this project's dense-detector densities (RF-DETR/YOLO: up to
-# ~1163-1773 predictions/frame against 1446 GT -- a ~1446x1773 float64
-# matrix is only ~20MB, but motmetrics retains per-frame event data across
-# all 151 frames for the eventual global compute, so the cumulative cost is
-# what this bounds). A RLIMIT_AS hit inside the child raises MemoryError,
-# caught below and reported as a clean None -- it can never touch memory
-# outside this one subprocess, unlike the unprotected in-parent-process
-# growth this replaces (see this module's git history for the 2026-08-08
-# incident that motivated the density pre-check this function supersedes).
+# machine's free memory while giving real headroom above the per-frame
+# dist_matrix cost at this project's dense-detector densities (motmetrics
+# retains per-frame event data across every frame for the eventual global
+# compute, so the cumulative cost is what this bounds). A RLIMIT_AS hit
+# inside the child raises MemoryError, caught below and reported as a clean
+# None -- contained to this one subprocess.
 _BUILD_ACCUMULATOR_RLIMIT_BYTES = 8 * 1024**3
 
 
@@ -811,14 +669,10 @@ def _motmetrics_build_worker(gt_df, linked, psf_sigma_px, threshold_radii, conn)
                 from scipy.spatial.distance import cdist
 
                 dist_matrix = cdist(gt_xy, pred_xy) / psf_sigma_px
-                # match_threshold (in the same psf_sigma-normalized units) must
-                # actually gate which pairs motmetrics treats as candidate
-                # matches -- NaN is motmetrics' documented "impossible pairing"
-                # sentinel, excluding it from the assignment problem entirely.
-                # Leaving every pair as a dense finite-distance candidate makes
-                # the assignment solver's cost scale with the full dense GT x
-                # pred matrix instead of the sparse subset within actual
-                # matching range.
+                # NaN is motmetrics' documented "impossible pairing" sentinel,
+                # excluding out-of-range pairs from the assignment problem so
+                # its cost scales with the sparse candidate subset instead of
+                # the full dense GT x pred matrix.
                 dist_matrix[dist_matrix > threshold_radii] = np.nan
             elif len(gt_ids) > 0:
                 dist_matrix = np.full((len(gt_ids), 0), np.nan)
@@ -835,27 +689,16 @@ def _motmetrics_build_worker(gt_df, linked, psf_sigma_px, threshold_radii, conn)
 def _build_accumulator_with_timeout(gt_df, linked, psf_sigma_px, threshold_radii, timeout_s=180):
     """Build the motmetrics MOTAccumulator in a subprocess with a hard
     RLIMIT_AS memory ceiling and wall-clock timeout, terminating it if
-    exceeded.
-
-    Confirmed directly (2026-08-08): this loop's own acc.update() calls --
-    not just the later mm.metrics.create().compute() call, which
-    _compute_motmetrics_with_timeout already protects -- can grow memory into
-    the double-digit-GB range and get OOM-killed when run unprotected in the
-    parent process. Before this function existed, a density/track-count
-    pre-check in _run_tracking_metrics was the only guard, which meant dense
-    detectors (RF-DETR, YOLO) never got a chance to actually produce MOTA/IDF1
-    at all, even when the real cost would have fit safely. This function
-    replaces that pre-check with a hard, self-contained safety ceiling
-    instead -- worst case, the child hits RLIMIT_AS, raises MemoryError, and
-    this returns None cleanly, exactly as safe as being skipped outright but
-    without giving up on cases that actually fit.
+    exceeded -- this loop's own acc.update() calls, not just the later
+    mm.metrics.create().compute() call _compute_motmetrics_with_timeout
+    already protects, can grow memory into the double-digit-GB range on
+    dense detector output. A hard, self-contained safety ceiling here is
+    preferable to a density/track-count pre-check, which would skip this
+    entirely for dense detectors (RF-DETR, YOLO) even when the real cost
+    would have fit safely.
 
     Uses "spawn" and polls before joining, for the same reasons as
-    _link_df_with_fallback/_compute_motmetrics_with_timeout (fork-after-CUDA
-    hazard; join-before-poll pipe deadlock on a large payload -- an
-    MOTAccumulator for a dense, 151-frame run is comparable in size to the
-    linked DataFrames those functions already pass through this exact
-    pattern).
+    _link_df_with_fallback/_compute_motmetrics_with_timeout.
 
     Returns:
         The built MOTAccumulator, or None if the build hit RLIMIT_AS or
@@ -899,15 +742,12 @@ def _run_tracking_metrics(
         all_detections_by_frame: dict frame_idx → (N, 2) float array of pred (x, y)
         gt_tracks_path: path to ground_truth_tracks.csv
         cfg: full config dict
-        model_type: active --model-type ("rf-detr", "lodestar", "yolo12m", "yolo12n", or "trackpy") --
-            resolves search_range/memory/stub_filter from trackers_common's
-            canonical per-model tuning (trackers_common.tracker_defaults.yaml),
-            the same values particle-tracking/tracker_configs.py generates for
-            real per-model production runs. "trackpy" has no track.py-side
-            model_type of its own but has its own tuned entry in
-            tracker_defaults.yaml; only a model_type with no entry at all
-            falls back to the rf-detr tuning (see
-            trackers_common.defaults.FALLBACK_MODEL_TYPE).
+        model_type: active --model-type -- resolves search_range/memory/
+            stub_filter from trackers_common's canonical per-model tuning
+            (trackers_common.tracker_defaults.yaml), the same values
+            particle-tracking/tracker_configs.py generates for production
+            runs. A model_type with no entry falls back to the rf-detr
+            tuning (see trackers_common.defaults.FALLBACK_MODEL_TYPE).
         derived_psf_sigma_px: if given, overrides cfg's synthetic.psf_sigma /
             synthetic.psf.sigma_px for the match-threshold calculation --
             e.g. a value derived from --lammps-in, matching whatever width
@@ -915,9 +755,7 @@ def _run_tracking_metrics(
         profile: dataset profile dict (size_px/spacing_px), or None. When
             given, an unset search_range derives from it (spacing_px * 0.5)
             before falling back to the per-model canonical tuning below.
-            memory never derives from it (R9) -- still resolved through the
-            same profile-aware call shape, but always the per-model canonical
-            value regardless of profile.
+            memory never derives from it.
 
     Returns:
         dict of tracking metric values, or None if prerequisites missing.
@@ -954,15 +792,10 @@ def _run_tracking_metrics(
 
     # verification/config.yaml's own tracking: block can still override any of
     # these per-model canonical values (load_tracking_config's precedence rule:
-    # a caller-supplied value at the mapped dotted path always wins) — same
-    # override capability operators had before this change.
+    # a caller-supplied value at the mapped dotted path always wins).
     tracking_defaults = load_tracking_config(model_type, cfg, DEFAULT_KEY_PATH_MAP)
     # search_range: explicit config value -> dataset-profile-derived
-    # (spacing_px * 0.5) -> the per-model canonical tuning above (unchanged
-    # fallback behavior when no profile is referenced). The canonical-only
-    # merge (empty tool_config) isolates the fallback tier from cfg's own
-    # override, which resolve_search_range's own explicit-value tier already
-    # covers via explicit_search_range below.
+    # (spacing_px * 0.5) -> the per-model canonical tuning above.
     explicit_search_range = _cfg_get(cfg, "tracking", "search_range", default=None)
     canonical_search_range = load_tracking_config(model_type, {}, DEFAULT_KEY_PATH_MAP).get(
         "search_range", 15
@@ -971,40 +804,32 @@ def _run_tracking_metrics(
         explicit_search_range, profile, hardcoded_default=canonical_search_range
     )
     # memory: explicit config value -> the per-model canonical tuning --
-    # never derived from the profile itself (R9), but still resolved through
-    # the same profile-aware call shape for consistency.
+    # never derived from the profile itself.
     explicit_memory = _cfg_get(cfg, "tracking", "memory", default=None)
     memory = resolve_memory(explicit_memory, profile, model_type, hardcoded_default=3)
     stub_filter = tracking_defaults.get("stub_filter")
     adaptive_stop = tracking_defaults.get("adaptive_stop")
     adaptive_step = tracking_defaults.get("adaptive_step", 0.95)
     # bridge_gap/bridge_radius: verification/config.yaml's tracking: block
-    # only (not per-model canonical tuning -- gap-bridging isn't swept per
-    # model in tracker_defaults.yaml) -- same resolution track.py's own
-    # --bridge-gap/--bridge-radius CLI flags fall back to. off by default
-    # (None). NOTE: link_and_filter_tracks applies stub_filter BEFORE
-    # bridging (link -> filter_stubs -> bridge), so this only reconnects
-    # fragments that already individually survive stub_filter -- it cannot
-    # rescue a detector whose fragments are all shorter than stub_filter to
-    # begin with (e.g. rf-detr's stub_filter=90 against this dataset's
-    # collapsed ~3px search_range, where the longest raw fragment measured
-    # was 77 frames). For that case, --tracker bytetrack is the fix, not
-    # bridging.
+    # only (gap-bridging isn't swept per model in tracker_defaults.yaml),
+    # mirroring track.py's --bridge-gap/--bridge-radius. Off by default.
+    # NOTE: link_and_filter_tracks applies stub_filter BEFORE bridging, so
+    # this can only reconnect fragments that already individually survive
+    # stub_filter -- it can't rescue a detector whose fragments are all
+    # shorter than stub_filter to begin with. --tracker bytetrack is the fix
+    # for that case, not bridging.
     bridge_gap = _cfg_get(cfg, "tracking", "bridge_gap", default=None)
     bridge_radius = _cfg_get(cfg, "tracking", "bridge_radius", default=None)
     threshold_radii = _cfg_get(cfg, "tracking", "matching_threshold_radii", default=0.5)
-    # _resolve_psf_sigma_px(cfg) is the single source of truth shared with the
-    # lodestar box_size derivation -- unless a --lammps-in-derived value was
-    # already resolved by the caller, which takes precedence since it
-    # reflects the width the frames were actually rendered at, not whatever
-    # config.yaml happens to hold.
+    # derived_psf_sigma_px (from --lammps-in) takes precedence when the
+    # caller resolved one, since it reflects the width frames were actually
+    # rendered at rather than whatever config.yaml happens to hold.
     if derived_psf_sigma_px is not None:
         psf_sigma_px = derived_psf_sigma_px
     else:
         psf_sigma_px = _resolve_psf_sigma_px(cfg)
     match_threshold = threshold_radii * psf_sigma_px
 
-    # Build trackpy DataFrame from accumulated detections
     rows = []
     for frame_idx, centers in sorted(all_detections_by_frame.items()):
         for cx, cy in centers:
@@ -1015,14 +840,10 @@ def _run_tracking_metrics(
         return None
 
     det_df = pd.DataFrame(rows)
-    # Routed through _link_df_with_fallback's subprocess/timeout/memory-safety
-    # retry wrapper around trackers_common.linking.link_and_filter_tracks --
-    # the per-model canonical tuning above (search_range/memory/stub_filter/
-    # adaptive_stop/adaptive_step) supplies its link_kwargs, so a
-    # SubnetOversizeException still retries with a shrinking search_range
-    # rather than failing outright. link_and_filter_tracks already renames
-    # trackpy's 'particle' column to 'track_id' internally -- no separate
-    # rename needed here.
+    # Routed through _link_df_with_fallback so a SubnetOversizeException
+    # still retries with a shrinking search_range rather than failing
+    # outright. link_and_filter_tracks already renames trackpy's 'particle'
+    # column to 'track_id' internally -- no separate rename needed here.
     link_kwargs = {
         "search_range": search_range,
         "memory": memory,
@@ -1042,17 +863,9 @@ def _run_tracking_metrics(
         )
         return None
 
-    # Build motmetrics accumulator frame-by-frame -- in a subprocess with a
-    # hard RLIMIT_AS memory ceiling, not in this (parent) process. Confirmed
-    # directly (2026-08-08): this loop's own acc.update() calls -- not just
-    # mm.metrics.create().compute() below -- can grow memory into the
-    # double-digit GB range and get OOM-killed. A density/track-count
-    # pre-check used to skip this loop entirely above ~400 detections/frame
-    # or ~1000 distinct track IDs as the only guard; that meant dense
-    # detectors (RF-DETR, YOLO) never got a chance to actually produce
-    # MOTA/IDF1 even when the real cost would have fit safely.
-    # _build_accumulator_with_timeout replaces that pre-check with a
-    # self-contained safety ceiling instead -- see its own docstring.
+    # Built in a subprocess with a hard RLIMIT_AS memory ceiling, not in this
+    # (parent) process -- see _build_accumulator_with_timeout's own
+    # docstring for why.
     acc = _build_accumulator_with_timeout(gt_df, linked, psf_sigma_px, threshold_radii)
     if acc is None:
         print(
@@ -1111,11 +924,11 @@ def _run_bytetrack_with_timeout(
     Deliberately NOT the subprocess/rlimit/retry machinery
     _link_df_with_fallback uses for trackpy: sv.ByteTrack's per-frame IoU
     association plus Kalman filter has no known combinatorial subnet-blowup
-    mode the way trackpy's recursive solver does (see this unit's plan KTD),
-    so this is only a bound against an *unverified* runtime/memory profile at
-    high particle density, not a guard against a confirmed pathology. A
-    signal-based timeout is sufficient for that and far simpler than spawning
-    a subprocess for every benchmark run.
+    mode the way trackpy's recursive solver does, so this is only a bound
+    against an *unverified* runtime/memory profile at high particle density,
+    not a guard against a confirmed pathology. A signal-based timeout is
+    sufficient for that and far simpler than spawning a subprocess for every
+    benchmark run.
 
     Returns:
         list[sv.Detections] on success, or None if it didn't finish within
@@ -1147,12 +960,10 @@ def _run_bytetrack_with_timeout(
             track_activation_threshold,
         )
     except (TimeoutError, MemoryError):
-        # MemoryError alongside TimeoutError: this call runs in-process with
-        # no subprocess/rlimit isolation (unlike trackpy's
-        # _link_df_with_fallback), so a real memory blowup at high density
-        # must degrade the same way a timeout does -- crashing the whole
-        # benchmark.py process on one detector's tracking metrics would be
-        # worse than skipping just that metric with a warning.
+        # This call runs in-process with no subprocess/rlimit isolation
+        # (unlike trackpy's _link_df_with_fallback), so a real memory blowup
+        # at high density must degrade the same way a timeout does rather
+        # than crashing the whole benchmark.py process.
         return None
     finally:
         signal.alarm(0)
@@ -1178,9 +989,8 @@ def _run_bytetrack_metrics(
     frame_idx order (not dict-insertion or glob order), so run_bytetrack's
     frame-position-based lost_track_buffer timing lines up with ground
     truth's actual frame spacing even across a gap — main()'s detection loop
-    already has an `if frame_idx not in gt_by_frame: continue` guard, so a
-    dataset with non-contiguous frame_idx values is a real possibility this
-    function must handle correctly, not assume away.
+    already has an `if frame_idx not in gt_by_frame: continue` guard, so
+    non-contiguous frame_idx values are a real possibility here.
 
     Args:
         all_boxes_by_frame: dict frame_idx -> {"xyxy": (N,4) float array,
@@ -1200,7 +1010,7 @@ def _run_bytetrack_metrics(
             synthetic.psf.sigma_px for the match-threshold calculation — same
             semantics as _run_tracking_metrics's own parameter.
         profile: accepted for call-site symmetry with _run_tracking_metrics,
-            but unused here — R9: lost_track_buffer/minimum_consecutive_frames/
+            but unused here — lost_track_buffer/minimum_consecutive_frames/
             track_activation_threshold never derive from a dataset profile.
 
     Returns:
@@ -1213,8 +1023,6 @@ def _run_bytetrack_metrics(
 
     import importlib.util
 
-    # Existence check only -- _build_accumulator_with_timeout imports motmetrics
-    # itself, lazily, in its subprocess worker.
     if importlib.util.find_spec("motmetrics") is None:
         print(
             "Warning: motmetrics not installed — skipping tracking metrics. Run: uv add motmetrics"
@@ -1249,8 +1057,7 @@ def _run_bytetrack_metrics(
         return None
 
     # verification/config.yaml's own tracking: block can still override any of
-    # these per-model canonical values — same override precedence
-    # _run_tracking_metrics's search_range/memory/stub_filter already has.
+    # these per-model canonical values.
     tracking_defaults = load_tracking_config(model_type, cfg, DEFAULT_KEY_PATH_MAP)
     lost_track_buffer = tracking_defaults.get("lost_track_buffer", 60)
     minimum_consecutive_frames = tracking_defaults.get("minimum_consecutive_frames", 1)
@@ -1265,30 +1072,20 @@ def _run_bytetrack_metrics(
 
     # run_bytetrack's lost_track_buffer/minimum_consecutive_frames timing
     # counts LIST POSITIONS, not real frame_idx values -- so the list handed
-    # to it must span every integer frame_idx from min to max inclusive
-    # (ascending, NOT dict-insertion or glob order), with an empty
-    # placeholder standing in for any frame_idx absent from
-    # all_boxes_by_frame. Just sorting the *present* keys would silently
+    # to it must span every integer frame_idx from min to max inclusive, with
+    # an empty placeholder standing in for any frame_idx absent from
+    # all_boxes_by_frame. Sorting only the *present* keys would silently
     # collapse a gap (e.g. frames 0, 1, 3 with 2 missing) into list-adjacency
-    # between frames 1 and 3 -- exactly the frame-position-vs-frame-index
-    # mismatch this function must not assume away, since main()'s detection
-    # loop already has an `if frame_idx not in gt_by_frame: continue` guard
-    # that can produce exactly this shape.
+    # between frames 1 and 3.
     present_frame_indices = sorted(all_boxes_by_frame.keys())
 
     # No raw-density pre-check here (unlike the accumulator-building step
-    # below, which is subprocess/RLIMIT-isolated the same way trackpy's is).
-    # An earlier version of this function had one at 400 det/frame, copied
-    # from trackpy's own accumulator-protection threshold -- but that number
-    # was never validated against ByteTrack's actual cost, and measuring it
-    # directly against this repo's real dataset (~1167-1446 det/frame,
-    # temporally coherent) showed run_bytetrack completing in ~18s, nowhere
-    # near _run_bytetrack_with_timeout's 90s budget. A synthetic worst-case
-    # test with fully random (temporally-incoherent) positions did take ~99s
-    # at the same density, but that's an adversarial case IoU-based
-    # association is inherently bad at, not representative of real slowly-
-    # moving particles -- and the timeout+MemoryError catch already degrades
-    # gracefully if a genuinely pathological input ever hits it.
+    # below, which is subprocess/RLIMIT-isolated the same way trackpy's is):
+    # measured against this repo's real (temporally coherent) dataset,
+    # run_bytetrack completes well within _run_bytetrack_with_timeout's
+    # budget even at high density -- IoU-based association is only
+    # pathological against adversarial, temporally-incoherent input, which
+    # the timeout+MemoryError catch below still degrades gracefully against.
     full_frame_range = list(range(present_frame_indices[0], present_frame_indices[-1] + 1))
     detections_list = []
     for frame_idx in full_frame_range:
@@ -1335,15 +1132,11 @@ def _run_bytetrack_metrics(
 
     linked = pd.DataFrame(rows)
 
-    # Build the accumulator in a subprocess with a hard RLIMIT_AS memory
-    # ceiling and wall-clock timeout, same as _run_tracking_metrics's trackpy
-    # path -- see _build_accumulator_with_timeout's own docstring. This
-    # replaces an earlier in-process avg_det_per_frame/n_distinct_tracks
-    # pre-check (same rationale as the trackpy path: a pre-check meant dense
-    # results never got a chance to actually produce MOTA/IDF1 even when the
-    # real cost would have fit safely). The raw-density pre-check before
-    # _run_bytetrack_with_timeout above is unrelated and still applies -- it
-    # protects the tracking pass itself, not this accumulator-building step.
+    # Same RLIMIT_AS/timeout-subprocess pattern as _run_tracking_metrics's
+    # trackpy path -- see _build_accumulator_with_timeout's own docstring.
+    # The raw-density pre-check before _run_bytetrack_with_timeout above is
+    # unrelated and still applies -- it protects the tracking pass itself,
+    # not this accumulator-building step.
     acc = _build_accumulator_with_timeout(gt_df, linked, psf_sigma_px, threshold_radii)
     if acc is None:
         print(
@@ -1389,21 +1182,13 @@ def _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory):
     own box for annotation -- so it threads an explicit local_idx column
     through tp.link_df instead of trusting row order to survive linking.
 
-    Independent of ground_truth_tracks.csv: linking only needs the
-    accumulated detections themselves, not a comparison to ground truth, so
-    --save-video works whether or not --ground-truth-tracks was passed.
-
     Returns:
         dict frame_idx -> (boxes ordered array (M, 4), track_ids array (M,)),
         only for frames with at least one detection. Empty dict if there are
-        no detections at all across every frame, OR if trackpy's linker still
-        raises SubnetOversizeException even at _link_df_with_fallback's
-        smallest fallback search_range (some frame-to-frame window is too
-        densely packed to disambiguate at any usable search_range) --
-        callers fall back to drawing boxes without trajectory traces in that
-        case rather than skipping the whole video, since the per-frame
-        detections are still valid and worth seeing even when cross-frame
-        identity can't be established.
+        no detections at all, or if trackpy's linker still raises
+        SubnetOversizeException even at _link_df_with_fallback's smallest
+        fallback search_range -- callers fall back to drawing boxes without
+        trajectory traces in that case rather than skipping the whole video.
     """
     import pandas as pd
 
@@ -1433,8 +1218,6 @@ def _link_detections_for_video(all_boxes_by_frame, cfg, search_range, memory):
         local_indices = order["local_idx"].to_numpy(dtype=int)
         result[int(frame_idx)] = (
             all_boxes_by_frame[int(frame_idx)][local_indices],
-            # link_and_filter_tracks (called inside _link_df_with_fallback)
-            # renames trackpy's 'particle' column to 'track_id' internally.
             order["track_id"].to_numpy(dtype=int),
         )
     return result
@@ -1454,9 +1237,7 @@ def _write_tracking_video(
     """Write tracking_visualization_{model_type}.mp4: detection boxes and
     trajectory traces (via supervision's BoxAnnotator/TraceAnnotator, the
     same library particle-tracking/track.py's own video output uses) overlaid
-    on every synthetic frame -- a visually-verifiable artifact proving each
-    detector is actually producing sane per-frame detections and tracks, not
-    just summary numbers in a CSV."""
+    on every synthetic frame, as a visual check beyond summary CSV numbers."""
     import cv2
     import supervision as sv
 
@@ -1464,14 +1245,10 @@ def _write_tracking_video(
         print("Warning: no detections to draw -- skipping --save-video.")
         return
 
-    # _link_detections_for_video (and _link_df_with_fallback beneath it) only
-    # need each frame's xyxy boxes, not confidence -- extract a plain
-    # frame_idx -> xyxy view rather than changing that function's own
-    # dict-of-plain-arrays contract.
-    #
-    # linked is {} whenever linking wasn't attempted (no detections) or failed
-    # (SubnetOversizeException) -- _write_tracking_video still draws
-    # box-only frames (no trace/track_id) from all_boxes_by_frame in that case.
+    # _link_detections_for_video only needs each frame's xyxy boxes, not
+    # confidence. linked is {} whenever linking wasn't attempted (no
+    # detections) or failed (SubnetOversizeException) -- box-only frames (no
+    # trace/track_id) are still drawn from all_boxes_by_frame in that case.
     xyxy_by_frame = {
         frame_idx: frame_data["xyxy"] for frame_idx, frame_data in all_boxes_by_frame.items()
     }
@@ -1598,25 +1375,22 @@ def main():
             "psf_sigma is only consumed by the tracking-metrics match threshold."
         )
 
-    # Loaded once as the full top-level dict (not just the benchmark: subtree) so the
-    # lodestar box_size derivation below can reach synthetic.psf_sigma/synthetic.psf.sigma_px
-    # -- those are siblings of benchmark: in config.yaml, not nested under it. Reused for
-    # _run_tracking_metrics's own full-config parameter further down instead of reloading.
+    # Loaded as the full top-level dict, not just the benchmark: subtree, so
+    # the lodestar box_size derivation below can reach
+    # synthetic.psf_sigma/synthetic.psf.sigma_px (siblings of benchmark: in
+    # config.yaml). Reused for _run_tracking_metrics's full-config parameter
+    # further down instead of reloading.
     full_cfg = _load_config(args.config)
     cfg = full_cfg.get("benchmark", {})
-    # Sourced from the same _MODEL_VENV_DIRS/_DEFAULT_MODEL_TYPE as the
-    # module-level _resolve_model_type pre-parse, so the two can't drift.
     model_type = args.model_type or _cfg_get(cfg, "model_type", default=_DEFAULT_MODEL_TYPE)
     match_distance = _resolve_match_distance(cfg, full_cfg)
 
     # Dataset scale profile (size_px/spacing_px): when referenced, box_size/
     # nms_distance/tile_size/diameter/search_range/memory each derive from it
     # via detectors_common/trackers_common's shared scale_derivation modules,
-    # sitting between an explicit config value (still always wins) and
-    # today's hardcoded defaults (still applied unchanged when no profile is
-    # referenced at all). Loaded once per run, via each package's own loader
-    # (duplicated by design — see dataset-profiles/README.md). Top-level in
-    # config.yaml (a sibling of benchmark:), not nested under it.
+    # sitting between an explicit config value (always wins) and today's
+    # hardcoded defaults. Loaded once per run via each package's own loader
+    # (duplicated by design — see dataset-profiles/README.md).
     dataset_profile_path = _cfg_get(full_cfg, "dataset_profile", default=None)
     detection_profile = None
     tracking_profile = None
@@ -1627,12 +1401,11 @@ def main():
         detection_profile = load_detection_profile(profile_path)
         tracking_profile = load_tracking_profile(profile_path)
 
-    # Shared defaults every branch below may override. `tiling_enabled = False`
-    # for lodestar/trackpy is a defensive belt-and-suspenders default, not just
-    # documentation — it means the detection dispatch's `elif tiling_enabled:`
-    # branch stays correct (false, so skipped) even if a future edit reorders
-    # that chain relative to the `model_type ==` checks that currently
-    # short-circuit before it's ever evaluated for these two model types.
+    # `tiling_enabled = False` for lodestar/trackpy is a defensive default:
+    # it keeps the detection dispatch's `elif tiling_enabled:` branch correct
+    # even if a future edit reorders it relative to the `model_type ==`
+    # checks that currently short-circuit before it's evaluated for these
+    # two model types.
     device_raw = args.device
     tiling_enabled = False
 
@@ -1648,23 +1421,19 @@ def main():
         threshold = _cfg_get(cfg, "lodestar", "threshold", default=0.1)
         _lodestar_defaults = _load_lodestar_defaults(cfg)
         alpha = _lodestar_defaults.get("alpha", 0.5)
-        # nms_distance: explicit benchmark.lodestar.nms_distance config value
-        # always wins; otherwise derive from dataset_profile (if referenced),
-        # else this file's own long-standing literal (5, not detectors_common's
-        # generic canonical 30 -- at this dataset's ~10.9px median nearest-
-        # neighbor spacing, 30px suppressed almost every true detection,
-        # collapsing recall from ~0.51 to ~0.12; see verification/config.yaml).
+        # nms_distance: explicit config value -> dataset_profile-derived ->
+        # this file's own literal (5, not detectors_common's generic 30 --
+        # at this dataset's density, 30px suppressed nearly every true
+        # detection).
         nms_distance = resolve_nms_distance(
             _cfg_get(cfg, "lodestar", "nms_distance", default=None),
             detection_profile,
             hardcoded_default=5,
         )
-        # box_size: an explicit benchmark.lodestar.box_size config value always wins;
-        # otherwise derive it from dataset_profile if referenced, else from the same
-        # psf_sigma_px this file's tracking-metrics match-threshold already uses
-        # (synthetic.psf_sigma -> synthetic.psf.sigma_px -> 5.0), converted to a pixel
-        # diameter via render.py's FWHM/sigma relationship -- see
-        # docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
+        # box_size: explicit config value -> dataset_profile-derived -> the
+        # same psf_sigma_px the tracking-metrics match-threshold uses,
+        # converted to a pixel diameter via render.py's FWHM/sigma
+        # relationship.
         box_size = _cfg_get(cfg, "lodestar", "box_size", default=None)
         if box_size is None:
             if detection_profile is not None:
@@ -1676,9 +1445,8 @@ def main():
                 box_size = _resolve_psf_sigma_px(full_cfg) * FWHM_TO_SIGMA
         fp16 = _cfg_get(cfg, "lodestar", "fp16", default=False)
         device_raw = args.device or _cfg_get(cfg, "lodestar", "device", default=None)
-        # variant/num_queries/tiling_* are RF-DETR-only — the branches below that
-        # read them (print, get_rfdetr_model, detect_with_tiling) are all gated
-        # behind `model_type != "lodestar"`, so no placeholder values are needed here.
+        # variant/num_queries/tiling_* are RF-DETR-only; the branches reading
+        # them below are all gated behind `model_type != "lodestar"`.
     elif model_type == "yolo12m":
         checkpoint = Path(
             _cfg_get(
@@ -1690,9 +1458,8 @@ def main():
         )
         threshold = _cfg_get(cfg, "yolo12m", "threshold", default=0.25)
         device_raw = args.device or _cfg_get(cfg, "yolo12m", "device", default=None)
-        # Ultralytics applies its own internal NMS -- no external tiling step,
-        # same reasoning as LodeSTAR's "fully-convolutional with no query cap"
-        # tiling exemption.
+        # Ultralytics applies its own internal NMS -- no external tiling
+        # step needed, same as LodeSTAR's tiling exemption.
     elif model_type == "yolo12n":
         checkpoint = Path(
             _cfg_get(
@@ -1709,14 +1476,13 @@ def main():
         yolo12n_tile_overlap = _cfg_get(cfg, "yolo12n", "tile_overlap", default=64)
         yolo12n_nms_iou = _cfg_get(cfg, "yolo12n", "nms_iou", default=0.4)
     elif model_type == "trackpy":
-        # trackpy has no checkpoint file and no loaded model object — a real
-        # absence, not a placeholder path (see plan KTDs). device is computed
-        # (shared default above) but unused — trackpy is CPU-only.
+        # trackpy has no checkpoint file and no loaded model object -- a real
+        # absence, not a placeholder path. device is computed but unused
+        # (trackpy is CPU-only).
         checkpoint = None
-        # diameter: explicit benchmark.trackpy.diameter config value always wins;
-        # otherwise derive from dataset_profile (if referenced), else
-        # trackers_common's own hardcoded default (15, matching this file's
-        # long-standing "not yet empirically tuned" literal).
+        # diameter: explicit config value -> dataset_profile-derived ->
+        # trackers_common's own hardcoded default (15, not yet empirically
+        # tuned).
         diameter = resolve_diameter(
             _cfg_get(cfg, "trackpy", "diameter", default=None), tracking_profile
         )
@@ -1731,16 +1497,16 @@ def main():
         threshold = _cfg_get(cfg, "threshold", default=0.3)
         tiling_enabled = _cfg_get(cfg, "tiling", "enabled", default=True)
         # tile_size's final value needs a frame's own dimensions (the
-        # profile-derived tier's clamp ceiling) -- resolved just below, once
-        # the first frame is available.
+        # profile-derived tier's clamp ceiling) -- resolved below once the
+        # first frame is available.
         _explicit_tile_size = _cfg_get(cfg, "tiling", "tile_size", default=None)
         overlap = _cfg_get(cfg, "tiling", "overlap", default=50)
         nms_threshold = _cfg_get(cfg, "tiling", "nms_threshold", default=0.3)
 
-    # Apply the "0" default before normalizing (not after) — _normalize_device(None)
-    # returns None, so normalizing-then-defaulting would leave the raw, un-normalized
-    # "0" in place. get_rfdetr_model() re-normalizes internally as a second safety net,
-    # but get_lodestar_model()/detect_lodestar() trust this value as-is.
+    # Apply the "0" default before normalizing, not after -- _normalize_device(None)
+    # returns None, so normalizing first would leave the raw "0" un-normalized.
+    # get_rfdetr_model() re-normalizes internally as a second safety net, but
+    # get_lodestar_model()/detect_lodestar() trust this value as-is.
     device = _normalize_device(device_raw or "0")
 
     if checkpoint is not None and not checkpoint.exists():
@@ -1758,14 +1524,11 @@ def main():
         sys.exit(1)
 
     if model_type not in ("lodestar", "yolo12m", "yolo12n", "trackpy"):
-        # tile_size: explicit benchmark.tiling.tile_size config value always
-        # wins; otherwise derive from dataset_profile (clamped to this run's
-        # own frame dimensions), else this file's own long-standing literal
-        # (160, deliberately smaller than the 512x512 frame so tiling
-        # actually engages in real RF-DETR benchmark runs -- not
-        # detectors_common's generic canonical 512). Frame dimensions are
-        # only needed for the profile-derived tier -- skip loading a frame
-        # at all when an explicit value or no profile makes that unnecessary.
+        # tile_size: explicit config value -> dataset_profile-derived
+        # (clamped to this run's frame dimensions) -> this file's own
+        # literal (160, deliberately smaller than the 512x512 frame so
+        # tiling actually engages). Frame dimensions are only needed for the
+        # profile-derived tier -- skip loading a frame when unnecessary.
         if _explicit_tile_size is None and detection_profile is not None:
             _first_frame = _load_frame_rgb(tiff_files[0])
             _fh, _fw = _first_frame.shape[:2]
@@ -1797,8 +1560,8 @@ def main():
     else:
         print(f"Tiling:     {'enabled' if tiling_enabled else 'disabled'} (tile_size={tile_size})")
 
-    # Mirrors the print banner above -- same resolved values, persisted instead
-    # of only appearing in the terminal. See run_provenance.py.
+    # Mirrors the print banner above, persisted instead of only shown in the
+    # terminal. See run_provenance.py.
     if model_type == "trackpy":
         resolved_params = {"diameter": diameter, "minmass": minmass, "separation": separation}
     elif model_type == "lodestar":
@@ -1846,9 +1609,8 @@ def main():
     all_inference_times_ms = []
     all_detections_by_frame = {}  # frame_idx → (N, 2) array of (x, y) centroids
     # frame_idx → {"xyxy": (N, 4) array, "confidence": (N,) array} -- populated
-    # unconditionally (not only for --save-video): --tracker bytetrack's
-    # _run_bytetrack_metrics also needs box+confidence data per frame, in
-    # addition to --save-video's own existing use.
+    # unconditionally, not only for --save-video: --tracker bytetrack's
+    # _run_bytetrack_metrics also needs this per frame.
     all_boxes_by_frame = {}
 
     for png_path in tiff_files:
@@ -1862,12 +1624,11 @@ def main():
 
         img_rgb = _load_frame_rgb(png_path)
 
-        # Times only the detector's own call -- not image loading or the
-        # matching/scoring below -- so this is comparable across model
-        # types regardless of how much of this loop's other work a given
-        # backend happens to share. GPU-backed detectors (rf-detr/yolo12m/
-        # yolo12n/lodestar) already block on their own result-materialization (numpy
-        # conversion), so no explicit CUDA sync is needed here.
+        # Times only the detector's own call, not image loading or the
+        # matching/scoring below, so it's comparable across model types.
+        # GPU-backed detectors already block on their own
+        # result-materialization (numpy conversion), so no explicit CUDA
+        # sync is needed here.
         inference_start = time.perf_counter()
         if model_type == "lodestar":
             dets = detect_lodestar(
@@ -1961,11 +1722,10 @@ def main():
         all_fn += fn
         all_dists.extend(dists)
         all_detections_by_frame[frame_idx] = pred_centers
-        # Additive only -- all_detections_by_frame above is completely
-        # untouched by this. confidence falls back to all-ones when a
-        # detector doesn't set it (matches detect_trackpy's own default and
-        # keeps --tracker bytetrack runnable against every detector, since
-        # sv.ByteTrack requires confidence to be non-None).
+        # confidence falls back to all-ones when a detector doesn't set it
+        # (matches detect_trackpy's own default), keeping --tracker bytetrack
+        # runnable against every detector, since sv.ByteTrack requires
+        # confidence to be non-None.
         if len(dets) > 0:
             boxes_xyxy = dets.xyxy.astype(np.float64)
             boxes_confidence = (
@@ -2000,14 +1760,12 @@ def main():
         )
         all_inference_times_ms.append(inference_time_ms)
 
-    # Write per-frame CSV. Named per model_type — a fixed filename would let a
-    # later run of the other model type silently overwrite these results.
+    # Both the manifest and the metrics CSV are named per model_type -- a
+    # fixed filename would let a later run of a different model type into
+    # the same output_dir (e.g. run_density_ablation.sh's multi-model sweep)
+    # silently overwrite these results.
     output_dir = Path(args.output_dir) if args.output_dir else Path("verification_output")
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Named per model_type, matching accuracy_metrics_{model_type}.csv -- a
-    # fixed filename would let a later run of another model type into the
-    # same output_dir (e.g. run_density_ablation.sh's multi-model sweep)
-    # silently overwrite this one's provenance.
     write_manifest(
         output_dir,
         f"benchmark_manifest_{model_type}.json",
@@ -2040,11 +1798,10 @@ def main():
     if not np.isnan(overall_err):
         print(f"Mean position error: {overall_err:.2f} px")
     if all_inference_times_ms:
-        # Median alongside mean: GPU-backed detectors (rf-detr/yolo12m/yolo12n/lodestar)
-        # typically pay a one-time CUDA warm-up cost on their first inference
-        # call, which the mean absorbs into the whole run but the median
-        # (robust to a single outlier frame) does not -- both are reported so
-        # neither reading is silently misleading on its own.
+        # Median alongside mean: GPU-backed detectors typically pay a
+        # one-time CUDA warm-up cost on their first call, which the mean
+        # absorbs into the whole run but the median (robust to a single
+        # outlier frame) does not.
         print(
             f"Inference time:      {np.mean(all_inference_times_ms):.2f} ms/frame mean, "
             f"{np.median(all_inference_times_ms):.2f} ms/frame median"
@@ -2053,19 +1810,13 @@ def main():
 
     # --- Tracking metrics (optional) ---
     if args.ground_truth_tracks:
-        # full_cfg is already loaded once, earlier in main() -- reused here
-        # rather than reloading the YAML file a second time.
         derived_psf_sigma_px = None
         if args.lammps_in:
-            # Lazy import: render.py pulls in frames_to_video -> cv2 at module
-            # scope, which this function's caller may be running under a
-            # re-exec'd rf-detr/.venv or particle-tracking/.venv interpreter
-            # (see _reexec_for_model_venv above) -- keep the import scoped to
-            # only the code path that actually needs it, matching this
-            # file's existing lazy-import convention for cross-venv safety.
-            # Importing render also runs its own sys.path.insert for
-            # lammps-scripts/, which is why lammps_parser is importable right
-            # after it without this module repeating that setup itself.
+            # Lazy import: render.py pulls in cv2 at module scope, and this
+            # may be running under a re-exec'd model venv, so keep the
+            # import scoped to the path that needs it. Importing render also
+            # sets up sys.path for lammps-scripts/, making lammps_parser
+            # importable right after without repeating that setup here.
             from render import _derive_psf_sigma_from_lammps_in, _parse_box
             from lammps_parser import parse_lammps_dump
 
@@ -2079,9 +1830,8 @@ def main():
                 f"(derived from --lammps-in {args.lammps_in})"
             )
 
-        # --tracker trackpy -> the existing batch/offline linker path
-        # (unchanged behavior); --tracker bytetrack -> the per-frame online
-        # tracker path (U5). Orthogonal to --model-type (the detector).
+        # --tracker trackpy uses the batch/offline linker; bytetrack uses
+        # the per-frame online tracker. Orthogonal to --model-type.
         if args.tracker == "bytetrack":
             tracking_metrics = _run_bytetrack_metrics(
                 all_boxes_by_frame,
@@ -2101,10 +1851,6 @@ def main():
                 profile=tracking_profile,
             )
         if tracking_metrics:
-            # Uniform naming for both trackers (not just bytetrack) -- see
-            # this unit's plan KTD: a one-time rename now is simpler than
-            # carrying two permanently different naming conventions for the
-            # same kind of artifact.
             tracking_csv_path = output_dir / f"tracking_metrics_{model_type}_{args.tracker}.csv"
             with open(tracking_csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=list(tracking_metrics.keys()))
@@ -2126,9 +1872,8 @@ def main():
 
     if args.save_video:
         # search_range/memory: explicit config value -> dataset-profile-derived
-        # (search_range only -- memory never derives from the profile, R9) ->
-        # this call site's own hardcoded default (15/3, matching its
-        # long-standing literals) when neither applies. Independent of
+        # (search_range only; memory never derives from the profile) -> this
+        # call site's own hardcoded default (15/3). Independent of
         # _run_tracking_metrics's per-model canonical tuning above (see
         # _link_df_kwargs's own docstring).
         video_search_range = resolve_search_range(

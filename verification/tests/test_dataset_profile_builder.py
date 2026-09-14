@@ -1,7 +1,7 @@
-"""Tests for dataset_profile_builder.py — U2: builds a dataset-profile YAML
+"""Tests for dataset_profile_builder.py — builds a dataset-profile YAML
 from a LAMMPS trajectory and a known size_px.
 
-Test scenarios from the plan:
+Scenarios covered:
 - compute_spacing_px computes the correct median nearest-neighbor distance
   on a small, controlled trajectory (grid of known positions).
 - build_dataset_profile rejects a non-positive size_px.
@@ -12,7 +12,7 @@ Test scenarios from the plan:
   (lammps-scripts/single_continuous_force_test/continuous_force_1500_5.0.lammpstrj)
   produces a spacing_px matching the documented ~10.9px reference value
   (within +/-5%) -- regression guard against the builder's formula drifting
-  from established ground truth (covers R4, AE6). Skipped when that file
+  from established ground truth. Skipped when that file
   isn't present locally: *.lammpstrj is gitignored (large binary trajectory
   data), so it isn't guaranteed to exist in every checkout/worktree.
 """

@@ -1,8 +1,7 @@
-"""Tests for trackers_common.scale_derivation -- U4: tracking-side
-parameter derivation (search_range, diameter, memory) from a dataset
-profile, with the three-tier explicit > profile-derived > hardcoded-default
-precedence chain (R8), and memory's deliberate non-derivation exception
-(R9)."""
+"""Tests for trackers_common.scale_derivation -- tracking-side parameter
+derivation (search_range, diameter, memory) from a dataset profile, with
+the three-tier explicit > profile-derived > hardcoded-default precedence
+chain, and memory's deliberate non-derivation exception."""
 
 from trackers_common.scale_derivation import (
     DEFAULT_DIAMETER,
@@ -145,7 +144,7 @@ class TestResolveMemory:
         assert result == 10
 
     def test_derives_per_model_canonical_default_without_profile(self):
-        # R9: memory resolves through model_type, not through profile
+        # memory resolves through model_type, not through profile
         # presence -- identical whether a profile is referenced or not.
         result = resolve_memory(None, None, "rf-detr")
 
@@ -156,7 +155,7 @@ class TestResolveMemory:
         assert result == 10
 
     def test_memory_unchanged_across_very_different_size_and_spacing(self):
-        # Covers R9: vary size_px/spacing_px across very different values,
+        # Vary size_px/spacing_px across very different values,
         # with and without a profile referenced at all, for the same
         # model_type -- memory must match the per-model canonical default in
         # every case, never varying with the spatial values.

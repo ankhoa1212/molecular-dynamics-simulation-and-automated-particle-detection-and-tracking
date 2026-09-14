@@ -669,7 +669,7 @@ class TestRunFullComparison:
 
 
 class TestDatasetProfileFlag:
-    """--dataset-profile threading through the full-run comparison, per R2/R3/R7."""
+    """--dataset-profile threading through the full-run comparison."""
 
     @staticmethod
     def _write_profile(tmp_path, name="profile.yaml"):

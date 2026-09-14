@@ -1,4 +1,4 @@
-"""Tests for lodestar_autolabeler.py's --dataset-profile wiring (U6: R5, R10).
+"""Tests for lodestar_autolabeler.py's --dataset-profile wiring.
 
 Covers the precedence chain box_size/nms_distance resolve through:
     CLI-explicit -> --config JSON value -> --dataset-profile-derived
@@ -58,8 +58,8 @@ class TestDetectorsCommonEditableInstall:
 
 class TestArgparseDefaults:
     """--box-size/--nms-distance must default to None at the argparse level
-    (not 40/0.0) -- see the Execution note in the U6 plan: the 40/0.0
-    defaults now live in _resolve_scale_params, not in argparse itself."""
+    (not 40/0.0) -- the 40/0.0 defaults now live in _resolve_scale_params,
+    not in argparse itself."""
 
     def test_box_size_and_nms_distance_default_to_none(self, monkeypatch):
         args = _parse(monkeypatch, ["--model", "m.pt", "--input", "in/"])
@@ -75,7 +75,7 @@ class TestArgparseDefaults:
 
 class TestResolveScaleParamsWithProfile:
     """--dataset-profile supplied, no explicit --box-size/--nms-distance:
-    both derive via detectors_common.scale_derivation (AE4, R10)."""
+    both derive via detectors_common.scale_derivation."""
 
     def test_both_derive_from_profile(self, monkeypatch, tmp_path):
         profile_path = _write_profile(tmp_path, size_px=8.0, spacing_px=12.0)
@@ -92,7 +92,7 @@ class TestResolveScaleParamsWithProfile:
 
 class TestExplicitOverrideWinsOverProfile:
     """--dataset-profile supplied alongside an explicit --box-size: the
-    explicit value wins (AE4's override case)."""
+    explicit value wins."""
 
     def test_explicit_box_size_wins(self, monkeypatch, tmp_path):
         profile_path = _write_profile(tmp_path, size_px=8.0, spacing_px=12.0)

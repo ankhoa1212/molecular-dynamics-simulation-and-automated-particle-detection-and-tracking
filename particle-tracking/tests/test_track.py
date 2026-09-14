@@ -18,7 +18,7 @@ import trackers_common.linking
 import trackers_common.bytetrack
 
 # ---------------------------------------------------------------------------
-# detectors_common re-exports — U8: guards against the re-export convention
+# detectors_common re-exports — guards against the re-export convention
 # silently eroding. A locally-defined function shadowing one of these imports
 # wouldn't fail at collection time, only much later when someone tries to
 # patch a name that no longer points at the shared implementation.
@@ -712,12 +712,12 @@ def _write_multi_input_config(tmp_path, input_paths, stub_filter=90):
 
 
 # ---------------------------------------------------------------------------
-# ByteTrack characterization tests (U2 of the bytetrack-tracking-support plan).
+# ByteTrack characterization tests.
 #
 # Written against track.py's *current* inline `sv.ByteTrack` init-and-per-frame
 # loop before it is extracted into trackers_common.bytetrack.run_bytetrack, so
 # they serve as a behavior-preservation baseline: they must pass unchanged both
-# before and after the extraction (AE4). Exact frame-by-frame outcomes below
+# before and after the extraction. Exact frame-by-frame outcomes below
 # were confirmed empirically against the installed `supervision` package's
 # actual sv.ByteTrack semantics (e.g. a track created on any frame other than
 # the tracker's very first only becomes visible in output once it has been
@@ -1041,7 +1041,7 @@ class TestComputeAndSaveMetrics:
 
 
 # ---------------------------------------------------------------------------
-# U5: base + override config consolidation. merge_config's own semantics,
+# Base + override config consolidation. merge_config's own semantics,
 # plus a regression suite over the real on-disk base/override files so a
 # future edit to any of the six particle-tracking/*.yaml files can't
 # silently drift a scenario away from its documented behavior.
@@ -1336,8 +1336,8 @@ class TestBaseOverrideConfigFiles:
             assert isinstance(merged["input"], str)
 
     def test_lodestar_scenarios_never_inherit_rfdetr_only_tiling(self):
-        # Regression guard for the exact class of bug R7 exists to prevent:
-        # a LodeSTAR override must explicitly disable tiling.enabled, since
+        # Regression guard: a LodeSTAR override must explicitly disable
+        # tiling.enabled, since
         # the base has it on and tiling is an RF-DETR-specific technique.
         base = track.load_config(PARTICLE_TRACKING_DIR / "config.yaml")
         for override_file in [
@@ -1351,7 +1351,7 @@ class TestBaseOverrideConfigFiles:
 
 
 # ---------------------------------------------------------------------------
-# U5: dataset_profile-driven scale derivation (particle-tracking/config.yaml,
+# dataset_profile-driven scale derivation (particle-tracking/config.yaml,
 # lodestar_config.yaml) -- box_size/nms_distance/tile_size/search_range/memory
 # each route through detectors_common/trackers_common's scale_derivation
 # modules when dataset_profile is referenced, sitting between an explicit
@@ -1388,7 +1388,7 @@ class TestDatasetProfileTrackingDerivation:
     def test_search_range_falls_back_to_hardcoded_default_without_profile(
         self, tmp_path, run_main_capture_link_kwargs
     ):
-        """R7/AE2 regression: no dataset_profile referenced at all -> today's
+        """Regression: no dataset_profile referenced at all -> today's
         hardcoded default (25.0, trackers_common's own DEFAULT_SEARCH_RANGE,
         matching this file's long-standing config.yaml literal)."""
         cfg_path = _write_config(tmp_path, search_range=None, dataset_profile=None)
@@ -1417,7 +1417,7 @@ class TestDatasetProfileTrackingDerivation:
         assert captured["search_range"] == pytest.approx(20.0)
 
     def test_memory_unaffected_by_profile(self, tmp_path, run_main_capture_link_kwargs):
-        """R9: memory never derives from size_px/spacing_px -- resolves to the
+        """memory never derives from size_px/spacing_px -- resolves to the
         per-model canonical value (rf-detr: 5, from tracker_defaults.yaml)
         regardless of the profile."""
         profile_path = _write_dataset_profile(tmp_path, size_px=5.0, spacing_px=10.0)
@@ -1469,7 +1469,7 @@ class TestDatasetProfileLodestarDetectionDerivation:
     def test_nms_distance_falls_back_to_hardcoded_default_without_profile(
         self, tmp_path, run_main_lodestar_capture_kwargs
     ):
-        """R7/AE2 regression: no dataset_profile referenced -> detector_defaults.yaml's
+        """Regression: no dataset_profile referenced -> detector_defaults.yaml's
         canonical lodestar nms_distance (30), unchanged from before this plan."""
         cfg_path = _write_lodestar_config(tmp_path, dataset_profile=None)
 
@@ -1501,7 +1501,7 @@ class TestDatasetProfileTilingDerivation:
         assert captured and all(t == pytest.approx(200.0) for t in captured)
 
     def test_tile_size_falls_back_to_1024_without_profile(self, tmp_path, run_main_capture_tiling):
-        """R7/AE2 regression: no dataset_profile referenced -> this file's own
+        """Regression: no dataset_profile referenced -> this file's own
         long-standing 1024 default, not detectors_common's own 512 module default."""
         cfg_path = _write_config(
             tmp_path,
@@ -1518,10 +1518,10 @@ class TestDatasetProfileTilingDerivation:
 
 
 class TestTilingFallbackWarning:
-    """R6 regression: a run with tiling enabled but neither an explicit tile_size
-    nor a dataset_profile must warn that it's silently at the hardcoded fallback --
-    otherwise the exact incident that motivated this plan (RF-DETR capped at
-    num_queries regardless of true particle density) can recur with no signal."""
+    """A run with tiling enabled but neither an explicit tile_size nor a
+    dataset_profile must warn that it's silently at the hardcoded fallback --
+    otherwise RF-DETR capping at num_queries regardless of true particle
+    density can recur with no signal."""
 
     def test_warns_when_no_explicit_tile_size_and_no_profile(
         self, tmp_path, run_main_capture_tiling, capsys
@@ -1574,9 +1574,9 @@ class TestTilingFallbackWarning:
 
 
 class TestLodestarProfileVisibility:
-    """R6 regression: KTD3 widens dataset_profile's blast radius onto lodestar's
-    box_size/nms_distance, previously only discoverable by reading the generated
-    config. The resolved values must be printed at runtime instead."""
+    """dataset_profile's effect on lodestar's box_size/nms_distance was
+    previously only discoverable by reading the generated config. The
+    resolved values must be printed at runtime instead."""
 
     def test_prints_resolved_values_when_profile_is_set(
         self, tmp_path, run_main_lodestar_capture_kwargs, capsys
@@ -1600,9 +1600,9 @@ class TestLodestarProfileVisibility:
 
 
 class TestShippedConfigsNoLongerShortCircuitDerivation:
-    """Regression guard for R11/AE7: the shipped config.yaml/lodestar_config.yaml
-    must not carry live literal values for the parameters this plan derives --
-    a live value would permanently shadow dataset_profile-driven derivation,
+    """Regression guard: the shipped config.yaml/lodestar_config.yaml must
+    not carry live literal values for the parameters derived here -- a live
+    value would permanently shadow dataset_profile-driven derivation,
     reproducing the exact trap the box_size fix already hit once."""
 
     def test_config_yaml_tile_size_is_commented_out(self):

@@ -1,7 +1,4 @@
-"""Tests for trajectory_analysis.py.
-
-See docs/plans/2026-08-21-001-feat-trajectory-analysis-sim-real-validation-plan.md, U5.
-"""
+"""Tests for trajectory_analysis.py."""
 
 import sys
 from pathlib import Path

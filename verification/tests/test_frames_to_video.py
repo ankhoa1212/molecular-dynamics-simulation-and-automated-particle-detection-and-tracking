@@ -1,6 +1,6 @@
 """Tests for frames_to_video.py.
 
-docs/plans/2026-07-22-003-feat-frames-to-video-plan.md U1 test scenarios:
+Scenarios covered:
 - happy path: a directory of known frames produces an MP4 with matching
   frame count and dimensions
 - edge case: empty directory raises a clear error

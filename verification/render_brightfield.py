@@ -19,9 +19,7 @@ locally measured 0.5-2.3s for N=1-10 particles on a 128x128 canvas, while a
 single N=60 attempt on the same canvas exceeded 120s. ``max_particles``
 guards against an unbounded run rather than silently hanging -- this
 strategy is scoped as a small-batch, high-fidelity reference render, not a
-bulk generator (see docs/brainstorms/2026-08-12-brightfield-particle-
-rendering-requirements.md and docs/plans/2026-08-12-002-feat-brightfield-
-particle-rendering-plan.md).
+bulk generator.
 
 ``synthetic.brightfield`` is a flat config section (like every other
 strategy's config sub-dict here -- ``psf``, ``background``, ``noise``), not
@@ -120,10 +118,10 @@ def _apply_partial_coherence_blur(frame, bf_cfg):
     core, dark ring, a visible secondary bright ring, repeating outward),
     but real reference crops (data-setup/models/lodestar_model_15/crops/
     *.png, data-setup/models/lodestar_model_10/crops/*.png) show only one
-    soft halo around each particle's bright core -- confirmed directly by
-    comparison. Applied identically in render_frame_brightfield and
-    render_frame_brightfield_fast's shared post-processing tail so the two
-    strategies stay equivalent (R7); sigma=2.0px (roughly 40% of this
+    soft halo around each particle's bright core. Applied identically in
+    render_frame_brightfield and render_frame_brightfield_fast's shared
+    post-processing tail so the two strategies stay equivalent; sigma=2.0px
+    (roughly 40% of this
     dataset's own ~5px particle radius) was picked by rendering a single
     particle at several candidate sigmas and comparing against the real
     crops directly -- large enough to erase the secondary/tertiary ring

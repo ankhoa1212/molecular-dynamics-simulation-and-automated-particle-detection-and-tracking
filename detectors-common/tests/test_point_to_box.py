@@ -1,6 +1,6 @@
-"""Tests for detectors_common.point_to_box -- U1: shared centroid-to-xyxy
+"""Tests for detectors_common.point_to_box -- shared centroid-to-xyxy
 box synthesis extracted from detect_lodestar and verification/benchmark.py's
-detect_trackpy (R3)."""
+detect_trackpy."""
 
 import numpy as np
 

@@ -1,4 +1,4 @@
-"""Tests for detectors_common.lodestar_loader — U3: get_lodestar_model's
+"""Tests for detectors_common.lodestar_loader — get_lodestar_model's
 native-vs-inject duality, and detect_lodestar's sigma scaling / NMS."""
 
 import sys

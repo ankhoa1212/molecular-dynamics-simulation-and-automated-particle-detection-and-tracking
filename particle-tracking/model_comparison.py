@@ -234,10 +234,7 @@ def run_detection(
 # models sharing this interpreter. Do not "simplify" this into an
 # in-process loop.
 
-# Maps model_type -> tracker_configs.py writer function name. Closes the gap
-# noted in U6 of
-# docs/plans/2026-07-13-001-feat-multi-model-comparison-preview-metrics-plan.md
-# (yolo previously had no writer here).
+# Maps model_type -> tracker_configs.py writer function name.
 _CONFIG_WRITER_NAMES = {
     "rf-detr": "write_rfdetr_config",
     "lodestar": "write_lodestar_config",
@@ -410,8 +407,8 @@ def run_full_comparison(
         # This is path/config-name hygiene only — write_lodestar_config doesn't accept
         # a checkpoint parameter (its hardcoded default already matches the canonical
         # lodestar checkpoint), so two same-model_type lodestar entries still run the
-        # same checkpoint (see plan KTD/Scope Boundaries). rf-detr entries do each get
-        # their own spec.checkpoint threaded through via write_rfdetr_config.
+        # same checkpoint. rf-detr entries do each get their own spec.checkpoint
+        # threaded through via write_rfdetr_config.
         seen_model_types[model_type] = seen_model_types.get(model_type, 0) + 1
         occurrence = seen_model_types[model_type]
         dir_suffix = model_type if occurrence == 1 else f"{model_type}-{occurrence}"

@@ -11,14 +11,14 @@ config always wins" rule (`detectors_common/defaults.py`) and the existing
        value -- a dict with `size_px`/`spacing_px`) was supplied.
     3. Today's existing hardcoded default, unchanged, when neither of the
        above is present -- this is what keeps behavior identical for every
-       caller that doesn't yet reference a profile (R7).
+       caller that doesn't yet reference a profile.
 
 Each function below takes `explicit_value` and `profile` as its first two
 parameters and returns the resolved value; nothing here reads or writes
 config files directly -- callers (particle-tracking/track.py,
-verification/benchmark.py, data-setup's autolabeler -- wired up in a later
-unit) own their own config-loading and simply pass in whatever explicit
-value and profile they already resolved.
+verification/benchmark.py, data-setup's autolabeler) own their own
+config-loading and simply pass in whatever explicit value and profile they
+already resolved.
 """
 
 # Matches verification/render.py's FWHM_TO_SIGMA (FWHM = 2*sqrt(2*ln2)*sigma
@@ -28,7 +28,7 @@ value and profile they already resolved.
 FWHM_TO_SIGMA = 2.355
 
 # Today's existing hardcoded defaults, used unchanged when no profile is
-# referenced (R7). These match verification/benchmark.py's own long-standing
+# referenced. These match verification/benchmark.py's own long-standing
 # defaults (box_size=40 at benchmark.py:199, nms_distance historically 30 --
 # see AGENTS.md:40).
 DEFAULT_BOX_SIZE = 40
@@ -37,15 +37,14 @@ DEFAULT_NMS_DISTANCE = 30
 # tile_size has no single "current hardcoded default" shared across callers
 # -- particle-tracking/config.yaml uses 1024, verification/config.yaml uses
 # 160. This module's own baked-in default is a standalone fallback for
-# direct callers/tests only; U5 (wiring particle-tracking/verification into
-# this module) passes each caller's own existing config-file default as
-# `hardcoded_default` explicitly, so it takes precedence over this constant
-# and neither caller's behavior changes.
+# direct callers/tests only; each caller passes its own existing
+# config-file default as `hardcoded_default` explicitly, so it takes
+# precedence over this constant and neither caller's behavior changes.
 DEFAULT_TILE_SIZE = 512
 
 # Starting heuristic for tile_size derivation, not an empirically tuned
-# value -- R12/U7's stress-test validation (denser and sparser synthetic
-# profiles) is the intended mechanism for correcting these two constants.
+# value -- stress-test validation against denser and sparser synthetic
+# profiles is the intended mechanism for correcting these two constants.
 # TARGET_PARTICLES_PER_TILE_SIDE: how many mean particle-spacings should fit
 # across one tile edge. TILE_SIZE_FLOOR_PX: a lower bound so a very dense
 # profile (small spacing_px) can't derive a tile smaller than a box_size or
@@ -82,12 +81,12 @@ def resolve_nms_distance(explicit_value, profile, hardcoded_default=DEFAULT_NMS_
 
     Formula (profile-derived tier):
         nms_distance = min(size_px * 1.0, spacing_px * 0.5)
-    Ties to size_px (matching the already-shipped fix's empirical ~1x
-    psf_sigma value), capped by half of spacing_px so it never approaches
-    merging genuinely distinct nearby particles. Uses a smaller multiplier
-    than box_size's 2.355 deliberately -- see the plan's KTDs for why
-    box_size (full visual/physical extent) and nms_distance (minimum
-    resolvable spacing between distinct detections) are different concepts.
+    Ties to size_px (matching the empirical ~1x psf_sigma value), capped by
+    half of spacing_px so it never approaches merging genuinely distinct
+    nearby particles. Uses a smaller multiplier than box_size's 2.355
+    deliberately: box_size (full visual/physical extent) and nms_distance
+    (minimum resolvable spacing between distinct detections) are different
+    concepts.
     """
     if explicit_value is not None:
         return explicit_value

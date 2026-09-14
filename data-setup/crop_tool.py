@@ -1101,16 +1101,13 @@ class CropTool:  # pylint: disable=too-many-instance-attributes
         # 2. Count images with labels
         exported_count = 0
 
-        # Scan all images in the folder
         for img_path in self.image_paths:
             stem = img_path.stem
-            # We assume labels are in our standard labels/ directory
+            # Labels are assumed to live in the standard labels/ directory
             src_lbl = self.labels_dir / f"{stem}.txt" if self.labels_dir else None
 
             if src_lbl and src_lbl.exists():
-                # Copy image
                 shutil.copy2(img_path, img_dir / img_path.name)
-                # Copy label
                 shutil.copy2(src_lbl, lbl_dir / f"{stem}.txt")
                 exported_count += 1
 
@@ -1288,11 +1285,9 @@ names:
         items = [("#00FF88", "Manual Crop"), ("#FF00FF", "Auto Detection"), ("#FFD700", "Selected")]
 
         for i, (color, label) in enumerate(items):
-            # Symbol
             self.canvas.create_rectangle(
                 15, 15 + i * 20, 25, 25 + i * 20, fill=color, outline="white", tags="legend"
             )
-            # Text
             self.canvas.create_text(
                 35,
                 20 + i * 20,
@@ -1340,7 +1335,6 @@ names:
                 )
                 tag_color = "#00FFFF" if selected else "#FF00FF"  # Cyan if selected, else Magenta
 
-                # Draw YOLO labels based on mode
                 show_box = self._yolo_view_mode in ("box", "both")
                 show_point = self._yolo_view_mode in ("point", "both")
 
@@ -1371,7 +1365,6 @@ names:
                         tags="overlay",
                     )
 
-                # Label the class
                 label_x = cx1 if show_box else (cx1 + cx2) / 2
                 label_y = (cy1 - 2) if show_box else (cy1 + cy2) / 2 - 5
                 label_anchor = tk.SW if show_box else tk.S
@@ -1781,7 +1774,7 @@ names:
                     path.unlink(missing_ok=True)
         elif kind == "delete":
             self._manual_annots.append((*entry["coords"], entry["path"]))
-            # We don't restore the PNG file, just the logical annotation
+            # Only the logical annotation is restored, not the PNG file
         elif kind == "edit":
             # Search for the newly edited entry to revert it
             curr = (*entry["new_coords"], entry["new_path"])

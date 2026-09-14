@@ -50,7 +50,7 @@ class TestLoadTrackingConfig:
 
     def test_trackpy_has_its_own_tuned_entry(self):
         # trackpy previously fell back to rf-detr's tuning (no dedicated
-        # entry); it has its own explicit entry now (U6) so rf-detr's
+        # entry); it has its own explicit entry now so rf-detr's
         # stub_filter can be tuned independently without silently changing
         # trackpy's behavior too.
         result = load_tracking_config("trackpy", {}, _KEY_PATH_MAP)
@@ -81,8 +81,8 @@ class TestLoadTrackingConfig:
 
 
 class TestLoadTrackingConfigBytetrack:
-    """ByteTrack's three tuning values (R5/U3), independently swept per
-    detector against real data (see tracker_defaults.yaml's header comment).
+    """ByteTrack's three tuning values, independently swept per detector
+    against real data (see tracker_defaults.yaml's header comment).
     rf-detr and yolo converge on minimum_consecutive_frames=1; lodestar and
     trackpy (noisier per-frame confidence) converge on minimum_consecutive_
     frames=3 instead -- a real, measured divergence, not a shared default.
@@ -99,20 +99,19 @@ class TestLoadTrackingConfigBytetrack:
         assert result == _BYTETRACK_CANONICAL_VALUES
 
     def test_lodestar_bytetrack_values_use_higher_consecutive_frames(self):
-        # lodestar's own sweep (2026-08-19) found minimum_consecutive_frames=3
-        # measurably better than rf-detr/yolo's mcf=1 optimum -- MOTA
-        # -0.680 -> -0.566 -- despite lodestar's tracking staying deeply
-        # negative overall (its own detection quality, not tracker tuning, is
-        # the bottleneck). Proves lodestar has its own explicit divergent
-        # entry rather than silently inheriting rf-detr's mcf=1.
+        # lodestar's own tuning found minimum_consecutive_frames=3 measurably
+        # better than rf-detr/yolo's mcf=1 optimum, despite lodestar's
+        # tracking staying deeply negative overall (its own detection
+        # quality, not tracker tuning, is the bottleneck). Proves lodestar
+        # has its own explicit divergent entry rather than silently
+        # inheriting rf-detr's mcf=1.
         result = load_tracking_config("lodestar", {}, _BYTETRACK_KEY_PATH_MAP)
 
         assert result == _BYTETRACK_NOISY_DETECTOR_VALUES
 
     def test_trackpy_bytetrack_values_use_higher_consecutive_frames(self):
-        # trackpy's own sweep (2026-08-19) found minimum_consecutive_frames=3
-        # measurably better than rf-detr/yolo's mcf=1 optimum -- MOTA
-        # 0.135 -> 0.165, IDF1 0.306 -> 0.315.
+        # trackpy's own tuning found minimum_consecutive_frames=3 measurably
+        # better than rf-detr/yolo's mcf=1 optimum.
         result = load_tracking_config("trackpy", {}, _BYTETRACK_KEY_PATH_MAP)
 
         assert result == _BYTETRACK_NOISY_DETECTOR_VALUES

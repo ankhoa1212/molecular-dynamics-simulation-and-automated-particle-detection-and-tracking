@@ -53,11 +53,11 @@ def detect_yolo(model, frame, threshold, device, max_det=5000):
     applies its own NMS internally -- no external NMS/box-size step needed,
     unlike LodeSTAR's point-detection output.
 
-    max_det=5000: ultralytics' own predict() defaults max_det to 300 --
-    confirmed directly to silently truncate every frame's detections on this
-    project's dense microscopy data (verification's synthetic benchmark
-    averages ~1480 particles/frame, max measured 3225 -- see
-    yolov12/config.yaml), the same class of cap RF-DETR's num_queries=300 hit
+    max_det=5000: ultralytics' own predict() defaults max_det to 300, which
+    silently truncates every frame's detections on this project's dense
+    microscopy data (verification's synthetic benchmark averages ~1480
+    particles/frame, max measured 3225 -- see yolov12/config.yaml), the
+    same class of cap RF-DETR's num_queries=300 hit
     on this same data (see detectors_common.tiling). Unlike RF-DETR's
     transformer-decoder query count, YOLO has no architectural reason to cap
     detections this low -- 5000 leaves comfortable margin above the measured

@@ -39,7 +39,6 @@ def convert_jpg_to_frames(input_path, output_folder, image_format="png"):
 def convert_tif_to_frames(input_path, output_folder, image_format="png", nth=10):
     """Convert multi-page TIFF files to individual image frames saved in output_folder."""
 
-    # If input_path is a directory, find .tif files and process each
     if os.path.isdir(input_path):
         tif_files = sorted(
             [f for f in os.listdir(input_path) if f.lower().endswith((".tif", ".tiff"))]
@@ -56,10 +55,8 @@ def convert_tif_to_frames(input_path, output_folder, image_format="png", nth=10)
             )
         return
 
-    # 1. Create output directory (for single file)
     os.makedirs(output_folder, exist_ok=True)
 
-    # 2. Read the TIF file
     try:
         tiff_stack = tifffile.imread(input_path)
         print(
@@ -69,21 +66,17 @@ def convert_tif_to_frames(input_path, output_folder, image_format="png", nth=10)
         print(f"Error reading TIF '{input_path}': {e}")
         return
 
-    # 3. Iterate through frames and save every nth frame
     saved_count = 0
     frame_indices = range(0, len(tiff_stack), nth)
     for i in tqdm(frame_indices, desc="Saving frames", unit="frame"):
         frame = tiff_stack[i]
 
-        # 4. Normalization
         if frame.dtype != np.uint8:
             frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX).astype("uint8")
 
-        # 5. Handle Color Channels
         if len(frame.shape) == 2:
             frame = cv2.merge([frame, frame, frame])
 
-        # 6. Save Frame
         cv2.imwrite(os.path.join(output_folder, f"frame_{saved_count:05d}.{image_format}"), frame)
         saved_count += 1
 
@@ -93,7 +86,6 @@ def convert_tif_to_frames(input_path, output_folder, image_format="png", nth=10)
 if __name__ == "__main__":
 
     PARSER = argparse.ArgumentParser(description="Convert multi-page TIFF to image frames.")
-    # REQUIRED: no default -- pass the path to your own .tif file/directory.
     PARSER.add_argument(
         "input_path",
         help="Path to input .tif file or a directory containing .tif files (required)",

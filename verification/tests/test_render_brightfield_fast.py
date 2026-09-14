@@ -1,12 +1,11 @@
 """Tests for render_brightfield_fast.py -- the render_strategy: brightfield_fast
-path (see docs/plans/2026-08-16-001-feat-brightfield-fast-render-path-plan.md).
+path.
 
 Unlike test_render_brightfield.py, no deeptrack mocking is needed here --
-render_brightfield_fast.py has no deeptrack runtime dependency at all (see
-the plan's KTDs). Equivalence against the real slow path (render_strategy:
-brightfield) is a separate concern, covered by
-test_render_brightfield_fast_equivalence.py (R7 in the plan above), not
-this file.
+render_brightfield_fast.py has no deeptrack runtime dependency at all.
+Equivalence against the real slow path (render_strategy: brightfield) is a
+separate concern, covered by test_render_brightfield_fast_equivalence.py,
+not this file.
 """
 
 import sys
@@ -260,8 +259,9 @@ class TestRenderFrameBrightfieldFast:
         assert not any("max_particles" in str(w.message) for w in caught)
 
     def test_production_density_renders_in_practical_time(self):
-        # R8's sanity-check scenario at a smaller canvas for test speed --
-        # the full 512x512/~1446-particle case is U3's dedicated check.
+        # A sanity-check scenario at a smaller canvas for test speed -- the
+        # full 512x512/~1446-particle case has its own dedicated check in
+        # test_render_brightfield_fast_equivalence.py.
         rng = np.random.default_rng(2)
         positions = rng.uniform(5, 95, size=(500, 2))
         frame = render_frame_brightfield_fast(positions, _BOX, _cfg(image_size=256), rng)

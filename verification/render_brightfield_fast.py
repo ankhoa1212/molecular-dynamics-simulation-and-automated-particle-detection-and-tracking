@@ -1,10 +1,9 @@
 """Fast FFT-based brightfield rendering.
 
-See docs/plans/2026-08-16-001-feat-brightfield-fast-render-path-plan.md for
-the full design. Reproduces dt.Brightfield's real algorithm
-(verification/.venv's installed deeptrack/optics.py) directly in numpy/scipy
-instead of DeepTrack2's slow per-particle feature-graph pipeline, so cost is
-independent of particle count.
+Reproduces dt.Brightfield's real algorithm (verification/.venv's installed
+deeptrack/optics.py) directly in numpy/scipy instead of DeepTrack2's slow
+per-particle feature-graph pipeline, so cost is independent of particle
+count.
 
 The real algorithm (deeptrack.scatterers.Sphere + optics._create_volume +
 Optics.Brightfield.get): additively stamps each particle's discretized
@@ -16,8 +15,8 @@ applies a refocus pupil and the NA-limited imaging pupil (hard aperture
 mask) before the final inverse FFT and intensity = |field|^2.
 
 This module reproduces that computation with two justified simplifications,
-both empirically checked by verification/tests/test_render_brightfield_fast_equivalence.py
-(R7 in the plan above):
+both empirically checked by
+verification/tests/test_render_brightfield_fast_equivalence.py:
 
 1. Each particle's own physical z-extent (a sphere of radius ~5 voxels at
    this dataset's radius_min/resolution) is projected into one 2-D optical-
@@ -35,14 +34,14 @@ both empirically checked by verification/tests/test_render_brightfield_fast_equi
    values at the same NA/aperture (the aperture mask is idempotent and the
    defocus phase term is linear in the defocus argument), so propagating N
    empty voxels one at a time and propagating them in one N-voxel step are
-   mathematically identical -- confirmed directly against
-   deeptrack.optics.Optics._pupil's formula.
+   mathematically identical, matching deeptrack.optics.Optics._pupil's
+   formula.
 
 The propagation also runs on a padded canvas (see _PAD's docstring below),
 matching dt.Brightfield.get()'s own padding -- not a simplification, a
-faithfulness fix found during R7 validation: without it, FFT circular-
-convolution wraparound lands directly at the true canvas edge and multi-
-particle scenes whose content reaches near the edges (which production
+faithfulness fix: without it, FFT circular-convolution wraparound lands
+directly at the true canvas edge and multi-particle scenes whose content
+reaches near the edges (which production
 density always does) diverge sharply from the real slow path.
 
 The resolved intensity also gets a small Gaussian blur before the noise
@@ -169,8 +168,8 @@ reaches near the edges (which production density always does)."""
 def _fft_fast_size(n):
     """Smallest integer >= n whose only prime factors are 2 and 3 --
     matches deeptrack.image.pad_image_to_fft's own `_FASTEST_SIZES` table
-    (regenerated here, not imported, per this module's no-deeptrack-runtime-
-    dependency KTD)."""
+    (regenerated here, not imported, since this module has no deeptrack
+    runtime dependency)."""
     x = max(int(n), 1)
     while True:
         y = x
@@ -222,9 +221,8 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None, st
 
     Signature matches every other render_frame_* strategy. Physical optics
     parameters are read from `cfg["brightfield"]` (shared with the slow
-    `render_strategy: brightfield` path -- see the plan's KTDs); fast-path-
-    only tuning (`max_particles`, `n_z_slices`) is read from
-    `cfg["brightfield_fast"]`.
+    `render_strategy: brightfield` path); fast-path-only tuning
+    (`max_particles`, `n_z_slices`) is read from `cfg["brightfield_fast"]`.
 
     Args:
         positions_lj: (N, 2) float array of particle positions in LJ units.

@@ -1,4 +1,4 @@
-"""Tests for detectors_common.defaults — U6: canonical detector defaults +
+"""Tests for detectors_common.defaults — canonical detector defaults +
 per-consumer key-path-mapped merge."""
 
 from detectors_common.defaults import load_detector_config

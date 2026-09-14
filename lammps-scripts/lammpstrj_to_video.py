@@ -28,7 +28,6 @@ def convert_trajectory_to_video(input_file, output_file=None, width=1920, height
         print(f"Error: File '{input_file}' not found.")
         return False
 
-    # Generate output filename if not provided
     if output_file is None:
         output_file = input_path.with_suffix(".avi")
     else:
@@ -37,24 +36,15 @@ def convert_trajectory_to_video(input_file, output_file=None, width=1920, height
     print(f"Converting: {input_path} -> {output_file}")
 
     try:
-        # Import the trajectory file
         pipeline = import_file(str(input_path))
-
-        # Add the pipeline to the scene first
         pipeline.add_to_scene()
-
-        # Compute the pipeline to ensure data is loaded
         pipeline.compute()
 
-        # Set up the viewport
         viewport = Viewport()
         viewport.type = Viewport.Type.Perspective
         viewport.fov = 35.0
-
-        # Zoom to fit all particles in the viewport
         viewport.zoom_all()
 
-        # Render the animation to video
         viewport.render_anim(
             filename=str(output_file), size=(width, height), renderer=TachyonRenderer(), fps=fps
         )
@@ -88,7 +78,6 @@ def process_folder(folder_path, output_dir=None, width=1920, height=1080, fps=30
         print(f"Error: '{folder_path}' is not a directory.")
         return
 
-    # Find all .lammpstrj files
     trajectory_files = list(folder.glob("*.lammpstrj"))
 
     if not trajectory_files:
@@ -97,14 +86,12 @@ def process_folder(folder_path, output_dir=None, width=1920, height=1080, fps=30
 
     print(f"Found {len(trajectory_files)} trajectory file(s)")
 
-    # Set up output directory
     if output_dir:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
     else:
         output_path = folder
 
-    # Convert each file
     success_count = 0
     for traj_file in trajectory_files:
         output_file = output_path / traj_file.with_suffix(".avi").name
@@ -164,12 +151,9 @@ Examples:
         print(f"Error: '{args.input}' not found.")
         sys.exit(1)
 
-    # Check if input is a file or directory
     if input_path.is_file():
-        # Convert single file
         convert_trajectory_to_video(input_path, args.output, args.width, args.height, args.fps)
     elif input_path.is_dir():
-        # Process all files in directory
         process_folder(input_path, args.output, args.width, args.height, args.fps)
     else:
         print(f"Error: '{args.input}' is neither a file nor a directory.")

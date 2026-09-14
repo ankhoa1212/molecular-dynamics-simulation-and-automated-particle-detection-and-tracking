@@ -190,14 +190,11 @@ class AutolabelDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.items[idx]
         if self.tif_path:
-            # Lazy read from TIFF
             tif = self._get_tif()
             frame = tif.pages[item].asarray()
         else:
-            # Read from PNG
             frame = cv2.imread(item, cv2.IMREAD_UNCHANGED)
             if frame is None:
-                # Provide a blank fallback if image is corrupt
                 frame = np.zeros((64, 64), dtype=np.uint8)
 
         # Normalization (performed on CPU workers)
@@ -357,10 +354,8 @@ def extract_and_labels(tif_path, model, args):
     for batch_norm, batch_frames, batch_indices in tqdm(
         dataloader, desc=f"Batches from {base_name}"
     ):
-        # Batch detection
         all_dets = _detect_batch(batch_norm.to(device), ctx)
 
-        # Save results
         for j in range(len(batch_indices)):
             idx = int(batch_indices[j])
             frame_dets = all_dets[j]
@@ -415,7 +410,7 @@ def process_png_frames(png_files, model, args, png_dir):
     print(f"Processing {png_dir}: {len(to_process)}/{len(png_files)} frames...")
 
     # Set up DataLoader for Async Prefetching
-    # to_process is list of (idx, path), we just need the paths for the dataset
+    # to_process is list of (idx, path); only the paths are needed for the dataset
     paths_to_process = [p for _, p in to_process]
     dataset = AutolabelDataset(paths_to_process)
     dataloader = torch.utils.data.DataLoader(
@@ -426,16 +421,14 @@ def process_png_frames(png_files, model, args, png_dir):
         pin_memory=(device == "cuda"),
     )
 
-    # We also need the original indices for filename generation
+    # Original indices are also needed, for filename generation
     indices_to_process = [i for i, _ in to_process]
 
     for b_idx, (batch_norm, batch_frames, batch_paths) in enumerate(
         tqdm(dataloader, desc=f"Batches from {base_name}")
     ):
-        # Batch detection
         all_dets = _detect_batch(batch_norm.to(device), ctx)
 
-        # Save results
         for j in range(len(batch_paths)):
             # Recover the original index
             global_idx = b_idx * args.detect_batch_size + j
@@ -520,7 +513,6 @@ def _apply_config_file(args, config_path):
 
     for key, value in config_data.items():
         current_val = getattr(args, key, None)
-        # If the current value is the default or None, overwrite it with JSON value
         if current_val is None or (key in defaults and current_val == defaults[key]):
             setattr(args, key, value)
 
@@ -529,7 +521,6 @@ def main():
     """Entry point: load model and dispatch to TIFF or PNG processing."""
     args = parse_args()
 
-    # Load from config file if provided
     if args.config:
         _apply_config_file(args, args.config)
 

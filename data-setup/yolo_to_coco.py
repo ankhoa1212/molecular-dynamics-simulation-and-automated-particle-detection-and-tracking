@@ -201,7 +201,6 @@ def main():
     if skipped:
         print(f"Warning: skipped {skipped} images with no matching label file.")
 
-    # Write output
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not args.split:

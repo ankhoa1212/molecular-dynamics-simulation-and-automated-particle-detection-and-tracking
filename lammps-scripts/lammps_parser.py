@@ -21,13 +21,11 @@ def parse_lammps_dump(filename):
                 break
 
             if "ITEM: TIMESTEP" in line:
-                # Read timestep
                 try:
                     timestep = int(dump_file.readline().strip())
                 except ValueError:
                     continue
 
-                # Read number of atoms
                 line = dump_file.readline()
                 while line and "ITEM: NUMBER OF ATOMS" not in line:
                     line = dump_file.readline()
@@ -35,7 +33,6 @@ def parse_lammps_dump(filename):
                     break
                 num_atoms = int(dump_file.readline().strip())
 
-                # Read box bounds
                 line = dump_file.readline()
                 while line and "ITEM: BOX BOUNDS" not in line:
                     line = dump_file.readline()
@@ -43,7 +40,6 @@ def parse_lammps_dump(filename):
                     break
                 box_lines = [dump_file.readline() for _ in range(3)]
 
-                # Read atoms
                 line = dump_file.readline()
                 while line and "ITEM: ATOMS" not in line:
                     line = dump_file.readline()

@@ -111,7 +111,6 @@ def main() -> None:
                 ground_truth = sv.Detections.empty()
             all_targets.append(ground_truth)
 
-        # Batch prediction
         detections_list = model.predict(batch_images, threshold=0.5)
         if isinstance(detections_list, list):
             all_predictions.extend(detections_list)

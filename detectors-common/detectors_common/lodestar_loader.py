@@ -100,7 +100,7 @@ def detect_lodestar(model, frame, threshold, device, alpha=0.5, nms_distance=Non
     # channel 2 is passed through unscaled, and empirically (lodestar_model_15) it is
     # a near-constant value across detections, not a per-particle size signal. box_size
     # is therefore the sole source of box radius, regardless of how many channels the
-    # model returns — see docs/plans/2026-08-07-001-fix-lodestar-box-sizing-plan.md.
+    # model returns.
     centers, confidences = [], []
     for det in detections_raw:
         y, x = det[0], det[1]

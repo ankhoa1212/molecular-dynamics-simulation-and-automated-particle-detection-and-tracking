@@ -11,13 +11,12 @@ The core functions (:func:`compute_track_stats`, :func:`compute_hexatic_stats`,
 multi-model comparison manifest) can reuse them in-process without shelling
 out to this CLI.
 
-Hexatic order and MSD (Implementation Unit U3) reuse existing implementations
-rather than reimplementing them: ``calc_hexatic_from_tracks`` from
+Hexatic order and MSD reuse existing implementations rather than
+reimplementing them: ``calc_hexatic_from_tracks`` from
 ``lammps-scripts/hexatic_order_analysis.py`` (needs ``freud``, which only
 lives in ``lammps-scripts/.venv``) and ``compute_msd`` from
 ``verification/compare.py``. Both are opt-in via ``--hexatic``/``--msd`` —
-a plain ``--tracks <path>`` run never attempts the cross-venv import. See
-``docs/plans/2026-07-13-001-feat-multi-model-comparison-preview-metrics-plan.md``.
+a plain ``--tracks <path>`` run never attempts the cross-venv import.
 """
 
 import argparse
@@ -170,12 +169,12 @@ def _compute_density(df, frame_width, frame_height, verbose=True):
 
 
 # ---------------------------------------------------------------------------
-# Hexatic order and MSD (U3) — opt-in, cross-venv/cross-module reuse
+# Hexatic order and MSD — opt-in, cross-venv/cross-module reuse
 # ---------------------------------------------------------------------------
 #
 # Neither function below is imported or called unless the caller explicitly
 # asks for it (CLI: --hexatic / --msd). This keeps a plain
-# `compute_track_stats()` call — including the one U4's comparison manifest
+# `compute_track_stats()` call — including the one the comparison manifest
 # makes for its stats table — free of any cross-venv sys.path mutation.
 
 
