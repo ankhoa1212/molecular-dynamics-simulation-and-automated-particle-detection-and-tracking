@@ -1,5 +1,15 @@
 # real-2um dataset-profile calibration
 
+**SUPERSEDED for wacv2027-paper's trajectory-fidelity comparison** -- see
+`real-2um-testsplit-validation-results.md`. This calibration's video ("NaCl
++ 2um PS + Au Cit 100% Light Intensity Trial 1 Redo") turned out to be
+inside RF-DETR/YOLOv12's own TRAIN split, so using it as a held-out
+real-footage test was circular (the detectors had seen ~20% of the exact
+frames being evaluated, sampled every 5th frame across the whole clip).
+The calibration itself is still accurate; it just isn't the right video
+for a train/test-independent generalization claim. Kept here for
+reference and for any future use that doesn't require held-out data.
+
 Matched-domain robustness check for the 2um->5um particle-size confound in
 `wacv2027-paper`'s cross-domain Δα comparison (see
 `docs/plans/2026-08-25-001-fix-2um-5um-domain-confound-plan.md`). Mirrors

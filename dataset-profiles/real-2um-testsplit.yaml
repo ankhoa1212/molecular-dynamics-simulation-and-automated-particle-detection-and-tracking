@@ -1,0 +1,13 @@
+size_px: 12.08
+spacing_px: 47.13
+description: >
+  Real 2um PS particle dataset -- the primary tracked-real leg for
+  wacv2027-paper's trajectory-fidelity comparison (sec:generalization),
+  replacing real-2um.yaml. That profile's video ("NaCl + 2um PS + Au Cit
+  100% Light Intensity Trial 1 Redo") is inside RF-DETR/YOLOv12's own
+  TRAIN split (rf-detr/config.yaml), so reusing it for a real-data
+  generalization claim was circular. This profile instead derives from
+  "Trial 1 100% Light Intensity_4" ("2 um Lower Concentration"), one of
+  RF-DETR/YOLOv12's two TEST-split videos, held out of training entirely.
+  See dataset-profiles/real-2um-testsplit-validation-results.md for the
+  full calibration and measured trajectory-analysis result.

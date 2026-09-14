@@ -1,0 +1,38 @@
+# real_2um_trajectory_analysis_rfdetr.yaml's clip is inside RF-DETR/YOLOv12's
+# own TRAIN split (data/2um-coco-merged/split/train/_annotations.coco.json),
+# so it can't be used as a held-out real-footage test. This config uses
+# "Trial 1 100% Light Intensity_4" instead, one of the two TEST-split videos
+# in rf-detr/config.yaml -- see dataset-profiles/real-2um-testsplit-validation-results.md.
+input: "data/raw/scratch/real_2um_test_trajectory_analysis/frames_000-150.tif"
+
+dataset_profile: ../dataset-profiles/real-2um-testsplit.yaml
+
+model:
+  type: rf-detr
+  checkpoint: ../rf-detr/checkpoints-a40/checkpoint_best_ema.pth
+  variant: large
+  num_classes: 2
+  num_queries: 300
+  device: "0"
+
+crop:
+
+tiling:
+  enabled: true
+  overlap: 100
+  nms_threshold: 0.3
+
+detection:
+  threshold: 0.3
+
+tracking:
+  tracker: trackpy
+  memory: 5
+  stub_filter: 10
+  adaptive_stop: 1.0
+  adaptive_step: 0.95
+
+output:
+  dir: output/trajectory_analysis/real_2um_test_rfdetr
+  save_video: false
+  save_trajectory_image: true
