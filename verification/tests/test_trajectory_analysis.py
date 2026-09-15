@@ -193,4 +193,4 @@ class TestRunIntegration:
         )
         assert set(result["legs"].keys()) == {"gt_synthetic", "rfdetr_synthetic"}
         assert (out_dir / "summary.json").exists()
-        assert (out_dir / "msd_comparison.png").exists()
+        assert (out_dir / "msd_comparison_legend_alpha.png").exists()
