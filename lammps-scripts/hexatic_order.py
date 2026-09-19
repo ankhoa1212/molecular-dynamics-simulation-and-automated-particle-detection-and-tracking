@@ -36,30 +36,22 @@ def draw_voronoi(points):
         if region and -1 not in region:
             polygon = [vor.vertices[i] for i in region]
             if len(region) == 4:
-                # Fills in Indigo
                 plt.fill(*zip(*polygon), facecolor="#4B0082")
             elif len(region) == 5:
-                # Fills in Cyan
                 plt.fill(*zip(*polygon), facecolor="#00FFFF")
             elif len(region) == 6:
-                # Fills in Blue
                 plt.fill(*zip(*polygon), facecolor="#0000FF")
             elif len(region) == 7:
-                # Fills in Chartreuse
                 plt.fill(*zip(*polygon), facecolor="#C1F80A")
             elif len(region) == 8:
-                # Fills in Fuchsia
                 plt.fill(*zip(*polygon), facecolor="#ED0DD9")
             elif len(region) == 9:
-                # Fills in Grey
                 plt.fill(*zip(*polygon), facecolor="#808080")
             else:
-                # Fills in Green
                 plt.fill(*zip(*polygon), facecolor="#15B01A")
 
     plt.title("Voronoi Diagram")
 
-    # Colors and labels for each polygon
     colors = ["#4B0082", "#00FFFF", "#0000FF", "#C1F80A", "#ED0DD9", "#808080", "#15B01A"]
     labels = [
         "4-sided polygon",
@@ -71,7 +63,6 @@ def draw_voronoi(points):
         "10+ sided polygon",
     ]
 
-    # Legend with the custom colors and labels
     patches = [mpatches.Patch(color=color, label=label) for color, label in zip(colors, labels)]
     plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc="upper left")
 
@@ -84,10 +75,8 @@ def hexatic_order(points):
     _, indices = neighbors_model.kneighbors(points)
 
     angle_array = []
-    # Loops through each point in points using range function
     for i in range(len(indices)):
         angle_array_row = []
-        # loops through seven nearest neighbors of the current point
         for j in range(7):
             index_neighbor = indices[i][j]
             neighbor_x = points[index_neighbor, 0]

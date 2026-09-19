@@ -1,4 +1,4 @@
-"""Tests for render.py — U1: ground-truth track export and render_strategy dispatch."""
+"""Tests for render.py — ground-truth track export and render_strategy dispatch."""
 
 import csv
 import json
@@ -118,8 +118,7 @@ class TestLjToPixels:
 
 
 # ---------------------------------------------------------------------------
-# U1: --lammps-in particle-width derivation
-# (docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-plan.md)
+# --lammps-in particle-width derivation
 # ---------------------------------------------------------------------------
 
 
@@ -195,8 +194,8 @@ class TestDerivePsfSigmaFromLammpsIn:
 
 
 class TestLammpsInCliFlag:
-    """R2: cfg["psf_sigma"] must be untouched when --lammps-in is omitted;
-    when supplied, it must be overridden before any render strategy runs."""
+    """cfg["psf_sigma"] must be untouched when --lammps-in is omitted; when
+    supplied, it must be overridden before any render strategy runs."""
 
     def test_omitted_flag_leaves_psf_sigma_untouched(self, render_module, tmp_path, monkeypatch):
         cfg_path = _minimal_cfg(tmp_path)
@@ -480,7 +479,7 @@ class TestGroundTruthTracksCSV:
 
 
 # ---------------------------------------------------------------------------
-# --video flag (docs/plans/2026-07-22-003-feat-frames-to-video-plan.md U2)
+# --video flag
 # ---------------------------------------------------------------------------
 
 
@@ -555,7 +554,7 @@ class TestRenderStrategyDispatch:
         assert frame.dtype == np.uint16
 
     def test_procedural_strategy_ring_active_through_dispatch(self, render_module):
-        """U2 integration coverage: the procedural path dispatched through
+        """Integration coverage: the procedural path dispatched through
         _dispatch_render (not just a direct render_frame call) produces a
         core-plus-ring profile — a dark annulus around radius_factor*sigma
         that is much darker than the bright core — using the documented
@@ -585,7 +584,7 @@ class TestRenderStrategyDispatch:
         assert ring_mean < 0.3 * core_mean
 
     def test_brightfield_fast_strategy_produces_uint16(self, render_module):
-        """U2 happy path: brightfield_fast dispatches to
+        """Happy path: brightfield_fast dispatches to
         render_frame_brightfield_fast and produces an output frame, with no
         deeptrack dependency required."""
         positions = np.array([[5.0, 5.0]])
@@ -661,7 +660,7 @@ class TestRenderStrategyDispatch:
     def test_brightfield_fast_strategy_missing_module_raises_clear_error(
         self, render_module, monkeypatch
     ):
-        """U2 error path: if render_brightfield_fast.py is unimportable, the
+        """Error path: if render_brightfield_fast.py is unimportable, the
         dispatch raises a clear, strategy-specific error that references its
         own module -- not deeptrack, since brightfield_fast has no deeptrack
         dependency."""
@@ -822,8 +821,8 @@ class TestGaussianRingProfileExtraction:
 
 
 class TestDiskRimProfile:
-    """Task 2: the disk-core-plus-dark-rim shape that fixes touching-particle
-    merging (docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md)."""
+    """The disk-core-plus-dark-rim shape that fixes touching-particle
+    merging."""
 
     def test_center_is_near_full_brightness(self, render_module):
         r_grid = np.array([0.0])
@@ -881,10 +880,9 @@ class TestDiskRimProfile:
 
 
 class TestBackgroundFractionCanvas:
-    """Task 1: render_frame's canvas baseline, sized as a fraction of
-    peak_intensity so it reads as gray after render.py main()'s per-frame
-    min/max PNG stretch (see docs/superpowers/specs/2026-08-07-gray-
-    background-default-design.md)."""
+    """render_frame's canvas baseline, sized as a fraction of peak_intensity
+    so it reads as gray after render.py main()'s per-frame min/max PNG
+    stretch."""
 
     def test_background_fraction_raises_empty_frame_baseline(self, render_module):
         cfg = _procedural_cfg(32, 32, sigma=3.0, peak=1000, background_fraction=0.25)
@@ -1185,7 +1183,7 @@ class TestDispatchRenderProfileMap:
 
 
 class TestProceduralRingProfile:
-    """R3/R4: render_frame's per-particle stamp is a core-plus-ring
+    """render_frame's per-particle stamp is a core-plus-ring
     difference-of-Gaussians, not a pure Gaussian, evaluated over an explicit
     2D radius grid (not the core's separable outer-product form)."""
 
@@ -1222,13 +1220,13 @@ class TestProceduralRingProfile:
         assert far_mean < 0.05 * peak_val
 
     def test_ring_is_invariant_under_90_degree_rotation(self, render_module):
-        """R3: the ring must be evaluated over a true 2D radius grid, not the
+        """The ring must be evaluated over a true 2D radius grid, not the
         core's separable outer-product form -- a separable/outer-product
         implementation of the ring term is not rotationally symmetric about
-        the particle center in general (confirmed directly: a naive
-        generalization of the core's np.outer(gy, gx) pattern to the ring
-        term -- np.outer(gy_ring, gx_ring) -- concentrates its artifact in
-        one quadrant rather than distributing it around a circle, breaking
+        the particle center in general (a naive generalization of the
+        core's np.outer(gy, gx) pattern to the ring term --
+        np.outer(gy_ring, gx_ring) -- concentrates its artifact in one
+        quadrant rather than distributing it around a circle, breaking
         90-degree rotational symmetry, while radius-binned/angle-averaged
         profile checks and even direct same-radius multi-angle sampling can
         both fail to catch this depending on exactly where the artifact
@@ -1291,13 +1289,12 @@ class TestProceduralRingProfile:
 
 
 class TestRingClipBeforePoisson:
-    """R5: the ring's negative dip must be clipped to non-negative values
-    before rng.poisson is invoked, or numpy.random.Generator.poisson raises
-    ValueError on negative input. Confirmed directly (red) against this
-    plan's implementation before the `img = np.clip(img, 0, None)` fix was
-    added: representative ring parameters against peak_intensity=40000
-    produce a stamped value around -6,500 ADU at the ring's trough, and
-    rng.poisson(negative) raises `ValueError: lam < 0 or lam contains NaNs`."""
+    """The ring's negative dip must be clipped to non-negative values before
+    rng.poisson is invoked, or numpy.random.Generator.poisson raises
+    ValueError on negative input: representative ring parameters against
+    peak_intensity=40000 produce a stamped value around -6,500 ADU at the
+    ring's trough, and rng.poisson(negative) raises `ValueError: lam < 0 or
+    lam contains NaNs`."""
 
     def test_shot_noise_with_ring_completes_without_valueerror(self, render_module):
         H, W = 128, 128
@@ -1390,19 +1387,17 @@ class TestProceduralRingEdgeCases:
         assert frame.max() > 0.3 * 40000
 
     def test_particles_stay_distinct_at_measured_dataset_spacing(self, render_module):
-        """2026-08-08: the default ring geometry (radius_factor: 1.0) is
-        sized against continuous_force_1500_5.0.lammpstrj's own measured
-        nearest-neighbor spacing (~10.9px median at this sigma/image size,
-        i.e. ~2.2*sigma) so that at typical real spacing, two particles'
-        rings stay local to their own cores instead of interconnecting into
-        a continuous dark mesh -- confirmed directly against the real
-        trajectory (see config.yaml's ring: comment). Two particles placed
-        at that measured typical spacing must show a midpoint that reads
+        """The default ring geometry (radius_factor: 1.0) is sized against
+        continuous_force_1500_5.0.lammpstrj's own measured nearest-neighbor
+        spacing (~10.9px median at this sigma/image size, i.e. ~2.2*sigma)
+        so that at typical real spacing, two particles' rings stay local to
+        their own cores instead of interconnecting into a continuous dark
+        mesh (see config.yaml's ring: comment). Two particles placed at
+        that measured typical spacing must show a midpoint that reads
         closer to background (light) than to the ring's own dark trough --
         the old radius_factor: 2.2 default put the ring almost exactly on
         top of a neighbor at this spacing, which this regression guards
-        against. See docs/superpowers/specs/2026-08-08-tight-ring-and-
-        fixed-stretch-design.md."""
+        against."""
         H, W = 80, 40
         sigma = 5.0
         peak = 40000
@@ -1434,14 +1429,13 @@ class TestProceduralRingEdgeCases:
 
 
 class TestStampWinnerTakeAllCompositing:
-    """2026-08-08: _stamp's `deviation` buffer (render.py:242-256) composites
-    overlapping particle stamps by picking whichever has the larger
-    |contribution| at each pixel, instead of summing via `img += intensity(...)`.
-    Real opaque/reflective particles don't add brightness where they overlap,
-    so this bounds a composited pixel to the single most-prominent stamp
+    """_stamp's `deviation` buffer (render.py:242-256) composites overlapping
+    particle stamps by picking whichever has the larger |contribution| at
+    each pixel, instead of summing via `img += intensity(...)`. Real
+    opaque/reflective particles don't add brightness where they overlap, so
+    this bounds a composited pixel to the single most-prominent stamp
     touching it rather than letting overlapping bright cores pile into a
-    blob brighter than any one particle. See
-    docs/superpowers/specs/2026-08-07-no-blob-merging-design.md."""
+    blob brighter than any one particle."""
 
     # Pure Gaussian core, no ring dip -- isolates the compositing mechanism
     # from the ring's separate negative-deviation behavior.
@@ -1491,14 +1485,14 @@ class TestStampWinnerTakeAllCompositing:
 
 
 # ---------------------------------------------------------------------------
-# U3: background noise visibility (R6/R7)
+# Background noise visibility
 # ---------------------------------------------------------------------------
 
 
 def _load_synthetic_config():
     """Load the real `synthetic` block from verification/config.yaml.
 
-    Regression coverage for R6/R7 is tied to the actual shipped config
+    Regression coverage here is tied to the actual shipped config
     defaults, not a hardcoded test-local magnitude that could silently
     drift from config.yaml -- if someone lowers readout_noise back toward
     the old invisible-noise default, these tests should catch it.
@@ -1541,17 +1535,16 @@ def _render_background_region(
 
 
 class TestBackgroundNoiseVisibility:
-    """R6/R7: readout_noise's magnitude must survive render.py's existing
-    per-frame min/max 8-bit PNG stretch (main()'s `(img-lo)/(hi-lo)*255`)
-    instead of being crushed to exactly 0. Confirmed (red) against the old
-    readout_noise: 15.0 default: >50% of a real rendered frame's pixels
-    were exactly 0.0 at the 50th percentile after this stretch. See
-    docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-plan.md U3."""
+    """readout_noise's magnitude must survive render.py's existing per-frame
+    min/max 8-bit PNG stretch (main()'s `(img-lo)/(hi-lo)*255`) instead of
+    being crushed to exactly 0: at the old readout_noise: 15.0 default,
+    >50% of a real rendered frame's pixels were exactly 0.0 at the 50th
+    percentile after this stretch."""
 
     def test_config_yaml_readout_noise_raised_to_visible_scale(self):
         """config.yaml's defaults must actually be at the new order-of-
-        magnitude (~150-300 ADU) called for by the plan, not just any
-        nonzero bump -- guards against the calibration regressing quietly."""
+        magnitude (~150-300 ADU), not just any nonzero bump -- guards
+        against the calibration regressing quietly."""
         synth = _load_synthetic_config()
         assert synth["readout_noise"] >= 100.0
 
@@ -1766,13 +1759,11 @@ class TestParticleRenderProfilesWiring:
 
 
 class TestFixedStretchReference:
-    """2026-08-08: main()'s 8-bit PNG stretch (_stretch_to_uint8) uses a
-    fixed lo=0/hi (derived from peak_intensity/background_fraction) instead
-    of that frame's own observed min/max, so a constant-sized particle
-    doesn't appear to shrink/expand between frames purely because noise or
-    particle count shifted that frame's own max. See
-    docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-
-    design.md."""
+    """main()'s 8-bit PNG stretch (_stretch_to_uint8) uses a fixed lo=0/hi
+    (derived from peak_intensity/background_fraction) instead of that
+    frame's own observed min/max, so a constant-sized particle doesn't
+    appear to shrink/expand between frames purely because noise or
+    particle count shifted that frame's own max."""
 
     def test_same_raw_value_maps_identically_regardless_of_frame_max(self, render_module):
         """Two uint16 arrays sharing one pixel's raw value but with very

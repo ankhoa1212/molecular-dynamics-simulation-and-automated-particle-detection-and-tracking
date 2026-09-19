@@ -388,8 +388,7 @@ def calibrate_brightfield(
         # intentionally produce one monodisperse value per candidate) --
         # defocus needs a genuine spread for render_strategy: brightfield_fast's
         # z-bucketing to have anything to exercise once this feeds production
-        # config. See docs/plans/2026-08-16-001-feat-brightfield-fast-
-        # render-path-plan.md's U4 KTD.
+        # config.
         "z_range_px": (-15.0, 15.0),
     }
     # LodeSTAR crops (this function's real-world real_frames target) are

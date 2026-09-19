@@ -118,7 +118,7 @@ def build_comparison_table(physics: dict, random_cond: dict) -> list[dict]:
     All numeric keys present in both input dicts appear in the output.
     Keys present in only one dict are omitted from delta (treated as missing).
     """
-    # Numeric columns: union of keys from both dicts, excluding 'condition'
+    # Numeric columns: keys present in both dicts, excluding 'condition'
     numeric_keys = [k for k in physics if k != "condition" and k in random_cond]
 
     physics_row = {"condition": "physics", **{k: physics[k] for k in numeric_keys}}
@@ -148,7 +148,6 @@ def _print_table(table: list[dict], columns: list[str]) -> None:
 
     Header includes the sign convention note: delta = random − physics.
     """
-    # Build header labels
     header_labels = {"condition": "condition"}
     for col in columns:
         header_labels[col] = col
@@ -166,18 +165,14 @@ def _print_table(table: list[dict], columns: list[str]) -> None:
             width = max(width, len(str(cell)))
         col_widths[col] = width + 2  # padding
 
-    # Print sign convention note
     print("# delta = random − physics  (positive = random better, negative = physics better)")
     print()
 
-    # Header row
     header = "".join(header_labels.get(col, col).ljust(col_widths[col]) for col in all_cols)
     print(header.rstrip())
 
-    # Separator
     print("-" * len(header.rstrip()))
 
-    # Data rows
     for row in table:
         line = ""
         for col in all_cols:
@@ -248,7 +243,6 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Summarize both conditions
     physics_metrics = summarize(physics_path)
     random_metrics = summarize(random_path)
 
@@ -261,7 +255,6 @@ def main() -> None:
     if random_tracking:
         random_metrics.update(random_tracking)
 
-    # Build the comparison table
     table = build_comparison_table(physics_metrics, random_metrics)
 
     # Determine the set of numeric columns (in a stable order)
@@ -272,10 +265,8 @@ def main() -> None:
     # Only include columns present in both physics and random rows
     columns = [col for col in all_possible if col in physics_metrics and col in random_metrics]
 
-    # Print to stdout
     _print_table(table, columns)
 
-    # Write comparison_table.csv to the current working directory
     out_path = Path("comparison_table.csv")
     _write_csv(table, columns, out_path)
     print(f"\nWrote: {out_path.resolve()}")

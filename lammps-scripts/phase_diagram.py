@@ -78,7 +78,6 @@ def collect_phase_data(filenames, verbose):
                 print(f"Skipping invalid filename: {fname}")
             continue
 
-        # Use your existing function to get timesteps and psi6 values
         _, values = parse_and_calc_hexatic(fname, verbose)
 
         if not values:
@@ -86,7 +85,7 @@ def collect_phase_data(filenames, verbose):
                 print(f"No data found in: {fname}")
             continue
 
-        # We take the mean of the last frame to represent the "stable" state
+        # Mean of the last frame represents the "stable" state
         final_frame_psi6 = np.mean(values[-1])
 
         epsilons.append(eps)
@@ -120,20 +119,26 @@ def generate_stability_plot(data_dir, pattern, verbose):
     if verbose:
         print(f"Saved grid data to {csv_path}")
 
-    # Get max values
     max_epsilon = max(epsilons) * 1.05  # add 5% buffer to graph
     max_molecules = max(num_molecules) * 1.05  # add 5% buffer to graph
 
-    # Plotting
+    # WACV reviewer guidance on color vision deficiency: color must not be
+    # the only discriminative feature. RdYlGn is a textbook worst case for
+    # red-green colorblindness (~8% of male readers); cividis is a
+    # perceptually-uniform sequential map designed to remain legible under
+    # the common forms of CVD. Marker size, scaled with the value itself,
+    # is the second, non-color feature -- higher order shows as a visibly
+    # larger point, independent of the color channel entirely.
     plt.figure(figsize=(10, 7))
+    marker_sizes = [40 + 220 * v for v in _avg_psi6]
     scatter = plt.scatter(
         epsilons,
         num_molecules,
         c=_avg_psi6,
-        cmap="RdYlGn",
-        s=100,
+        cmap="cividis",
+        s=marker_sizes,
         edgecolor="black",
-        alpha=0.8,
+        alpha=0.85,
         vmin=0,
         vmax=1,
     )
@@ -156,7 +161,6 @@ if __name__ == "__main__":
     PARSER = argparse.ArgumentParser(
         description="Generate hexatic order phase diagram from LAMMPS trajectory files."
     )
-    # REQUIRED unless --test is given -- no default, pass your own data folder.
     PARSER.add_argument(
         "data_dir",
         nargs="?",

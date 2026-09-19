@@ -1,5 +1,4 @@
-"""Fast-vs-slow equivalence tests for render_brightfield_fast.py (R7, R8 in
-docs/plans/2026-08-16-001-feat-brightfield-fast-render-path-plan.md).
+"""Fast-vs-slow equivalence tests for render_brightfield_fast.py.
 
 Compares render_frame_brightfield_fast against the real, deeptrack-backed
 render_frame_brightfield at particle counts the slow path can still complete
@@ -7,33 +6,24 @@ in test time (N=1-45), via compare_renders.compute_ssim_similarity. Requires
 a real deeptrack install (pytest.importorskip below) -- there is no mocked
 path here, since the whole point is validating against genuine physics.
 
-SSIM threshold: this module pins **SSIM >= 0.7**, matching the plan's
-original placeholder (arrived at independently, not just reused). The
-threshold has moved twice since: down to 0.35 once real multi-particle
-scenes were measured after fixing an FFT-padding bug and a magnification
-bug (see render_brightfield_fast.py's module docstring and
-render_brightfield.py's _resolve_brightfield_intensity docstring), then
-back up to a real 0.7 once two more things were fixed:
+SSIM threshold: this module pins **SSIM >= 0.7**. Two things make that
+meaningful:
 
-1. render_brightfield.py/render_brightfield_fast.py both now apply
+1. render_brightfield.py/render_brightfield_fast.py both apply
    _apply_partial_coherence_blur to the resolved intensity, suppressing
    the multi-ring Airy diffraction pattern real reference images
    (data-setup/models/lodestar_model_15/, lodestar_model_10/ crops) don't
-   show -- this incidentally also removed a real source of fast-vs-slow
-   disagreement (the exact ring structure was one of the harder things to
-   match pixel-for-pixel), substantially improving true equivalence.
-2. `_ssim_for` below now renders through `_NoShotNoiseRNG`, neutralizing
+   show -- this also removes a real source of fast-vs-slow disagreement,
+   since matching the exact ring structure pixel-for-pixel is hard.
+2. `_ssim_for` below renders through `_NoShotNoiseRNG`, neutralizing
    Poisson shot noise so the comparison measures structure, not two
-   independent per-path noise realizations -- the blur's reduced signal
-   contrast made uncontrolled shot noise dominate the un-neutralized score
-   entirely (N=1 in-focus measured SSIM 0.25 noisy vs 0.99 neutralized).
+   independent per-path noise realizations.
 
 With both applied, real measured SSIM is 0.99+ for single particles and
 0.79-0.87 for realistic (non-touching, production-scale) multi-particle
-scenes -- a real, honest improvement over the earlier 0.32-0.46 floor, not
-just a re-derivation of the same numbers under a different metric. 0.7 is
-set below the lowest observed measurement (0.79, N=20 in-focus) rather than
-at the average, so the gate stays meaningful against genuine regressions.
+scenes. 0.7 is set below the lowest observed measurement (0.79, N=20
+in-focus) rather than at the average, so the gate stays meaningful against
+genuine regressions.
 
 Uniform-random positions are deliberately NOT used for the N=20 scenarios:
 coherent interference is chaotic near-degenerate configurations, and random
@@ -42,7 +32,7 @@ real LAMMPS trajectory data never would (particles stay separated by their
 interaction potential's excluded volume). _non_overlapping_positions below
 enforces a minimum separation, matching that real-data property, while the
 dedicated dense-cluster scenario (N=45) deliberately tests the
-touching/overlapping case R2 claims to handle.
+touching/overlapping case.
 """
 
 import sys
@@ -150,7 +140,7 @@ def _ssim_for(positions, cfg, seed):
 
 class TestSingleParticleEquivalence:
     def test_in_focus(self):
-        positions = np.array([[50.37, 50.82]])  # non-integer, per R7's subpixel requirement
+        positions = np.array([[50.37, 50.82]])  # non-integer, to exercise subpixel placement
         ssim = _ssim_for(positions, _cfg(), seed=10)
         assert ssim >= SSIM_THRESHOLD
 
@@ -173,7 +163,7 @@ class TestMultiParticleEquivalence:
         assert ssim >= SSIM_THRESHOLD
 
     def test_dense_touching_cluster_n45(self):
-        """Directly exercises R2's overlap-handling claim: 45 particles
+        """Directly exercises the fast path's overlap-handling: 45 particles
         packed into a small region (heavy footprint overlap given this
         dataset's ~5px particle radius), near the slow path's own
         practical N ceiling."""
@@ -187,8 +177,8 @@ class TestZBucketGranularityDiagnostic:
     """Diagnostic (not a pass/fail correctness gate): confirms that
     increasing n_z_slices does not blow up the defocused SSIM, i.e. any
     gap between fast and slow in the defocused case is a K/voxel-
-    granularity mismatch (documented KTD in render_brightfield_fast.py),
-    not a coarse-K implementation bug. See module docstring for how this
+    granularity mismatch, not a coarse-K implementation bug. See module
+    docstring for how this
     was used to help interpret the pinned threshold above."""
 
     def test_ssim_does_not_collapse_as_k_increases(self):
@@ -199,7 +189,7 @@ class TestZBucketGranularityDiagnostic:
 
 
 class TestProductionDensitySanity:
-    """R8: one full-density (~1446-particle) frame renders without NaN/Inf
+    """One full-density (~1446-particle) frame renders without NaN/Inf
     and completes in a time the implementer judges practical. There is no
     slow-path baseline at this density to assert equivalence against --
     this is a one-time manual/CI sanity gate, not an automated

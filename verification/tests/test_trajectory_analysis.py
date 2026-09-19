@@ -1,7 +1,4 @@
-"""Tests for trajectory_analysis.py.
-
-See docs/plans/2026-08-21-001-feat-trajectory-analysis-sim-real-validation-plan.md, U5.
-"""
+"""Tests for trajectory_analysis.py."""
 
 import sys
 from pathlib import Path
@@ -196,4 +193,4 @@ class TestRunIntegration:
         )
         assert set(result["legs"].keys()) == {"gt_synthetic", "rfdetr_synthetic"}
         assert (out_dir / "summary.json").exists()
-        assert (out_dir / "msd_comparison.png").exists()
+        assert (out_dir / "msd_comparison_legend_alpha.png").exists()

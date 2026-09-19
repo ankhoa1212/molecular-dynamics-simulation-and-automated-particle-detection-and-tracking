@@ -197,8 +197,7 @@ def _disk_rim_profile(
     two Gaussian cores of comparable width -- summing two of these under
     plain additive compositing does not overshoot the way two overlapping
     Gaussian tails do. The rim gives touching particles a visible seam
-    rather than a flat continuous plateau. See
-    docs/superpowers/specs/2026-07-23-particle-render-profiles-design.md.
+    rather than a flat continuous plateau.
     """
     flat_top = 0.5 * (1 - erf((r_grid - disk_radius_px) / (np.sqrt(2) * blur_sigma_px)))
     if rim_depth > 0 and rim_width_px > 0:
@@ -300,8 +299,7 @@ def render_frame(positions_lj, box, cfg, rng, atom_ids=None, profile_map=None):
     # brightness where they overlap -- whichever one is locally most
     # prominent (furthest from background, in either direction) is what's
     # visible there, so each stamp competes on |deviation| and the
-    # larger-magnitude one wins that pixel outright. See
-    # docs/superpowers/specs/2026-08-07-no-blob-merging-design.md.
+    # larger-magnitude one wins that pixel outright.
     deviation = np.zeros((H, W), dtype=np.float64)
 
     def _stamp(cx, cy, extent, intensity):
@@ -531,8 +529,7 @@ def _stretch_to_uint8(img, cfg):
     peak_intensity/background_fraction when the strategy exposes them
     (procedural) -- the same fixed reference for every frame in the run,
     regardless of that frame's own noise or particle count/overlap --
-    falling back to this frame's own max otherwise. See
-    docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-design.md.
+    falling back to this frame's own max otherwise.
     """
     img_f = img.astype(np.float32)
     lo = 0.0
@@ -680,13 +677,6 @@ def main():
         # *this frame's own* observed min/max -- silently overriding
         # _stretch_to_uint8's fixed-reference computation and reintroducing
         # exactly the frame-to-frame drift that function exists to prevent.
-        # Confirmed directly: two uint8 arrays sharing a pixel value of 128
-        # but with different own-maxima (200 vs 255) round-tripped through
-        # imsave(cmap="gray") with no vmin/vmax read back as 0 and 0 --
-        # neither matching the literal value written -- until vmin=0/vmax=255
-        # was added, after which both correctly read back as 128. See
-        # docs/superpowers/specs/2026-08-08-tight-ring-and-fixed-stretch-
-        # design.md.
         mplimg.imsave(str(png_path), img8, cmap="gray", vmin=0, vmax=255)
 
         H, W = cfg["image_height"], cfg["image_width"]

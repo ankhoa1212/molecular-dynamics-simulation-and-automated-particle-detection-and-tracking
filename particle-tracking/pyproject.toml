@@ -7,7 +7,9 @@ dependencies = [
     "pyyaml>=6.0",
     "opencv-python>=4.9.0",
     "numpy>=1.26.0",
-    "pandas>=2.0.0",
+    # <3 pins to the same major version as rf-detr/.venv and verification/.venv --
+    # see verification/pyproject.toml's pandas constraint comment for why.
+    "pandas>=2.0.0,<3",
     "tifffile>=2024.1.1",
     "pillow>=10.0.0",
     "tqdm>=4.66.0",

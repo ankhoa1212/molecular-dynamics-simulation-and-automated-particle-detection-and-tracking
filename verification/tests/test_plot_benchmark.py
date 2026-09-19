@@ -2,8 +2,7 @@
 comparison figure (benchmark_comparison.png) and the run-level 4-way summary
 figure (benchmark_summary.png).
 
-docs/plans/2026-08-18-001-feat-bytetrack-tracking-support-plan.md U6 test
-scenarios:
+Scenarios covered:
 - two tracker CSVs present for one model_type produce two bars (one per
   tracker) in the tracking bar panel, plus a two-row stdout entry
 - only one tracker CSV present for a model_type produces one bar without

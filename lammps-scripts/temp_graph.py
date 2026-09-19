@@ -18,7 +18,6 @@ def generate_temp_graph_filename(filename, ending, output_dir=None):
     """
     Generates a consistent output filename for the temperature graph.
     """
-    # Get base filename without extension
     base_name = os.path.basename(filename)
     if "." in base_name:
         base_name = base_name[: base_name.rfind(".")]
@@ -57,11 +56,9 @@ def plot_log_temperature(filename, output_dir=None, no_show=False):
 
                 if reading_data:
                     parts = line.split()
-                    # Ensure line is data (numbers) and not empty
                     if len(parts) > 1 and parts[0].isdigit():
                         try:
-                            # Typically Step is Col 0, Temp is Col 1
-                            # Based on: thermo_style custom step temp ...
+                            # Step is col 0, Temp is col 1, per thermo_style custom step temp ...
                             step = int(parts[0])
                             temp = float(parts[1])
                             steps.append(step)
@@ -76,7 +73,6 @@ def plot_log_temperature(filename, output_dir=None, no_show=False):
         print("No temperature data found. Did you point to the correct .log file?")
         sys.exit(1)
 
-    # Plotting
     plt.figure(figsize=(10, 6))
     plt.plot(steps, temps, color="blue", linewidth=2.0, label="LAMMPS Temp")
 
@@ -131,13 +127,10 @@ def _compute_frame_temperature(x, y, vx, vy, num_atoms):
     """
     v_rad, vel_sq, vel_tan_sq = _compute_radial_projection(x, y, vx, vy)
 
-    # --- 2. Calculate "Standard" Total Temperature ---
-    # Raw KE = 0.5 * m * (vx^2 + vy^2)
-    # T = Sum(v^2) / (2 * N)  [2 Degrees of Freedom]
+    # Raw KE = 0.5 * m * (vx^2 + vy^2); T = Sum(v^2) / (2 * N) [2 degrees of freedom]
     total_temp = np.sum(vel_sq) / (2.0 * num_atoms)
 
-    # --- 3. Calculate Drift-Corrected Temperature ---
-    # Calculate the Mean Radial Velocity (The "Bulk Implosion Speed")
+    # Mean radial velocity is the bulk implosion speed
     mean_v_rad = np.mean(v_rad)
 
     # Subtract this coherent drift from every atom's radial velocity
@@ -185,10 +178,8 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
         print("No valid temperature data found.")
         return
 
-    # Plotting
     plt.figure(figsize=(10, 6))
 
-    # Plot Standard Total Temp
     plt.plot(
         timesteps,
         total_temps,
@@ -198,7 +189,6 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
         label="Raw Total Temp (Includes Force Work)",
     )
 
-    # Plot Corrected Temp
     plt.plot(
         timesteps,
         corrected_temps,
@@ -224,7 +214,6 @@ if __name__ == "__main__":
     PARSER = argparse.ArgumentParser(
         description="Plot drift-corrected temperature from LAMMPS trajectory"
     )
-    # REQUIRED: no default -- pass the path to your own .log/.lammpstrj file.
     PARSER.add_argument(
         "--filename", "-f", required=True, help="Path to a .log or .lammpstrj file (required)"
     )

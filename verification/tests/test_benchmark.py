@@ -1,5 +1,5 @@
-"""Tests for benchmark.py — U6: tracking metrics (MOTA/IDF1/fragmentation);
-U1-U3: LodeSTAR model-type support."""
+"""Tests for benchmark.py — tracking metrics (MOTA/IDF1/fragmentation) and
+LodeSTAR model-type support."""
 
 import ast
 import csv
@@ -22,7 +22,7 @@ import supervision as _sv_preload  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Regression guard for U1: importing benchmark.py must never trigger the
+# Regression guard: importing benchmark.py must never trigger the
 # cross-venv re-exec (os.execv would replace this pytest process). If the
 # guard regresses, this import itself hangs/crashes rather than any
 # individual assertion failing below.
@@ -342,7 +342,6 @@ class TestRunBytetrackMetrics:
 
 # ---------------------------------------------------------------------------
 # _run_tracking_metrics — per-model canonical tracking-tuning resolution
-# (2026-08-05 tracking-linker-parity plan: R3/R5/R6)
 # ---------------------------------------------------------------------------
 
 
@@ -411,7 +410,7 @@ class TestPerModelTrackingDefaults:
     def test_config_yaml_override_still_wins_over_canonical_default(self, tmp_path):
         # An explicit tracking.stub_filter in cfg (operator override) must
         # still take precedence over rf-detr's canonical 90 -- same override
-        # capability operators had before this change (R5).
+        # capability operators had before this change.
         gt_rows, detections = _single_stationary_particle_gt_and_detections(3)
         gt_path = tmp_path / "gt.csv"
         _write_gt_tracks(gt_path, gt_rows)
@@ -438,7 +437,7 @@ class TestPerModelTrackingDefaults:
 
 
 # ---------------------------------------------------------------------------
-# _run_bytetrack_metrics — U5: --tracker bytetrack tracking-metrics path
+# _run_bytetrack_metrics — --tracker bytetrack tracking-metrics path
 # ---------------------------------------------------------------------------
 
 
@@ -470,7 +469,7 @@ class TestRunBytetrackMetrics:
     """Parallel coverage to TestRunTrackingMetrics, for the --tracker
     bytetrack path. Deliberately avoids asserting on ByteTrack's exact
     confirmation-frame arithmetic (which differs by installed supervision
-    version -- see trackers-common's own U4 fix) -- assertions here stay
+    version) -- assertions here stay
     structural (non-null metrics, correct skip/degrade behavior), not tied
     to a specific frame-by-frame confirmation timing."""
 
@@ -597,7 +596,7 @@ class TestRunBytetrackMetrics:
 
 
 class TestBytetrackTuningDefaults:
-    """R5/R9: ByteTrack's lost_track_buffer/minimum_consecutive_frames/
+    """ByteTrack's lost_track_buffer/minimum_consecutive_frames/
     track_activation_threshold resolve through trackers_common.defaults the
     same way trackpy's search_range/memory/stub_filter already do."""
 
@@ -643,9 +642,9 @@ class TestBytetrackTuningDefaults:
         assert tuning["track_activation_threshold"] == pytest.approx(0.4)
 
     def test_trackpy_model_type_uses_own_divergent_tuning(self, tmp_path):
-        # trackpy's own sweep (2026-08-19) found minimum_consecutive_frames=3
-        # measurably better than rf-detr/yolo's mcf=1 optimum -- it has its
-        # own explicit tracker_defaults.yaml entry now, not a fallback.
+        # trackpy's own tuning found minimum_consecutive_frames=3 measurably
+        # better than rf-detr/yolo's mcf=1 optimum -- it has its own
+        # explicit tracker_defaults.yaml entry, not a fallback.
         gt_rows, all_boxes = _single_stationary_particle_gt_and_boxes(3)
         gt_path = tmp_path / "gt.csv"
         _write_gt_tracks(gt_path, gt_rows)
@@ -713,7 +712,7 @@ class TestBytetrackFrameGapOrdering:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_model_type — U1: pre-argparse model-type sniffing
+# _resolve_model_type — pre-argparse model-type sniffing
 # ---------------------------------------------------------------------------
 
 
@@ -725,7 +724,7 @@ class TestResolveModelType:
     def test_default_config_path_is_script_dir_anchored_not_cwd_relative(
         self, tmp_path, monkeypatch
     ):
-        """U7: --config's default (and this pre-parse's fallback, which must
+        """--config's default (and this pre-parse's fallback, which must
         stay consistent with it) resolves relative to SCRIPT_DIR, matching
         particle-tracking/track.py — not the caller's cwd. Proven by chdir-ing
         elsewhere and confirming a SCRIPT_DIR-anchored config.yaml still
@@ -768,7 +767,7 @@ class TestResolveModelType:
 
 
 # ---------------------------------------------------------------------------
-# _reexec_for_model_venv — U1: model-type-aware venv/site-packages selection
+# _reexec_for_model_venv — model-type-aware venv/site-packages selection
 # ---------------------------------------------------------------------------
 
 
@@ -930,7 +929,7 @@ class TestGetLodestarModelWrapper:
 
 class TestLoadLodestarDefaultsWrapper:
     def test_delegates_to_shared_merge_with_benchmark_lodestar_key_map(self):
-        """U6: proves _load_lodestar_defaults calls through to the real
+        """Proves _load_lodestar_defaults calls through to the real
         detectors_common.defaults.load_detector_config with the correct
         model_type and key_path_map — the TestMainModelTypeWiring tests all
         stub this function's return value directly, so nothing else in this
@@ -1074,7 +1073,7 @@ class TestModelTypeChoices:
 
 
 # ---------------------------------------------------------------------------
-# main() — U3: --model-type wiring through main() and config
+# main() — --model-type wiring through main() and config
 # ---------------------------------------------------------------------------
 
 
@@ -1490,7 +1489,7 @@ class TestMainModelTypeWiring:
 
 
 # ---------------------------------------------------------------------------
-# main() — U5: --tracker {trackpy,bytetrack} dispatch and output filenames
+# main() — --tracker {trackpy,bytetrack} dispatch and output filenames
 # ---------------------------------------------------------------------------
 
 
@@ -1509,7 +1508,7 @@ def _fixed_result_dict(mota):
 
 
 class TestMainTrackerDispatch:
-    """--tracker {trackpy,bytetrack} routing in main() -- R6/R7/AE1-AE3."""
+    """--tracker {trackpy,bytetrack} routing in main()."""
 
     def _rf_detr_argv(self, tmp_path, monkeypatch, tracker):
         frames_dir = tmp_path / "frames"
@@ -1558,7 +1557,7 @@ class TestMainTrackerDispatch:
         return fake_rfdetr_model
 
     def test_bytetrack_tracker_writes_suffixed_csv_with_real_metrics(self, tmp_path, monkeypatch):
-        """AE1: --tracker bytetrack --model-type rf-detr writes
+        """--tracker bytetrack --model-type rf-detr writes
         tracking_metrics_rf-detr_bytetrack.csv with non-null MOTA/IDF1."""
         monkeypatch.chdir(tmp_path)
         fake_rfdetr_model = self._rf_detr_argv(tmp_path, monkeypatch, "bytetrack")
@@ -1574,7 +1573,7 @@ class TestMainTrackerDispatch:
         assert row["idf1"] not in (None, "")
 
     def test_both_trackers_coexist_for_same_model(self, tmp_path, monkeypatch):
-        """AE2: a prior --tracker trackpy run's output file must still exist,
+        """A prior --tracker trackpy run's output file must still exist,
         unmodified in name, after a subsequent --tracker bytetrack run for the
         same --model-type -- neither overwrites the other."""
         monkeypatch.chdir(tmp_path)
@@ -1608,9 +1607,9 @@ class TestMainTrackerDispatch:
     def test_trackpy_detector_with_bytetrack_tracker_completes_without_raising(
         self, tmp_path, monkeypatch
     ):
-        """AE3: --model-type trackpy --tracker bytetrack previously raised
+        """--model-type trackpy --tracker bytetrack previously raised
         ValueError: Detections confidence must be provided for tracking. --
-        depends on U1's confidence fix already being in place. Uses 5 frames
+        relies on detect_trackpy always setting confidence. Uses 5 frames
         (empty frame 0, then 4 consecutive detections) because trackpy's own
         tuning now requires minimum_consecutive_frames=3 before ByteTrack
         confirms a track (see tracker_defaults.yaml): a detection on the
@@ -1654,7 +1653,7 @@ class TestMainTrackerDispatch:
         monkeypatch.setattr(
             benchmark, "_load_frame_rgb", lambda p: np.zeros((32, 32, 3), dtype=np.uint8)
         )
-        # Matches detect_trackpy's own U1 default shape (confidence always set).
+        # Matches detect_trackpy's own default shape (confidence always set).
         fake_detections = _sv_preload.Detections(
             xyxy=np.array([[5.0, 5.0, 15.0, 15.0]], dtype=np.float64),
             class_id=np.zeros(1, dtype=int),
@@ -1677,9 +1676,9 @@ class TestMainTrackerDispatch:
         assert csv_path.exists()
 
     def test_default_tracker_is_trackpy_and_filename_carries_suffix(self, tmp_path, monkeypatch):
-        """R6 default preserves current behavior; filename gains the
-        deliberate one-time _trackpy suffix (KTD: uniform naming scheme for
-        both trackers)."""
+        """Default preserves current behavior; filename gains the
+        deliberate one-time _trackpy suffix, part of a uniform naming
+        scheme for both trackers."""
         monkeypatch.chdir(tmp_path)
         frames_dir = tmp_path / "frames"
         _write_frames(frames_dir, n=1)
@@ -1723,10 +1722,10 @@ class TestMainTrackerDispatch:
         assert (tmp_path / "verification_output" / "tracking_metrics_trackpy_trackpy.csv").exists()
 
     def test_accuracy_metrics_unaffected_by_tracker_choice(self, tmp_path, monkeypatch):
-        """Regression guard for U5's all_boxes_by_frame extension (Risks
-        section): accuracy_metrics_*.csv content must be identical
-        regardless of --tracker, since the detection-accuracy computation
-        that writes it is untouched by this unit except for the additive
+        """Regression guard for all_boxes_by_frame's extension:
+        accuracy_metrics_*.csv content must be identical regardless of
+        --tracker, since the detection-accuracy computation that writes it
+        is untouched except for the additive
         all_boxes_by_frame accumulation running alongside it."""
 
         def _run(tracker, subdir):
@@ -1870,7 +1869,7 @@ class TestLodestarBoxSizeDerivation:
         assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "box_size") is None
 
     def test_derives_from_dataset_profile_when_referenced(self, tmp_path, monkeypatch):
-        """U5: box_size prefers dataset_profile-derived (size_px * FWHM_TO_SIGMA)
+        """box_size prefers dataset_profile-derived (size_px * FWHM_TO_SIGMA)
         over the synthetic.psf_sigma-based fallback formula, when a profile is
         referenced and no explicit box_size override is set."""
         profile = tmp_path / "profile.yaml"
@@ -1894,7 +1893,7 @@ class TestLodestarBoxSizeDerivation:
 
 
 # ---------------------------------------------------------------------------
-# U5: dataset_profile-driven scale derivation -- nms_distance/box_size/
+# dataset_profile-driven scale derivation -- nms_distance/box_size/
 # tile_size/diameter/search_range/memory each route through detectors_common/
 # trackers_common's scale_derivation modules when dataset_profile is
 # referenced, sitting between an explicit config value and today's hardcoded
@@ -1917,11 +1916,11 @@ def _fake_load_detection_profile(path):
 # Stand-ins for benchmark.resolve_nms_distance/resolve_box_size/resolve_tile_size's
 # own real detectors_common.scale_derivation delegation -- same reason as
 # _fake_load_detection_profile above (detectors_common isn't installed in
-# verification/.venv). Reimplement the exact same formulas U3's own test
-# suite already validates (detectors-common/tests/test_scale_derivation.py) --
+# verification/.venv). Reimplement the exact same formulas
+# detectors-common/tests/test_scale_derivation.py already validates --
 # this file's job is to prove the *wiring* (explicit/profile/frame-dims reach
 # the right call site and its return value reaches the right kwarg), not to
-# re-verify U3's formula correctness.
+# re-verify formula correctness.
 def _fake_resolve_nms_distance(explicit_value, profile, hardcoded_default=30):
     if explicit_value is not None:
         return explicit_value
@@ -2015,7 +2014,7 @@ class TestLodestarNmsDistanceProfileDerivation:
         assert nms_distance == 12
 
     def test_falls_back_to_canonical_5_without_profile(self, tmp_path, monkeypatch):
-        """R7/AE2 regression: no dataset_profile referenced -> this file's own
+        """Regression: no dataset_profile referenced -> this file's own
         long-standing 5px lodestar nms_distance (not detectors_common's generic
         canonical 30, which collapsed recall from ~0.51 to ~0.12 at this
         dataset's ~10.9px spacing -- see verification/config.yaml)."""
@@ -2025,7 +2024,7 @@ class TestLodestarNmsDistanceProfileDerivation:
     def test_shipped_config_yaml_derives_nms_distance_from_profile(self):
         """Regression guard: verification/config.yaml's own lodestar.nms_distance
         stays unset (explicit config always wins if ever set), but
-        dataset_profile is enabled (U6) -- it resolves through
+        dataset_profile is enabled -- it resolves through
         dataset-profiles/synthetic-default.yaml's spacing_px, not the
         hardcoded_default=5 call-site fallback that applied before the
         profile was referenced (though it happens to derive to the same
@@ -2094,7 +2093,7 @@ class TestTrackpyDiameterProfileDerivation:
         assert diameter == 21
 
     def test_falls_back_to_hardcoded_15_without_profile(self, tmp_path, monkeypatch):
-        """R7/AE2 regression: no dataset_profile referenced -> this file's own
+        """Regression: no dataset_profile referenced -> this file's own
         long-standing "not yet empirically tuned" 15px default."""
         diameter = self._run(tmp_path, monkeypatch)
         assert diameter == 15
@@ -2169,7 +2168,7 @@ class TestTileSizeProfileDerivation:
         assert tile_size == 77
 
     def test_falls_back_to_hardcoded_160_without_profile(self, tmp_path, monkeypatch):
-        """R7/AE2 regression: no dataset_profile referenced -> this file's own
+        """Regression: no dataset_profile referenced -> this file's own
         long-standing 160 default (not detectors_common's generic canonical
         512, which equals the default 512x512 frame size and silently
         disables tiling entirely -- see verification/config.yaml)."""
@@ -2179,7 +2178,7 @@ class TestTileSizeProfileDerivation:
     def test_shipped_config_yaml_derives_tile_size_from_profile(self):
         """Regression guard: verification/config.yaml's own tiling.tile_size
         stays unset (explicit config always wins if ever set), but
-        dataset_profile is enabled (U6) -- it resolves through
+        dataset_profile is enabled -- it resolves through
         dataset-profiles/synthetic-default.yaml's spacing_px (clamped to
         this file's own 512x512 synthetic.image_width/image_height), not
         the hardcoded_default=160 call-site fallback that applied before
@@ -2197,8 +2196,8 @@ class TestTileSizeProfileDerivation:
 
 class TestRunTrackingMetricsProfileDerivation:
     """search_range (via _run_tracking_metrics, --ground-truth-tracks path)
-    derives from dataset_profile; memory never does (R9) -- it always
-    resolves to the per-model canonical tuning regardless of the profile."""
+    derives from dataset_profile; memory never does -- it always resolves
+    to the per-model canonical tuning regardless of the profile."""
 
     def _captured_link_kwargs(self, cfg, model_type, profile, tmp_path):
         gt_rows, detections = _single_stationary_particle_gt_and_detections(3)
@@ -2233,14 +2232,14 @@ class TestRunTrackingMetricsProfileDerivation:
         assert captured["search_range"] == pytest.approx(7.5)
 
     def test_search_range_falls_back_to_canonical_tuning_without_profile(self, tmp_path):
-        """R7/AE2 regression: no dataset_profile referenced -> the per-model
+        """Regression: no dataset_profile referenced -> the per-model
         canonical tuning (rf-detr: 25), unchanged from before this plan."""
         cfg = _cfg_no_tracking_overrides()
         captured = self._captured_link_kwargs(cfg, "rf-detr", None, tmp_path)
         assert captured["search_range"] == 25
 
     def test_memory_unaffected_by_profile(self, tmp_path):
-        """R9: memory never derives from size_px/spacing_px -- always the
+        """memory never derives from size_px/spacing_px -- always the
         per-model canonical value (rf-detr: 5), with or without a profile."""
         cfg = _cfg_no_tracking_overrides()
         profile = {"size_px": 5.0, "spacing_px": 10.0}
@@ -2314,7 +2313,7 @@ class TestSaveVideoProfileDerivation:
         assert video_search_range == pytest.approx(3.0)
 
     def test_search_range_falls_back_to_hardcoded_15_without_profile(self, tmp_path, monkeypatch):
-        """R7/AE2 regression: no dataset_profile referenced -> this call
+        """Regression: no dataset_profile referenced -> this call
         site's own long-standing 15px default."""
         video_search_range, _video_memory = self._run(tmp_path, monkeypatch)
         assert video_search_range == pytest.approx(15.0)
@@ -2322,11 +2321,11 @@ class TestSaveVideoProfileDerivation:
     def test_memory_resolves_to_per_model_canonical_regardless_of_profile(
         self, tmp_path, monkeypatch
     ):
-        """R9: memory never derives from size_px/spacing_px. Note this is a
-        deliberate widening from this call site's old flat literal default (3)
-        to the per-model canonical mechanism (trackpy falls back to rf-detr's
-        tuning: 5) -- matches R9's intent that memory always resolves through
-        the profile-aware mechanism, not just when a profile is referenced."""
+        """memory never derives from size_px/spacing_px. This is a deliberate
+        widening from this call site's old flat literal default (3) to the
+        per-model canonical mechanism (trackpy falls back to rf-detr's
+        tuning: 5) -- memory always resolves through the profile-aware
+        mechanism, not just when a profile is referenced."""
         profile = tmp_path / "profile.yaml"
         profile.write_text("size_px: 5.0\nspacing_px: 10.0\n")
         _search_range_with, memory_with = self._run(
@@ -2337,10 +2336,10 @@ class TestSaveVideoProfileDerivation:
 
 
 class TestShippedConfigNoLongerShortCircuitsDerivation:
-    """Regression guard for R11/AE7: the shipped config.yaml must not carry
-    live literal values for the parameters this plan derives -- a live value
-    would permanently shadow dataset_profile-driven derivation, reproducing
-    the exact trap the box_size fix already hit once."""
+    """Regression guard: the shipped config.yaml must not carry live literal
+    values for the parameters derived here -- a live value would permanently
+    shadow dataset_profile-driven derivation, reproducing the exact trap the
+    box_size fix already hit once."""
 
     def test_tile_size_is_commented_out(self):
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
@@ -2351,15 +2350,14 @@ class TestShippedConfigNoLongerShortCircuitsDerivation:
         assert benchmark._cfg_get(real_cfg, "benchmark", "lodestar", "nms_distance") is None
 
     def test_trackpy_diameter_is_an_explicit_empirically_tuned_value(self):
-        # Deliberate exception (U6) to this class's general "derived, not
+        # Deliberate exception to this class's general "derived, not
         # literal" guard: a fresh sweep against render_strategy:
         # brightfield_fast found diameter=7 measurably beats the
         # dataset_profile-derived value (rounds to 5 from size_px=5.0) --
         # trackpy.locate's window needs to cover the particle's visible
         # ring extent, not just its core, so profile-derivation's core-only
-        # size_px systematically undershoots here. See
-        # docs/plans/2026-08-16-001-feat-brightfield-fast-render-path-plan.md's
-        # U6 and config.yaml's own comment on this value.
+        # size_px systematically undershoots here. See config.yaml's own
+        # comment on this value.
         real_cfg = benchmark._load_config(str(benchmark.SCRIPT_DIR / "config.yaml"))
         assert benchmark._cfg_get(real_cfg, "benchmark", "trackpy", "diameter") == 7
 
@@ -2659,14 +2657,13 @@ class TestLinkDfKwargs:
     """tracking.adaptive_stop/adaptive_step (opt-in, off by default) let
     trackpy retry an oversized subnet with a shrunken search_range instead of
     immediately raising SubnetOversizeException -- appropriate for
-    moderately dense scenes. NOT the primary safety net against this
-    dataset's pathological density: confirmed directly (2026-08-08) that
-    enabling it against a ~1400-point mutually-connected subnet exhausted
-    this machine's RAM+swap and had to be killed, since subnet size doesn't
-    necessarily shrink fast enough as search_range shrinks when particles
-    are this tightly packed. _run_tracking_metrics/_link_detections_for_video
-    catching SubnetOversizeException directly (TestSubnetOversizeGuard below)
-    is the real, always-on safety net."""
+    moderately dense scenes, but NOT the primary safety net against this
+    dataset's pathological density: subnet size doesn't necessarily shrink
+    fast enough as search_range shrinks when particles are this tightly
+    packed, and enabling it against a large enough mutually-connected
+    subnet can exhaust memory outright. _run_tracking_metrics/
+    _link_detections_for_video catching SubnetOversizeException directly
+    (TestSubnetOversizeGuard below) is the real, always-on safety net."""
 
     def test_adaptive_stop_absent_omits_adaptive_kwargs(self):
         cfg = {"tracking": {"search_range": 15, "memory": 3}}
@@ -2876,9 +2873,8 @@ class TestBuildAccumulatorWithTimeout:
     TestComputeMotmetricsWithTimeout separately covers) runs inside a
     subprocess with a hard RLIMIT_AS ceiling and wall-clock timeout, so a
     case that genuinely doesn't fit fails cleanly instead of growing this
-    process's own memory unprotected -- confirmed directly (2026-08-08) that
-    unprotected in-parent-process growth here can reach double-digit GB and
-    get OOM-killed."""
+    process's own memory unprotected -- unprotected in-parent-process growth
+    here can reach double-digit GB and get OOM-killed."""
 
     def test_happy_path_returns_accumulator(self, tmp_path):
         detections, gt_path = _scattered_detections_and_gt(
@@ -2922,21 +2918,19 @@ class TestSubnetOversizeGuard:
     trackpy.linking.utils.SubnetOversizeException directly and degrade
     gracefully -- the real, always-on safety net (independent of
     tracking.adaptive_stop, which is opt-in and unsafe for this dataset;
-    see TestLinkDfKwargs). This is what actually fixed the 2026-08-08
-    incident: RF-DETR's tiling fix raised recall enough to recover a
-    genuinely dense physical cluster in verification_output/v2's
-    continuous_force_1500_5.0 trajectory, and the resulting oversized
-    subnet must not crash or hang the pipeline.
+    see TestLinkDfKwargs). A detector with high enough recall to recover a
+    genuinely dense physical cluster can produce an oversized subnet, which
+    must not crash or hang the pipeline.
 
     Both functions call _link_df_with_fallback, which retries at a smaller
     search_range instead of giving up on the first SubnetOversizeException
-    (see TestLinkDfWithFallback) -- confirmed directly (2026-08-08) that
-    this recovers real trajectories for RF-DETR's video where the pipeline
-    used to fall back to boxes-only. So a merely-oversized cluster like this
-    one now succeeds at a smaller search_range rather than failing outright;
-    these tests assert exactly that (not a crash, and not silently losing
-    the result). TestLinkDfWithFallback separately covers the true failure
-    path (even the smallest fallback search_range still oversized)."""
+    (see TestLinkDfWithFallback), recovering real trajectories where the
+    pipeline would otherwise fall back to boxes-only. So a merely-oversized
+    cluster like this one now succeeds at a smaller search_range rather
+    than failing outright; these tests assert exactly that (not a crash,
+    and not silently losing the result). TestLinkDfWithFallback separately
+    covers the true failure path (even the smallest fallback search_range
+    still oversized)."""
 
     def test_run_tracking_metrics_recovers_via_smaller_search_range(self, tmp_path):
         detections, gt_path = _dense_cluster_detections_and_gt(tmp_path)
@@ -2983,12 +2977,10 @@ def _slow_motmetrics_worker(_acc, _metrics, conn):
 
 class TestComputeMotmetricsWithTimeout:
     """motmetrics' IDF1 global identity-assignment can scale catastrophically
-    with the number of distinct GT/predicted track IDs -- confirmed directly
-    (2026-08-08): a real ~1446 GT particle x ~1700 fragmented-track-id
-    trackpy run against verification_output/v2 exhausted this machine's
-    RAM+swap and had to be killed manually. This must never happen again
-    regardless of root cause, so mh.compute() runs in a subprocess with a
-    hard OS-level timeout."""
+    with the number of distinct GT/predicted track IDs, to the point of
+    exhausting memory on a dense, fragmented trackpy run. So mh.compute()
+    runs in a subprocess with a hard OS-level timeout, regardless of root
+    cause."""
 
     def test_happy_path_returns_summary_dict(self):
         import motmetrics as mm

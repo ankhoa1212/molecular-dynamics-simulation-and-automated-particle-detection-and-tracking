@@ -37,6 +37,30 @@ _MODEL_COLORS = {
     "yolo12m": "#eb6834",  # slot 4: orange
     "yolo12n": "#4a3aa7",  # slot 5: purple
 }
+# Marker per model -- a second, non-color discriminative feature for
+# line/point plots (WACV reviewer guidance on color vision deficiency:
+# color alone must not be the only thing separating two series, e.g.
+# lodestar's green vs. yolo12m's orange for a red-green-colorblind reader).
+_MODEL_MARKERS = {
+    "rf-detr": "o",  # circle
+    "lodestar": "s",  # square
+    "trackpy": "^",  # triangle
+    "yolo12m": "D",  # diamond
+    "yolo12n": "v",  # inverted triangle
+}
+_MARKER_FALLBACK_SLOTS = ["P", "X", "*", "p", "h"]
+
+
+def _marker_for(model_type, seen_order):
+    if model_type in _MODEL_MARKERS:
+        return _MODEL_MARKERS[model_type]
+    used = {m for k, m in _MODEL_MARKERS.items() if k in seen_order}
+    for slot in _MARKER_FALLBACK_SLOTS:
+        if slot not in used:
+            return slot
+    return "o"
+
+
 _GRID_COLOR = "#e1e0d9"
 _AXIS_COLOR = "#c3c2b7"
 _INK = "#0b0b0b"
@@ -298,7 +322,7 @@ def main():
 
     per_model = {}
     # Keyed by (model_type, tracker) — a model can have 0, 1, or 2 tracker
-    # results present (trackpy, bytetrack, or both); see U5's
+    # results present (trackpy, bytetrack, or both); see the
     # tracking_metrics_{model_type}_{tracker}.csv naming scheme.
     per_tracking = {}
     for model_type in model_types:
@@ -393,8 +417,8 @@ def main():
     print(f"\nPlot -> {png_path}")
 
     # --- Summary bar chart: one bar per model per metric, six run-level
-    # scalars (unlike the per-frame line plots above) that the U6/U7-era
-    # sweeps only ever printed as text -- F1, MOTA, IDF1, fragmentations, ID
+    # scalars (unlike the per-frame line plots above) that earlier sweeps
+    # only ever printed as text -- F1, MOTA, IDF1, fragmentations, ID
     # switches, and inference time all need to be visually comparable across
     # all four methods too, not just readable off a table.
     summary_path = _plot_summary_bars(per_model, per_tracking, out)

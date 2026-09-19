@@ -14,12 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 def run_simulation(cmd, filename, output_dir):
     """Runs a single simulation command and moves the output file."""
     try:
-        # Run the command
-        # Using shell=True to match bash behavior, though shell=False with list is usually safer.
-        # Given the command string construction, shell=True is easier here.
+        # shell=True matches bash behavior and is easier given the command
+        # string construction, though shell=False with a list is usually safer.
         subprocess.run(cmd, shell=True, check=True)
 
-        # Move the trajectory file
         traj_file = f"{filename}.lammpstrj"
         if os.path.exists(traj_file):
             shutil.move(traj_file, os.path.join(output_dir, traj_file))
@@ -54,9 +52,7 @@ def _parse_json_config(config_file):
             for key, value in data.items():
                 if key in positional_keys:
                     continue
-                # Determine flag prefix
                 prefix = "-" if len(key) == 1 else "--"
-                # If key doesn't start with -, add prefix
                 arg_name = key if key.startswith("-") else f"{prefix}{key}"
                 config_args.append(arg_name)
                 config_args.append(str(value))
@@ -67,7 +63,6 @@ def _parse_text_config(config_file):
     """Parses a text configuration file."""
     config_args = []
     with open(config_file, "r", encoding="utf-8") as cfg_file:
-        # Read content, ignore comments, split by whitespace
         for line in cfg_file:
             line = line.split("#", 1)[0].strip()
             if line:
@@ -118,7 +113,6 @@ def setup_arg_parser():
     parser.add_argument("var_epsilon_end", nargs="?", help="End epsilon")
     parser.add_argument("var_epsilon_step", nargs="?", help="Step epsilon")
 
-    # New options
     parser.add_argument(
         "--var_tstart",
         "--t_start",
@@ -160,7 +154,6 @@ def resolve_arguments(args):
     Resolves arguments to their final values for the simulation configuration.
     Returns a dictionary or object with the resolved settings.
     """
-    # Default values
     config = {
         "output_dir": "results",
         "m_start": 100,
@@ -200,7 +193,6 @@ def resolve_arguments(args):
     if config["e_end"] is None:
         config["e_end"] = config["e_start"]
 
-    # Set default scale if not provided
     if config["vel_force_scale"] is None:
         if "velocity_initialization" in config["input_script"]:
             config["vel_force_scale"] = "9"
@@ -214,7 +206,6 @@ def generate_commands(config, args, lammps_executable):
     """Generates the list of LAMMPS commands to run."""
     commands = []
 
-    # Strip .in extension
     base_script_name = os.path.basename(config["input_script"])
     if base_script_name.endswith(".in"):
         base_script_name = base_script_name[:-3]
@@ -223,14 +214,12 @@ def generate_commands(config, args, lammps_executable):
     os.makedirs(config["output_dir"], exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
-    # Clear commands.txt
     with open("commands.txt", "w", encoding="utf-8") as cmd_file:
         pass
 
     current_molecules = config["m_start"]
 
-    while True:  # Molecules loop
-        # Check condition
+    while True:  # molecules loop
         if config["m_step"] > 0:
             if current_molecules > config["m_end"]:
                 break
@@ -273,7 +262,6 @@ def generate_commands(config, args, lammps_executable):
 def get_num_cpus():
     """Determines the number of available CPUs."""
     try:
-        # Try to get the number of CPUs available to the process
         return len(os.sched_getaffinity(0))
     except AttributeError:
         # Fallback for systems where sched_getaffinity is not available
@@ -323,21 +311,17 @@ def print_visualization_commands(config, base_name):
 
 def main():
     """Main function to parse arguments and run LAMMPS simulations in parallel."""
-    # Set LAMMPS executable
     lammps_executable = "lmp"
 
     num_cpus = get_num_cpus()
     os.environ["OMP_NUM_THREADS"] = str(num_cpus)
     print(f"Setting OMP_NUM_THREADS to {num_cpus}")
 
-    # Pre-process sys.argv to handle --config file
     sys.argv = parse_config(sys.argv)
 
-    # Parse arguments
     parser = setup_arg_parser()
     args = parser.parse_args()
 
-    # Convert to types & resolve defaults
     try:
         config = resolve_arguments(args)
     except ValueError as e:
@@ -355,10 +339,8 @@ def main():
     print(f"  Log dir:    {log_dir}")
     print("=" * 100)
 
-    # Run commands in parallel
     run_parallel_tasks(commands, config["output_dir"], num_cpus)
 
-    # Cleanup
     cleanup_files(config["output_dir"], base_script_name)
 
     print("=" * 100)

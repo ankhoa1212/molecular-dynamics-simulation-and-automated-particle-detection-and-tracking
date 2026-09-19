@@ -49,17 +49,15 @@ class TestWriteRfdetrConfig:
         assert parsed["detection"]["threshold"] == 0.3
         assert parsed["tracking"]["search_range"] == 25
         assert parsed["tracking"]["memory"] == 5
-        # 90, the historical/only empirically-grounded value for rf-detr.
-        # Briefly lowered to 6 (U6) as a workaround for trackpy falling back
-        # to this value and getting zeroed out; trackpy has its own
-        # independent entry now instead, so rf-detr's value reverted back.
-        # See trackers-common/trackers_common/tracker_defaults.yaml's
-        # rf-detr entry.
+        # 90, the only empirically-grounded value for rf-detr. trackpy has
+        # its own independent tracker_defaults.yaml entry rather than
+        # falling back to this one. See trackers-common/trackers_common/
+        # tracker_defaults.yaml's rf-detr entry.
         assert parsed["tracking"]["stub_filter"] == 90
         assert parsed["output"]["save_trajectory_image"] is True
         assert "tiling" in parsed  # no crop given -> tiling spatial config
         assert "crop" not in parsed
-        # R1 regression: no live tile_size literal shadowing track.py's own
+        # Regression: no live tile_size literal shadowing track.py's own
         # dataset-profile-derived resolution (resolve_tile_size).
         assert "tile_size" not in parsed["tiling"]
         assert parsed["tiling"]["enabled"] is True
@@ -180,7 +178,7 @@ class TestWriteLodestarConfig:
         assert parsed["tracking"]["search_range"] == 20
         assert parsed["tracking"]["memory"] == 10
         assert parsed["tracking"]["stub_filter"] == 6
-        # R1 regression (same shape as RF-DETR's tile_size): no live nms_distance
+        # Regression (same shape as RF-DETR's tile_size): no live nms_distance
         # literal shadowing track.py's dataset-profile-derived resolution.
         assert "nms_distance" not in parsed["detection"]
         assert "dataset_profile" not in parsed
@@ -435,7 +433,7 @@ class TestRunTrackingIntegration:
             rfdetr_parsed = yaml.safe_load(rfdetr_cfg.read_text())
             assert rfdetr_parsed["input"] == input_path
             assert rfdetr_parsed["output"]["dir"] == rfdetr_output_dir
-            assert rfdetr_parsed["tracking"]["stub_filter"] == 90  # see U6 note above
+            assert rfdetr_parsed["tracking"]["stub_filter"] == 90  # see note above
 
             lodestar_output_dir = f"{results_base}/lodestar/{short_name}"
             lodestar_cfg = run_tracking.write_lodestar_config(
@@ -498,7 +496,7 @@ class TestRunTrackingIntegration:
 
 
 class TestRunTrackingDatasetProfileFlag:
-    """--dataset-profile CLI wiring in run_tracking.parse_args(), per R2/R3/R7."""
+    """--dataset-profile CLI wiring in run_tracking.parse_args()."""
 
     @staticmethod
     def _write_profile(tmp_path, name="profile.yaml"):

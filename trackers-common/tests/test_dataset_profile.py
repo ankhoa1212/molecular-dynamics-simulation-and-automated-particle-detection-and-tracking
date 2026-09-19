@@ -1,4 +1,4 @@
-"""Tests for trackers_common.dataset_profile — U2: shared dataset scale
+"""Tests for trackers_common.dataset_profile — shared dataset scale
 profile format loader."""
 
 import importlib.util

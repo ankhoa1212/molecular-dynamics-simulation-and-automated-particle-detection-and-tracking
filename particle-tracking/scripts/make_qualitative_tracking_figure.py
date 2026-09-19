@@ -1,8 +1,10 @@
 """Composite the main-body qualitative tracking figure for wacv2027-paper.
 
-Panel (a): RF-DETR detections (boxes only, no traces) on one real 5um frame,
-cropped to a legible central region.
-Panel (b): the existing supplementary fig11_tracking.png trajectory plot.
+Panel 1 (Detections): RF-DETR detections (boxes only, no traces) on one real
+5um frame, cropped to a legible central region.
+Panel 2 (Trajectories): the last frame of tracking_visualization.mp4 (same
+crop window), which already has detection boxes and linked trajectory tails
+baked in from the real footage.
 
 One-off script for this figure; not part of the production track.py pipeline.
 """
@@ -19,7 +21,7 @@ import tifffile
 FRAME_IDX = 6
 RAW_TIFF = "data/raw/scratch/real_5um_trajectory_analysis/frames_000-150.tif"
 TRACKS_CSV = "output/qualitative_fig_scratch/real_rfdetr_preview/frames_000-150/tracks.csv"
-FIG11_PATH = "/home/ankhoa1212/git/wacv2027-paper/figures/fig11_tracking.png"
+TRAJ_FRAME_PATH = "output/qualitative_fig_scratch/frame_extract/tracking_viz_last_frame.png"
 OUT_PATH = "output/qualitative_fig_scratch/fig_qualitative_tracking.png"
 
 # Crop window (px) in the full 3200x2200 frame -- central region with dense,
@@ -46,16 +48,16 @@ def main():
     x0, y0, x1, y1 = CROP
     crop = frame[y0:y1, x0:x1]
 
-    im_b = plt.imread(FIG11_PATH)
-    aspect_a = (x1 - x0) / (y1 - y0)
-    aspect_b = im_b.shape[1] / im_b.shape[0]
+    traj_frame = plt.imread(TRAJ_FRAME_PATH)
+    traj_crop = traj_frame[y0:y1, x0:x1]
+
+    aspect = (x1 - x0) / (y1 - y0)
 
     fig, axes = plt.subplots(
-        1,
         2,
-        figsize=(7.0, 3.4),
+        1,
+        figsize=(4.2, 3.4 / aspect * 2 * 1.05),
         dpi=200,
-        gridspec_kw={"width_ratios": [aspect_a, aspect_b]},
     )
 
     ax = axes[0]
@@ -77,16 +79,16 @@ def main():
             )
         )
         n_boxes += 1
-    ax.set_title("(a) RF-DETR detections (real footage)", fontsize=9)
+    ax.set_title("Detections", fontsize=9)
     ax.set_axis_off()
-    print(f"Panel (a): {n_boxes} boxes drawn in crop window")
+    print(f"Panel 1: {n_boxes} boxes drawn in crop window")
 
     ax2 = axes[1]
-    ax2.imshow(im_b)
-    ax2.set_title("(b) trackpy trajectories (same clip)", fontsize=9)
+    ax2.imshow(traj_crop)
+    ax2.set_title("Trajectories", fontsize=9)
     ax2.set_axis_off()
 
-    plt.tight_layout(pad=0.6, w_pad=1.0)
+    plt.tight_layout(pad=0.6, h_pad=1.0)
     fig.savefig(OUT_PATH, dpi=200, bbox_inches="tight", facecolor="white")
     print(f"Saved {OUT_PATH}")
 

@@ -338,7 +338,6 @@ def main():  # pylint: disable=too-many-locals,too-many-branches,too-many-statem
         )
         return
 
-    # Sort for reproducibility
     crop_files.sort()
     print(f"Total: Found {len(crop_files)} crop image(s) for training.")
 
@@ -374,7 +373,6 @@ def main():  # pylint: disable=too-many-locals,too-many-branches,too-many-statem
         crops_data = _load_crops(crop_files, crop_size=args.crop_size)
         lodestar = _build_and_train(args, crops_data)
 
-        # Save weights
         torch.save(lodestar.state_dict(), args.model_path)
         print(f"Model saved to {args.model_path}")
 

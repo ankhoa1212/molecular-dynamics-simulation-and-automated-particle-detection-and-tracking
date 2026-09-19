@@ -7,7 +7,16 @@ dependencies = [
     "scipy>=1.11",
     "tifffile>=2024.1",
     "matplotlib>=3.8",
-    "pandas>=2.0",
+    # <3 pins to the same major version as rf-detr/.venv and particle-tracking/.venv
+    # (mlflow transitively caps rf-detr's pandas below 3 -- see rf-detr/pyproject.toml).
+    # detectors_common/lodestar_loader.py and rfdetr_loader.py inject those venvs'
+    # site-packages into this process to load torch/rfdetr/deeplay; a spawned
+    # multiprocessing subprocess (benchmark.py's _link_df_with_fallback) can then
+    # resolve a different pandas than the parent pickled a DataFrame with, which
+    # pandas 2->3's internal NDArrayBacked pickle format change turns into a
+    # NotImplementedError instead of a clean import. Keep all three venvs on the
+    # same pandas major version so this can't happen regardless of import order.
+    "pandas>=2.0,<3",
     "pyyaml>=6.0",
     "supervision>=0.21",
     "motmetrics>=1.4.0",

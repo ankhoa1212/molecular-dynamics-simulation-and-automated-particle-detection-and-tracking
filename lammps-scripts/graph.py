@@ -21,7 +21,6 @@ def run_script(script_name, file_path, output_dir=None, no_show=False):
         output_dir (str or Path, optional): Directory to save output.
         no_show (bool, optional): If True, suppresses plot display.
     """
-    # Resolve script path relative to this script's location
     script_dir = Path(__file__).resolve().parent
     script_path = script_dir / script_name
 

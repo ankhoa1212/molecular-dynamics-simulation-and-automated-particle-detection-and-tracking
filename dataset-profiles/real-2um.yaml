@@ -1,6 +1,19 @@
 size_px: 11.37
 spacing_px: 71.92
 description: >
+  SUPERSEDED for wacv2027-paper's trajectory-fidelity comparison by
+  real-2um-testsplit.yaml -- this profile's video ("NaCl + 2um PS + Au Cit
+  100% Light Intensity Trial 1 Redo") is inside RF-DETR/YOLOv12's own
+  TRAIN split (rf-detr/config.yaml's train_experiments; confirmed via
+  data/2um-coco-merged/split/train/_annotations.coco.json, which shows 60
+  frames sampled from this exact video, overlapping the trajectory-analysis
+  window at frames 0,5,10,...,150). Using it for a "does this transfer to
+  real data" claim is circular: the detectors were trained on ~20% of the
+  frames being evaluated. Do not reuse this profile for a held-out
+  real-footage generalization test -- use real-2um-testsplit.yaml instead.
+  The calibration below is still an accurate description of this specific
+  video and remains valid for any use that doesn't require train/test
+  independence.
   Real 2um PS particle dataset, matched-domain robustness check for the
   2um->5um domain-shift confound flagged in wacv2027-paper's TODO.md item 59
   (docs/plans/2026-08-25-001-fix-2um-5um-domain-confound-plan.md): both

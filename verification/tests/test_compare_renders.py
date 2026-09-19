@@ -1,4 +1,4 @@
-"""Tests for compare_renders.py — U5: rendering comparison tool.
+"""Tests for compare_renders.py — rendering comparison tool.
 
 All tests focus on importable computation functions (compute_snr,
 compute_psd_similarity, radial_profile) so they run without LAMMPS files,
@@ -390,7 +390,7 @@ class TestProceduralStrategyWithoutDeeptrack:
 
 
 # ---------------------------------------------------------------------------
-# brightfield strategy choice + missing-deeptrack skip guard (U4)
+# brightfield strategy choice + missing-deeptrack skip guard
 # ---------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""Tests for detectors_common.tiling — U4: detect_with_tiling's bounds-guarded
+"""Tests for detectors_common.tiling — detect_with_tiling's bounds-guarded
 tile_starts (the negative-start-index bug verification's prior standalone
 copy had, dormant only because its synthetic frames always equaled
 tile_size in both dimensions)."""

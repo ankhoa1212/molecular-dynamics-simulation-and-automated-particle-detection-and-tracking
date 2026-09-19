@@ -94,7 +94,6 @@ def main():
         output_filename = f"{base}_hexatic_order.png"
 
         if args.output_dir:
-            # Ensure output directory exists if provided
             if not os.path.exists(args.output_dir):
                 os.makedirs(args.output_dir)
             output_path = os.path.join(args.output_dir, output_filename)

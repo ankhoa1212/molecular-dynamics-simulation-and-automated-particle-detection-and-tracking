@@ -26,7 +26,6 @@ def _process_velocity_data(filename):
         timesteps.append(frame["timestep"])
         atom_lines = frame["atoms"]
 
-        # Parse atom header to find column indices
         atom_header = frame["atom_header"]
         # Format is usually "ITEM: ATOMS id type x y vx vy"
         header_parts = atom_header.split()[2:]
@@ -34,8 +33,7 @@ def _process_velocity_data(filename):
             vx_idx = header_parts.index("vx")
             vy_idx = header_parts.index("vy")
         except ValueError:
-            # If columns are missing, skip this frame or assume defaults?
-            # Original code would skip if columns missing.
+            # vx/vy columns missing from this frame -- record a zero rather than skip
             avg_velocities.append(0)
             std_velocities.append(0)
             continue
@@ -64,7 +62,6 @@ def plot_velocity_over_time(filename, output_dir, no_show=False):
     """
     timesteps, avg_velocities, std_velocities = _process_velocity_data(filename)
 
-    # Plotting
     plt.figure(figsize=(10, 6))
     plt.errorbar(
         timesteps,
@@ -80,7 +77,6 @@ def plot_velocity_over_time(filename, output_dir, no_show=False):
     plt.title("Average Velocity Magnitude Over Time")
     plt.grid(True, linestyle="--", alpha=0.7)
 
-    # Generate output filename
     base_name = os.path.basename(filename)
     if "." in base_name:
         base_name = base_name[: base_name.rfind(".")]
@@ -97,9 +93,6 @@ def plot_velocity_over_time(filename, output_dir, no_show=False):
     if not no_show:
         plt.show()
 
-
-# Replace 'your_file.lammpstrj' w/actual filename
-# plot_velocity_over_time('your_file.lammpstrj')
 
 if __name__ == "__main__":
     PARSER = argparse.ArgumentParser(

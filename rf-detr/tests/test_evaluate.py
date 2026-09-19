@@ -6,7 +6,7 @@ import pytest
 
 # supervision and cv2 may be broken in the test environment (cv2 attribute error).
 # Stub only the modules that are broken or unavailable before importing evaluate.
-# We must NOT stub mlflow or numpy — other test files use the real packages.
+# mlflow and numpy must NOT be stubbed — other test files use the real packages.
 for _mod in ("cv2", "supervision", "supervision.metrics", "rfdetr", "tqdm"):
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()

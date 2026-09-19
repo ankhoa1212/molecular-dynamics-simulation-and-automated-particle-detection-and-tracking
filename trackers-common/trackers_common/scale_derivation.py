@@ -10,14 +10,13 @@ three-tier precedence chain as `detectors_common.scale_derivation`'s
        value -- a dict with `size_px`/`spacing_px`) was supplied.
     3. Today's existing hardcoded default, unchanged, when neither of the
        above is present -- this is what keeps behavior identical for every
-       caller that doesn't yet reference a profile (R7's tracking-side
-       counterpart).
+       caller that doesn't yet reference a profile.
 
 `memory` resolves via the same *signature shape* (`explicit_value`,
 `profile`, ..., `hardcoded_default=...`) for API consistency, but is a
 deliberate exception to the "profile-derived" tier described above -- see
-`resolve_memory`'s own docstring and the plan's KTD on why occlusion/blinking
-duration has no physical grounding as a function of particle size/spacing.
+`resolve_memory`'s own docstring on why occlusion/blinking duration has no
+physical grounding as a function of particle size/spacing.
 
 Each function below takes `explicit_value` as its first parameter and
 returns the resolved value; nothing here reads or writes config files
@@ -30,14 +29,14 @@ from trackers_common.defaults import load_tracking_config
 
 # Matches detectors_common.scale_derivation's own local FWHM_TO_SIGMA
 # (FWHM = 2*sqrt(2*ln2)*sigma ~= 2.355*sigma). Duplicated as a local literal
-# rather than imported -- trackers-common must not depend on detectors-common
-# (the plan's KTD keeps the two packages independent siblings, same
-# reasoning detectors-common uses for not depending on verification).
+# rather than imported -- trackers-common must not depend on detectors-common,
+# keeping the two packages independent siblings, same reasoning
+# detectors-common uses for not depending on verification.
 FWHM_TO_SIGMA = 2.355
 
 # Today's existing hardcoded defaults, used unchanged when no profile is
-# referenced (R7's tracking-side counterpart). search_range matches
-# particle-tracking/config.yaml's long-standing 25.0; diameter matches
+# referenced. search_range matches particle-tracking/config.yaml's
+# long-standing 25.0; diameter matches
 # verification/config.yaml's "not yet empirically tuned" 15.
 DEFAULT_SEARCH_RANGE = 25.0
 DEFAULT_DIAMETER = 15
@@ -75,7 +74,7 @@ def resolve_search_range(explicit_value, profile, hardcoded_default=DEFAULT_SEAR
     Sits at the same boundary as two particles' midpoint distance in a worst
     case -- trackers-common's adaptive_stop/adaptive_step fallback is relied
     on to absorb ambiguity at that boundary, not a larger safety margin baked
-    into this formula (see the plan's KTD).
+    into this formula.
     """
     if explicit_value is not None:
         return explicit_value
@@ -135,15 +134,14 @@ def resolve_memory(  # pylint: disable=unused-argument
         resolve_diameter -- its `size_px`/`spacing_px` are never read here.
         Occlusion/blinking tolerance (what `memory` controls) is a temporal
         property, not a spatial one; a spacing- or size-based formula would
-        have no physical grounding (see the plan's KTD on memory exclusion,
-        R9). `memory` still resolves through this profile-aware code path
-        for API consistency with search_range/diameter, but its resolved
-        value never varies with size_px/spacing_px or with whether a profile
-        was referenced at all.
+        have no physical grounding. `memory` still resolves through this
+        profile-aware code path for API consistency with search_range/
+        diameter, but its resolved value never varies with size_px/
+        spacing_px or with whether a profile was referenced at all.
     model_type: the actual driver of the resolved value -- looked up against
         trackers_common.defaults.load_tracking_config's per-model canonical
-        tuning (from tracker_defaults.yaml, landed by U1). An empty
-        tool_config is passed internally so this always resolves the
+        tuning (from tracker_defaults.yaml). An empty tool_config is passed
+        internally so this always resolves the
         canonical per-model default, never a caller override (callers with
         their own override should pass it as explicit_value instead).
     hardcoded_default: value to use only if `model_type` has no "memory"

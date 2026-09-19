@@ -89,7 +89,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Find a valid image file
     input_path = Path(args.input)
     if input_path.is_dir():
         valid_exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
@@ -115,7 +114,6 @@ def main():
     axes = np.atleast_1d(axes).flatten()
 
     for i in range(args.count):
-        # Apply pipeline and resolve to numpy
         augmented = pipeline.update().resolve()
         # Remove channel dim if present for imshow
         if augmented.ndim == 3:

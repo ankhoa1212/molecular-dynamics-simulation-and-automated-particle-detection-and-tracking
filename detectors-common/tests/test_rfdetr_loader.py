@@ -1,4 +1,4 @@
-"""Tests for detectors_common.rfdetr_loader — U2: get_rfdetr_model, RFDETR_VARIANTS,
+"""Tests for detectors_common.rfdetr_loader — get_rfdetr_model, RFDETR_VARIANTS,
 _normalize_device, and the venv-site-packages-injection failure mode."""
 
 import sys

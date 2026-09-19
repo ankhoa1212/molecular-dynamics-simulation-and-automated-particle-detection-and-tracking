@@ -316,8 +316,7 @@ class TestGenerateMieGroundTruth:
 
     def test_selected_positions_are_drawn_from_the_real_trajectory_subset(self):
         """Position reuse: the MieSphere instances are built from the same
-        real positions_lj subset, not synthetically sampled -- covers AE3's
-        ground-truth-generation half."""
+        real positions_lj subset, not synthetically sampled."""
         rbf = _import_with_mock_deeptrack()
         rng = np.random.default_rng(0)
         positions = rng.uniform(0.1, 0.9, size=(10, 2))
@@ -370,7 +369,7 @@ class TestRenderFrameBrightfieldRealPhysics:
         assert not np.array_equal(in_focus, defocused)
 
     def test_dense_touching_particles_render_without_error(self):
-        """Covers AE1: two close/touching particles produce a frame that's
+        """Two close/touching particles produce a frame that's
         neither a flat merged blob nor a plain sum of two independent
         rings -- here checked as "renders successfully and isn't uniform",
         the physics-agnostic proxy a unit test can assert without

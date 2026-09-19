@@ -61,9 +61,9 @@ trap restore_baseline EXIT
 # These models were not in the original MODELS array, so their CSVs may not
 # exist in $OUT/ yet. Run benchmark.py against the existing production frames,
 # ground_truth.json, and ground_truth_tracks.csv to produce them so the
-# Phase 0 backup (already executed above) can be re-run retroactively -- but
-# we must also copy them into N1446/ now, since Phase 0 already ran before
-# these existed.
+# Phase 0 backup (already executed above) can be re-run retroactively -- they
+# also need copying into N1446/ now, since Phase 0 already ran before these
+# existed.
 echo "=== Phase 0b: Backfilling N=1446 CSVs for yolo12m and yolo12n ==="
 for m in yolo12m yolo12n; do
     if [ ! -f "$OUT/accuracy_metrics_$m.csv" ]; then

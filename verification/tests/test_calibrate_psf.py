@@ -1,12 +1,12 @@
-"""Tests for calibrate_psf.py — U4: PSF calibration from real frames.
+"""Tests for calibrate_psf.py — PSF calibration from real frames.
 
-Test scenarios from the plan:
+Scenarios covered:
 - test_recovered_sigma_within_10_percent_of_ground_truth
 - test_fewer_than_20_particles_prints_warning_and_continues
 - test_absent_real_frames_dir_exits_with_error
 - test_empty_real_frames_dir_exits_with_error
 - test_output_config_is_valid_yaml
-- test_merge_config (U1: --merge-config flag)
+- test_merge_config (--merge-config flag)
 """
 
 import sys
@@ -76,12 +76,10 @@ def _make_synthetic_frame(
         "readout_noise": 0.0,
         # This helper's contract is a *pure* Gaussian PSF at a known sigma,
         # used to test calibrate_psf.py's sigma-recovery accuracy -- a
-        # concern unrelated to render_frame's dark-ring feature (see
-        # docs/plans/2026-07-22-004-feat-procedural-renderer-ring-and-noise-
-        # plan.md U2). As of U2 the ring is on by default even when no
-        # "ring" key is given, so it must be explicitly disabled here, or a
-        # plain-Gaussian curve_fit against a core-plus-ring profile would
-        # systematically underestimate sigma.
+        # concern unrelated to render_frame's dark-ring feature. The ring is
+        # on by default even when no "ring" key is given, so it must be
+        # explicitly disabled here, or a plain-Gaussian curve_fit against a
+        # core-plus-ring profile would systematically underestimate sigma.
         "ring": {"depth": 0.0},
     }
     frame = render.render_frame(positions, box, cfg, rng)
@@ -124,12 +122,10 @@ class TestRecoveredSigma:
 
 
 # ---------------------------------------------------------------------------
-# R4 regression (docs/plans/2026-07-21-001-fix-peak-normalized-particle-
-# brightness-plan.md, U4): _fit_gaussian's amplitude must be background-
-# subtracted, not the raw crop maximum. _make_synthetic_frame's procedural
-# renderer has no background field (always 0), so it can't exercise this --
-# these tests build a frame with an explicit nonzero background baseline
-# directly.
+# Regression: _fit_gaussian's amplitude must be background-subtracted, not
+# the raw crop maximum. _make_synthetic_frame's procedural renderer has no
+# background field (always 0), so it can't exercise this -- these tests
+# build a frame with an explicit nonzero background baseline directly.
 # ---------------------------------------------------------------------------
 
 
@@ -164,10 +160,9 @@ class TestFitGaussianAmplitude:
 
 # ---------------------------------------------------------------------------
 # Regression: a near-flat crop (no real particle) must not return a
-# degenerate near-zero-amplitude "fit" -- found 2026-07-22 running
-# calibrate_from_frames on real bright-field data: curve_fit can converge to
-# an amplitude of ~1e-10 on a flat/noise-only crop while still satisfying
-# the sigma bounds, and left unfiltered that pollutes sigma_ests with sigmas
+# degenerate near-zero-amplitude "fit" -- curve_fit can converge to an
+# amplitude of ~1e-10 on a flat/noise-only crop while still satisfying the
+# sigma bounds, and left unfiltered that pollutes sigma_ests with sigmas
 # fitted against noise rather than a genuine particle.
 # ---------------------------------------------------------------------------
 
@@ -225,9 +220,8 @@ class TestFitGaussianRejectsDegenerateAmplitude:
 
 
 # ---------------------------------------------------------------------------
-# U2 regression (docs/plans/2026-07-22-002-fix-calibrate-psf-detector-
-# consolidation-plan.md): saturated-plateau detection no longer produces one
-# spurious fit per plateau pixel.
+# Regression: saturated-plateau detection no longer produces one spurious
+# fit per plateau pixel.
 # ---------------------------------------------------------------------------
 
 
@@ -403,7 +397,7 @@ class TestOutputConfigYaml:
 
 
 # ---------------------------------------------------------------------------
-# test_merge_config (U1: --merge-config flag)
+# test_merge_config (--merge-config flag)
 # ---------------------------------------------------------------------------
 
 # Minimal calibrated params dict (mirrors calibrate_from_frames output structure)
@@ -467,10 +461,9 @@ class TestMergeConfig:
             calibrate_psf._merge_params_into_config(absent, _FAKE_PARAMS)
 
     def test_arbitrary_section_not_in_the_original_four_is_merged(self, tmp_path):
-        """docs/plans/2026-07-22-001-fix-procedural-particle-realism-plan.md U2:
-        the section loop iterates over whatever `params` contains, not a fixed
-        tuple, so any caller-defined section can be merged even though this
-        module never calibrates it itself."""
+        """The section loop iterates over whatever `params` contains, not a
+        fixed tuple, so any caller-defined section can be merged even though
+        this module never calibrates it itself."""
         cfg_path = tmp_path / "config.yaml"
         self._write_config(cfg_path, {"synthetic": {}})
 
@@ -647,9 +640,8 @@ class TestMergeConfig:
 
 
 # ---------------------------------------------------------------------------
-# U3 (docs/plans/2026-07-22-002-fix-calibrate-psf-detector-consolidation-
-# plan.md): --min-area/--max-area/--percentile CLI flags reach
-# calibrate_from_frames unchanged.
+# --min-area/--max-area/--percentile CLI flags reach calibrate_from_frames
+# unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -715,7 +707,7 @@ class TestDetectorTuningCliFlags:
 
 
 # ---------------------------------------------------------------------------
-# calibrate_brightfield (U3)
+# calibrate_brightfield
 # ---------------------------------------------------------------------------
 
 
@@ -850,7 +842,7 @@ class TestCalibrateBrightfield:
 
 
 class TestCalibrateBrightfieldZRange:
-    """U4: z_min_px/z_max_px join calibrate_brightfield's search space
+    """z_min_px/z_max_px join calibrate_brightfield's search space
     (previously hardcoded to 0.0/0.0 on every candidate)."""
 
     def teardown_method(self):
@@ -909,7 +901,7 @@ class TestCalibrateBrightfieldZRange:
 
 
 class TestLoadRealFrames:
-    """U4: _load_real_frames -- format auto-detection by extension, unlike
+    """_load_real_frames -- format auto-detection by extension, unlike
     _load_tifs (TIFF-only), since the LodeSTAR crop target directories are
     PNG."""
 
@@ -965,7 +957,7 @@ class TestFitToCanvas:
 
 
 class TestCandidateParticleCountBoundedBySmallTrajectory:
-    """Regression (U4): --lammps pointed at a small/subsetted trajectory
+    """Regression: --lammps pointed at a small/subsetted trajectory
     keeps each search candidate's particle count bounded -- confirms the
     calibration run itself doesn't reproduce the slow path's N^2.7 cost by
     rendering every candidate at production density."""

@@ -1,7 +1,7 @@
-"""Tests for detectors_common.scale_derivation -- U3: detection-side
+"""Tests for detectors_common.scale_derivation -- detection-side
 parameter derivation (box_size, nms_distance, tile_size) from a dataset
 profile, with the three-tier explicit > profile-derived > hardcoded-default
-precedence chain (R6, R7)."""
+precedence chain."""
 
 from detectors_common.scale_derivation import (
     DEFAULT_BOX_SIZE,
@@ -49,7 +49,7 @@ class TestResolveBoxSize:
 
 class TestResolveNmsDistance:
     def test_happy_path_derives_from_profile(self):
-        # AE1: size_px=8, spacing_px=12 -> min(8*1.0, 12*0.5) = 6.0
+        # size_px=8, spacing_px=12 -> min(8*1.0, 12*0.5) = 6.0
         profile = _profile(size_px=8.0, spacing_px=12.0)
 
         result = resolve_nms_distance(None, profile)
