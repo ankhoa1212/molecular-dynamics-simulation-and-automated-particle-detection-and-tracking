@@ -12,12 +12,17 @@ create_box      1 box
 
 # Define default molecule count if not passed via command line
 variable        molecules index 100
-# RNG seed for both atom placement and initial velocities: default 12345
-# (unchanged from before this was parameterized) reproduces every existing
-# trajectory in this repo; override via -var seed <N> for cross-seed variance
-# runs (e.g. verification/paper_provenance's trajectory-analysis seed sweep).
+# RNG seed for both atom placement and initial velocities; override via
+# -var seed <N> for cross-seed variance runs (e.g. verification/
+# paper_provenance's trajectory-analysis seed sweep).
 variable        seed index 12345
-create_atoms    1 random ${molecules} ${seed} NULL overlap 3.9 maxtry 50
+# Atoms start inside the disk inscribed in the box, not the full square: the
+# pull force is linear in distance, so it shrinks the cloud uniformly and a
+# square start would stay square for the whole collapse. The disk is ~79% of
+# the box area, so the overlap/maxtry limits below place fewer atoms than in
+# the full square (e.g. ~1230 of 1500 requested, vs ~1450 before).
+region          start_disk cylinder z ${half_box} ${half_box} ${half_box} -0.5 0.5 units box
+create_atoms    1 random ${molecules} ${seed} start_disk overlap 3.9 maxtry 50
 
 # --- Variables ---
 # Define default variables if not passed via command line
@@ -47,7 +52,10 @@ variable        cutoff_radius equal 10.0
 variable        dist atom sqrt((x-${center_x})^2+(y-${center_y})^2)
 
 ## Turn off force if inside the center (prevents explosion)
-variable vel_force_scale index ${vel_force_scale}
+# Pull strength. The Langevin drag below damps the inward motion too, so
+# atoms drift in at roughly force x damp; 20 completes the collapse within
+# ~8000 steps at N~1200-1500 (a scale of 1 barely moves atoms in 15000 steps).
+variable        vel_force_scale index 20
 variable k_pull atom "(v_dist > v_cutoff_radius) * v_vel_force_scale"
 
 # Apply force
@@ -64,16 +72,12 @@ velocity        all create ${tstart} ${seed} dist gaussian mom yes rot yes
 # --- Integration and Forces ---
 fix             1 all nve
 
-# Variables for bins, should be large enough to catch molecules so degrees of freedom > 0
-variable        xbins equal 5
-variable        ybins equal 5
-
-# This removes the force of molecules moving in a bin 
-compute         thermal_temp all temp/profile 1 1 1 xy ${xbins} ${ybins}
-
-# --- Modify Fix and Output ---
+# Plain (unbiased) Langevin thermostat. Do not bias it with a binned
+# compute temp/profile: the thermostat then only damps velocity relative to
+# each spatial bin's mean, which locks every bin into moving as one block and
+# imprints the bin grid on the collapse (square outline, density ridges along
+# bin edges) instead of a radially symmetric one.
 fix             2 all langevin ${tstart} ${tstop} 1.0 48279
-fix_modify      2 temp thermal_temp  # use modified temp
 
 # Apply the pull force
 fix             3 all addforce v_fx_pull v_fy_pull 0.0
@@ -82,9 +86,6 @@ fix             3 all addforce v_fx_pull v_fy_pull 0.0
 timestep        0.002
 thermo          100
 thermo_style    custom step temp pe ke etotal press vol atoms
-
-# Tell the log output to use the modified temperature
-thermo_modify   temp thermal_temp
 
 # --- Output ---
 dump            1 all custom 100 ${filename}.lammpstrj id type x y vx vy fx fy v_dist

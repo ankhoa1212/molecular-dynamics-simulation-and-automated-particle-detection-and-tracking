@@ -133,7 +133,7 @@ def setup_arg_parser():
         dest="vel_force_scale",
         default=None,
         help="Scaling factor for initial velocity or continuous "
-        "force (default: 9 for velocity_initialization.in, 1.0 for continuous_force.in)",
+        "force (default: 9 for velocity_initialization.in, 20 for continuous_force.in)",
     )
     parser.add_argument("--steps", default="10000", help="Simulation steps (default: 10000)")
     return parser
@@ -197,7 +197,7 @@ def resolve_arguments(args):
         if "velocity_initialization" in config["input_script"]:
             config["vel_force_scale"] = "9"
         else:
-            config["vel_force_scale"] = "1.0"
+            config["vel_force_scale"] = "20"
 
     return config
 
