@@ -12,7 +12,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def run_simulation(cmd, filename, output_dir):
-    """Runs a single simulation command and moves the output file."""
+    """Runs a single simulation command and moves the output file.
+
+    Returns:
+        bool: True if the simulation succeeded.
+    """
     try:
         # shell=True matches bash behavior and is easier given the command
         # string construction, though shell=False with a list is usually safer.
@@ -23,6 +27,8 @@ def run_simulation(cmd, filename, output_dir):
             shutil.move(traj_file, os.path.join(output_dir, traj_file))
     except subprocess.CalledProcessError as e:
         print(f"Error running command: {cmd}\n{e}")
+        return False
+    return True
 
 
 def _parse_json_config(config_file):
@@ -302,15 +308,20 @@ def get_num_cpus():
 
 
 def run_parallel_tasks(commands, output_dir, max_workers):
-    """Runs simulation commands in parallel."""
+    """Runs simulation commands in parallel.
+
+    Returns:
+        list[str]: Filenames of the simulations that failed.
+    """
     print(f"Running simulations in parallel with up to {max_workers} jobs...")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_simulation, cmd, filename, output_dir) for cmd, filename in commands
+            (filename, executor.submit(run_simulation, cmd, filename, output_dir))
+            for cmd, filename in commands
         ]
-        for future in futures:
-            future.result()  # Wait for all to complete
+        failures = [filename for filename, future in futures if not future.result()]
     print("All parallel jobs finished.")
+    return failures
 
 
 def cleanup_files(output_dir, base_script_name):
@@ -372,7 +383,7 @@ def main():
     print(f"  Log dir:    {log_dir}")
     print("=" * 100)
 
-    run_parallel_tasks(commands, config["output_dir"], num_cpus)
+    failures = run_parallel_tasks(commands, config["output_dir"], num_cpus)
 
     cleanup_files(config["output_dir"], base_script_name)
 
@@ -381,6 +392,12 @@ def main():
     print(f"Check the log directory '{log_dir}' for details.")
 
     print_visualization_commands(config, base_script_name)
+
+    if failures:
+        print(f"{len(failures)} of {len(commands)} simulation(s) failed:")
+        for filename in failures:
+            print(f"  {filename}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
