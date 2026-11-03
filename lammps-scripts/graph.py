@@ -20,11 +20,17 @@ def run_script(script_name, file_path, output_dir=None, no_show=False):
         file_path (str or Path): Path to the input file (e.g. .lammpstrj).
         output_dir (str or Path, optional): Directory to save output.
         no_show (bool, optional): If True, suppresses plot display.
+
+    Returns:
+        bool: True if the script succeeded.
     """
     script_dir = Path(__file__).resolve().parent
     script_path = script_dir / script_name
 
-    cmd = ["python3", str(script_path)]
+    # sys.executable, not a bare "python3": the child scripts need this
+    # interpreter's packages (e.g. freud for hexatic_order_graph.py), which a
+    # system python3 outside the venv does not have.
+    cmd = [sys.executable, str(script_path)]
 
     if script_name == "hexatic_order_graph.py":
         cmd.append(str(file_path))
@@ -42,6 +48,8 @@ def run_script(script_name, file_path, output_dir=None, no_show=False):
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         print(f"Error running {script_name}: {e}")
+        return False
+    return True
 
 
 def process_file(file_path, output_dir=None, no_show=False):
@@ -52,10 +60,16 @@ def process_file(file_path, output_dir=None, no_show=False):
         file_path (str or Path): Path to the input file.
         output_dir (str or Path, optional): Directory to save output.
         no_show (bool, optional): If True, suppresses plot display.
+
+    Returns:
+        list[str]: "<script> on <file>" for each script that failed.
     """
     scripts = ["hexatic_order_graph.py", "velocity_graph.py", "temp_graph.py"]
-    for script in scripts:
-        run_script(script, file_path, output_dir, no_show)
+    return [
+        f"{script} on {file_path}"
+        for script in scripts
+        if not run_script(script, file_path, output_dir, no_show)
+    ]
 
 
 def main():
@@ -82,9 +96,10 @@ def main():
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
+    failures = []
     if input_path.is_file():
         if input_path.suffix == ".lammpstrj":
-            process_file(input_path, output_dir, no_show)
+            failures = process_file(input_path, output_dir, no_show)
         else:
             print(f"Error: {input_path} is not a .lammpstrj file.")
             sys.exit(1)
@@ -97,10 +112,16 @@ def main():
 
         print(f"Found {len(files)} files processing...")
         for file_path in files:
-            process_file(file_path, output_dir, no_show)
+            failures.extend(process_file(file_path, output_dir, no_show))
 
     else:
         print(f"Error: {input_path} does not exist.")
+        sys.exit(1)
+
+    if failures:
+        print(f"{len(failures)} analysis script run(s) failed:")
+        for failure in failures:
+            print(f"  {failure}")
         sys.exit(1)
 
 
