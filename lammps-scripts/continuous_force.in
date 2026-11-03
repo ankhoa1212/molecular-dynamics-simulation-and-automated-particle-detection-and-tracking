@@ -50,14 +50,20 @@ set             atom 1 mass 1.0
 # --- Center and Force Variables ---
 variable        center_x equal ${half_box}
 variable        center_y equal ${half_box}
-variable        cutoff_radius equal 10.0
+# No pull within cutoff_radius of the center
+variable        cutoff_radius index 2.0
 
 # Calculate distance from center
 variable        dist atom sqrt((x-${center_x})^2+(y-${center_y})^2)
 
-## Turn off force if inside the center (prevents explosion)
-variable        vel_force_scale index 20
-variable k_pull atom "(v_dist > v_cutoff_radius) * v_vel_force_scale"
+variable        vel_force_scale index 40
+# Pull switches off after this fraction of the run
+variable        pull_off_fraction index 0.666667
+if "${pull_off_fraction} < 0 || ${pull_off_fraction} > 1" then &
+  "print 'ERROR: pull_off_fraction must be between 0 and 1, got ${pull_off_fraction}'" &
+  "quit 1"
+variable        pull_off equal floor(${pull_off_fraction}*${steps})
+variable k_pull atom "(v_dist > v_cutoff_radius) * v_vel_force_scale * (step < v_pull_off)"
 
 # Apply force
 variable        fx_pull atom v_k_pull*(${center_x}-x)/${box_size}
