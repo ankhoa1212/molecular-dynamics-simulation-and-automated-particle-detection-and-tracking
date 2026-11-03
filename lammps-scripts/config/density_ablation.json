@@ -10,5 +10,6 @@
     "t_start": "1.0",
     "t_stop": "0.05",
     "steps": "15000",
-    "vel_force_scale": "20"
+    "vel_force_scale": "20",
+    "start_shape": "box"
 }

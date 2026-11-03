@@ -135,6 +135,12 @@ def setup_arg_parser():
         help="Scaling factor for initial velocity or continuous "
         "force (default: 9 for velocity_initialization.in, 20 for continuous_force.in)",
     )
+    parser.add_argument(
+        "--start_shape",
+        choices=["box", "disk"],
+        default="box",
+        help="Initial atom placement region for continuous_force.in (default: box)",
+    )
     parser.add_argument("--steps", default="10000", help="Simulation steps (default: 10000)")
     return parser
 
@@ -245,7 +251,8 @@ def generate_commands(config, args, lammps_executable):
                 f'-var var_tstart "{current_tstart}" '
                 f'-var var_tstop "{current_tstop}" '
                 f'-var steps "{args.steps}" '
-                f'-var vel_force_scale "{config["vel_force_scale"]}"'
+                f'-var vel_force_scale "{config["vel_force_scale"]}" '
+                f'-var start_shape "{args.start_shape}"'
             )
             commands.append((cmd, filename))
 
