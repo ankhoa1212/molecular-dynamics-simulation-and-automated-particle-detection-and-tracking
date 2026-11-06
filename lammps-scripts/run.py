@@ -12,7 +12,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def run_simulation(cmd, filename, output_dir):
-    """Runs a single simulation command and moves the output file."""
+    """Runs a single simulation command and moves the output file.
+
+    Returns:
+        bool: True if the simulation succeeded.
+    """
     try:
         # shell=True matches bash behavior and is easier given the command
         # string construction, though shell=False with a list is usually safer.
@@ -23,6 +27,8 @@ def run_simulation(cmd, filename, output_dir):
             shutil.move(traj_file, os.path.join(output_dir, traj_file))
     except subprocess.CalledProcessError as e:
         print(f"Error running command: {cmd}\n{e}")
+        return False
+    return True
 
 
 def _parse_json_config(config_file):
@@ -99,6 +105,14 @@ def parse_config(argv_list):
     return args_list
 
 
+def fraction(value):
+    """argparse type for a float between 0 and 1 inclusive."""
+    number = float(value)
+    if not 0.0 <= number <= 1.0:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 1, got {value}")
+    return number
+
+
 def setup_arg_parser():
     """Sets up the argument parser."""
     parser = argparse.ArgumentParser(description="Run LAMMPS simulation.")
@@ -133,7 +147,28 @@ def setup_arg_parser():
         dest="vel_force_scale",
         default=None,
         help="Scaling factor for initial velocity or continuous "
-        "force (default: 9 for velocity_initialization.in, 1.0 for continuous_force.in)",
+        "force (default: 9 for velocity_initialization.in, 40 for continuous_force.in)",
+    )
+    parser.add_argument(
+        "--start_shape",
+        choices=["box", "disk"],
+        default=None,
+        help="Initial atom placement region for continuous_force.in "
+        "(default: the input file's, box)",
+    )
+    parser.add_argument(
+        "--pull_off_fraction",
+        type=fraction,
+        default=None,
+        help="Fraction of the run after which continuous_force.in's pull switches off "
+        "(default: the input file's, 0.666667)",
+    )
+    parser.add_argument(
+        "--cutoff_radius",
+        type=float,
+        default=None,
+        help="Radius around the center with no pull in continuous_force.in "
+        "(default: the input file's, 2.0)",
     )
     parser.add_argument("--steps", default="10000", help="Simulation steps (default: 10000)")
     return parser
@@ -197,7 +232,7 @@ def resolve_arguments(args):
         if "velocity_initialization" in config["input_script"]:
             config["vel_force_scale"] = "9"
         else:
-            config["vel_force_scale"] = "1.0"
+            config["vel_force_scale"] = "40"
 
     return config
 
@@ -247,6 +282,10 @@ def generate_commands(config, args, lammps_executable):
                 f'-var steps "{args.steps}" '
                 f'-var vel_force_scale "{config["vel_force_scale"]}"'
             )
+            for name in ("start_shape", "pull_off_fraction", "cutoff_radius"):
+                value = getattr(args, name)
+                if value is not None:
+                    cmd += f' -var {name} "{value}"'
             commands.append((cmd, filename))
 
             with open("commands.txt", "a", encoding="utf-8") as cmd_file:
@@ -269,15 +308,20 @@ def get_num_cpus():
 
 
 def run_parallel_tasks(commands, output_dir, max_workers):
-    """Runs simulation commands in parallel."""
+    """Runs simulation commands in parallel.
+
+    Returns:
+        list[str]: Filenames of the simulations that failed.
+    """
     print(f"Running simulations in parallel with up to {max_workers} jobs...")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_simulation, cmd, filename, output_dir) for cmd, filename in commands
+            (filename, executor.submit(run_simulation, cmd, filename, output_dir))
+            for cmd, filename in commands
         ]
-        for future in futures:
-            future.result()  # Wait for all to complete
+        failures = [filename for filename, future in futures if not future.result()]
     print("All parallel jobs finished.")
+    return failures
 
 
 def cleanup_files(output_dir, base_script_name):
@@ -339,7 +383,7 @@ def main():
     print(f"  Log dir:    {log_dir}")
     print("=" * 100)
 
-    run_parallel_tasks(commands, config["output_dir"], num_cpus)
+    failures = run_parallel_tasks(commands, config["output_dir"], num_cpus)
 
     cleanup_files(config["output_dir"], base_script_name)
 
@@ -348,6 +392,12 @@ def main():
     print(f"Check the log directory '{log_dir}' for details.")
 
     print_visualization_commands(config, base_script_name)
+
+    if failures:
+        print(f"{len(failures)} of {len(commands)} simulation(s) failed:")
+        for filename in failures:
+            print(f"  {filename}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

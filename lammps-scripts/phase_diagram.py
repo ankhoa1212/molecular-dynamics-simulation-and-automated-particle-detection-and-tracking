@@ -169,7 +169,7 @@ if __name__ == "__main__":
     )
     PARSER.add_argument(
         "--pattern",
-        default="*.in_*_*.lammpstrj",
+        default="*.lammpstrj",
         help="Filename pattern inside the folder (default: %(default)s)",
     )
     PARSER.add_argument("--test", help="Test a single lammpstrj file instead of generating plot")

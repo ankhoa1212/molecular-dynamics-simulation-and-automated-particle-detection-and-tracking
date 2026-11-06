@@ -1,0 +1,64 @@
+Per-set summary (psi6/final_T: mean, bound_frac/nn_spacing: min, others: max)
+
+psi6_final
+                              psi6_final_old  psi6_final_new
+set                                                         
+density_ablation                       0.661           0.811
+phase_diagram_grid                     0.666           0.814
+production_regen                       0.752           0.826
+single_continuous_force_test           0.530           0.652
+trajectory_seed_variance               0.534           0.772
+
+bound_frac
+                              bound_frac_old  bound_frac_new
+set                                                         
+density_ablation                       0.830            1.00
+phase_diagram_grid                     0.180            0.99
+production_regen                       0.995            1.00
+single_continuous_force_test           0.020            0.02
+trajectory_seed_variance               0.335            1.00
+
+n_clusters_ge5
+                              n_clusters_ge5_old  n_clusters_ge5_new
+set                                                                 
+density_ablation                               3                   1
+phase_diagram_grid                             7                   1
+production_regen                               1                   1
+single_continuous_force_test                   5                   1
+trajectory_seed_variance                       7                   1
+
+nn_spacing
+                              nn_spacing_old  nn_spacing_new
+set                                                         
+density_ablation                       0.970           0.974
+phase_diagram_grid                     0.959           0.969
+production_regen                       0.972           0.972
+single_continuous_force_test           0.971           0.974
+trajectory_seed_variance               0.970           0.973
+
+central_void
+                              central_void_old  central_void_new
+set                                                             
+density_ablation                         2.335             0.700
+phase_diagram_grid                       4.460             1.988
+production_regen                         2.289             0.641
+single_continuous_force_test             5.432             5.364
+trajectory_seed_variance                 3.341             0.706
+
+squareness
+                              squareness_old  squareness_new
+set                                                         
+density_ablation                       0.360           0.194
+phase_diagram_grid                     0.587           0.325
+production_regen                       0.099           0.159
+single_continuous_force_test           1.000           1.000
+trajectory_seed_variance               0.513           0.310
+
+final_T
+                              final_T_old  final_T_new
+set                                                   
+density_ablation                    0.306        0.082
+phase_diagram_grid                  0.228        0.085
+production_regen                    0.073        0.072
+single_continuous_force_test        0.596        0.607
+trajectory_seed_variance            0.443        0.082

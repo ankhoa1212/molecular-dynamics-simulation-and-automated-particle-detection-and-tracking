@@ -10,5 +10,8 @@
     "t_start": "1.0",
     "t_stop": "0.05",
     "steps": "15000",
-    "vel_force_scale": "1"
+    "vel_force_scale": "40",
+    "start_shape": "box",
+    "pull_off_fraction": "0.666667",
+    "cutoff_radius": "2.0"
 }
