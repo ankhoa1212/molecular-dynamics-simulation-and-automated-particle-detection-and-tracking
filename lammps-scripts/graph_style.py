@@ -23,7 +23,19 @@ MAIN_COLOR = "#0072B2"  # blue: the measured quantity
 SECONDARY_COLOR = "#E69F00"  # orange: a second curve to compare against
 REFERENCE_COLOR = "#7F7F7F"  # gray: the pull release
 
-LABEL_BOX = {"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none"}
+# Labels sit above the lines and markers (LABEL_ZORDER) on a semi-transparent box,
+# so a line passing behind a label stays faintly visible instead of cutting the text
+LABEL_BOX = {"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none", "alpha": 0.75}
+LABEL_ZORDER = 5
+
+# The release label sits beside the release line at whichever of these heights
+# (axes fraction) is farthest from the curve under it
+RELEASE_LABEL_HEIGHTS = (0.85, 0.5, 0.15)
+# Share of the x-range the release label covers beside the line
+RELEASE_LABEL_SPAN = 0.2
+# A release after this share of the run gets its label on the left of the line,
+# so the label stays inside the axes
+LATE_RELEASE = 0.75
 
 # continuous_force.in echoes this line into the LAMMPS log with its values filled in
 PULL_RELEASE_PATTERN = re.compile(
@@ -80,7 +92,21 @@ def _label_point(ax, step, value, text, align):
         va="top" if below else "bottom",
         fontsize=9,
         bbox=LABEL_BOX,
+        zorder=LABEL_ZORDER,
     )
+
+
+def _release_label_height(ax, steps, values, x_low, x_high):
+    """The candidate height farthest from the curve between x_low and x_high."""
+    y_low, y_high = ax.get_ylim()
+    under = [
+        (value - y_low) / (y_high - y_low)
+        for step, value in zip(steps, values)
+        if x_low <= step <= x_high
+    ]
+    if not under:
+        return RELEASE_LABEL_HEIGHTS[0]
+    return max(RELEASE_LABEL_HEIGHTS, key=lambda h: min(abs(h - f) for f in under))
 
 
 def mark_start_release_end(ax, path, steps, values):
@@ -89,29 +115,46 @@ def mark_start_release_end(ax, path, steps, values):
     run's log records a pull release inside the run, draws the release as a
     dashed line and labels the value there (first frame at or after it).
     """
+    if len(steps) == 0:
+        return
+
     _label_point(ax, steps[0], values[0], "Start", "left")
     _label_point(ax, steps[-1], values[-1], "End", "right")
 
     release_step = find_pull_release_step(path)
-    if release_step is None or not steps[0] < release_step < steps[-1]:
+    if release_step is None:
         print("No pull release found in the run's log; not marking it.")
+        return
+    if not steps[0] < release_step < steps[-1]:
+        print(
+            f"Pull release at step {release_step} is outside the plotted steps "
+            f"{steps[0]}-{steps[-1]}; not marking it."
+        )
         return
 
     ax.axvline(release_step, color=REFERENCE_COLOR, linestyle="--", linewidth=1.2)
     release_index = next(i for i, step in enumerate(steps) if step >= release_step)
     ax.scatter([steps[release_index]], [values[release_index]], color=MAIN_COLOR, s=30, zorder=3)
-    # Label at mid-height beside the line, clear of the start and end labels
+
+    # Label beside the line (on its left for a late release), at the height
+    # farthest from the curve it covers
+    x_span = RELEASE_LABEL_SPAN * (steps[-1] - steps[0])
+    late = release_step - steps[0] > LATE_RELEASE * (steps[-1] - steps[0])
+    x_low, x_high = (
+        (release_step - x_span, release_step) if late else (release_step, release_step + x_span)
+    )
     ax.annotate(
         f"Pull released (step {release_step})\n{values[release_index]:.2f}",
-        xy=(release_step, 0.5),
+        xy=(release_step, _release_label_height(ax, steps, values, x_low, x_high)),
         xycoords=("data", "axes fraction"),
-        xytext=(6, 0),
+        xytext=(-6, 0) if late else (6, 0),
         textcoords="offset points",
-        ha="left",
+        ha="right" if late else "left",
         va="center",
         fontsize=9,
         color=REFERENCE_COLOR,
         bbox=LABEL_BOX,
+        zorder=LABEL_ZORDER,
     )
 
 
