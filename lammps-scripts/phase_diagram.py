@@ -13,6 +13,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 from hexatic_order_analysis import parse_and_calc_hexatic
 
+# Marker area in points^2: MIN_MARKER_SIZE at zero order, growing by
+# MARKER_SIZE_RANGE at full order
+MIN_MARKER_SIZE = 40
+MARKER_SIZE_RANGE = 220
+
+
+def _marker_scale(fig, ax, epsilons, num_molecules):
+    """
+    Returns the factor (<= 1) to scale marker areas by so that the largest
+    marker's diameter fits in 90% of the smallest gap between neighbouring grid
+    cells on screen. Grids as coarse as 0.5 in epsilon and 100 in N return 1.
+    """
+    position = ax.get_position()
+    points_per_unit = []
+    for values, axis_range, axis_inches in (
+        (epsilons, ax.get_xlim(), position.width * fig.get_figwidth()),
+        (num_molecules, ax.get_ylim(), position.height * fig.get_figheight()),
+    ):
+        gaps = np.diff(np.unique(values))
+        if len(gaps) == 0:
+            continue
+        points_per_data_unit = axis_inches * 72 / (axis_range[1] - axis_range[0])
+        points_per_unit.append(gaps.min() * points_per_data_unit)
+    if not points_per_unit:
+        return 1.0
+    max_diameter = 0.9 * min(points_per_unit)
+    return min(1.0, max_diameter**2 / (MIN_MARKER_SIZE + MARKER_SIZE_RANGE))
+
 
 def extract_epsilon_and_molecules(filename):
     """
@@ -129,8 +157,8 @@ def generate_stability_plot(data_dir, pattern, verbose):
     # the common forms of CVD. Marker size, scaled with the value itself,
     # is the second, non-color feature -- higher order shows as a visibly
     # larger point, independent of the color channel entirely.
-    plt.figure(figsize=(10, 7))
-    marker_sizes = [40 + 220 * v for v in _avg_psi6]
+    fig = plt.figure(figsize=(10, 7))
+    marker_sizes = [MIN_MARKER_SIZE + MARKER_SIZE_RANGE * v for v in _avg_psi6]
     scatter = plt.scatter(
         epsilons,
         num_molecules,
@@ -152,6 +180,11 @@ def generate_stability_plot(data_dir, pattern, verbose):
     plt.xlim(0, max_epsilon)
     plt.ylim(0, max_molecules)
     plt.grid(True, linestyle="--", alpha=0.6)
+
+    # Shrink the markers on fine grids so neighbouring cells don't overlap
+    scale = _marker_scale(fig, plt.gca(), epsilons, num_molecules)
+    if scale < 1.0:
+        scatter.set_sizes([size * scale for size in marker_sizes])
 
     plt.savefig(f"{os.path.basename(data_dir)}_hexatic_order_phase_diagram.png")
     plt.show()
