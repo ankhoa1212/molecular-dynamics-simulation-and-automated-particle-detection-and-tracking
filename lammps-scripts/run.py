@@ -163,13 +163,6 @@ def setup_arg_parser():
         help="Fraction of the run at which continuous_force.in's pull is released; "
         "the pull is on from step 0 until then (default: the input file's, 0.666667)",
     )
-    parser.add_argument(
-        "--no_pull_radius",
-        type=float,
-        default=None,
-        help="Radius around the center with no pull in continuous_force.in "
-        "(default: the input file's, 2.0)",
-    )
     parser.add_argument("--steps", default="10000", help="Simulation steps (default: 10000)")
     return parser
 
@@ -282,7 +275,7 @@ def generate_commands(config, args, lammps_executable):
                 f'-var steps "{args.steps}" '
                 f'-var vel_force_scale "{config["vel_force_scale"]}"'
             )
-            for name in ("start_shape", "pull_release_fraction", "no_pull_radius"):
+            for name in ("start_shape", "pull_release_fraction"):
                 value = getattr(args, name)
                 if value is not None:
                     cmd += f' -var {name} "{value}"'

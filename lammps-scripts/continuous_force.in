@@ -50,9 +50,6 @@ set             atom 1 mass 1.0
 # --- Center and Force Variables ---
 variable        center_x equal ${half_box}
 variable        center_y equal ${half_box}
-# Atoms closer than this to the center feel no pull (separate from the LJ
-# pair cutoff above)
-variable        no_pull_radius index 2.0
 
 # Calculate distance from center
 variable        dist atom sqrt((x-${center_x})^2+(y-${center_y})^2)
@@ -68,7 +65,9 @@ if "${pull_release_fraction} < 0 || ${pull_release_fraction} > 1" then &
   "quit 1"
 # Step at which the pull is released
 variable        pull_release_step equal floor(${pull_release_fraction}*${steps})
-variable        pull_strength atom "(v_dist > v_no_pull_radius) * v_vel_force_scale * (step < v_pull_release_step)"
+# vel_force_scale until the release step, then 0. The pull is a linear
+# spring, so it already falls to zero at the center.
+variable        pull_strength equal "v_vel_force_scale * (step < v_pull_release_step)"
 
 # Apply force
 variable        fx_pull atom v_pull_strength*(${center_x}-x)/${box_size}
