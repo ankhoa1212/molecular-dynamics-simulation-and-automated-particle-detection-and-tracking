@@ -29,8 +29,9 @@ LABEL_BOX = {"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "n
 LABEL_ZORDER = 5
 
 # The release label sits beside the release line at whichever of these heights
-# (axes fraction) is farthest from the curve under it
-RELEASE_LABEL_HEIGHTS = (0.85, 0.5, 0.15)
+# (axes fraction) is farthest from the curve under it. The top one stays below
+# the upper-right legend.
+RELEASE_LABEL_HEIGHTS = (0.75, 0.45, 0.15)
 # Share of the x-range the release label covers beside the line
 RELEASE_LABEL_SPAN = 0.2
 # A release after this share of the run gets its label on the left of the line,
