@@ -61,6 +61,7 @@ import numpy as np
 
 from render import _lj_to_pixels
 from render_brightfield import (
+    DEFAULT_INTENSITY_SCALE,
     _apply_partial_coherence_blur,
     _sample_particle_properties,
     deeptrack_equivalent_index,
@@ -252,7 +253,7 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None, st
     bff_cfg = cfg.get("brightfield_fast", {})
     max_particles = int(bff_cfg.get("max_particles", 5000))
     n_z_slices = max(1, int(bff_cfg.get("n_z_slices", 10)))
-    intensity_scale = float(bf_cfg.get("intensity_scale", 20000.0))
+    intensity_scale = float(bf_cfg.get("intensity_scale", DEFAULT_INTENSITY_SCALE))
     refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
     na = effective_collection_na(bf_cfg)
     wavelength = float(bf_cfg.get("wavelength", 550e-9))

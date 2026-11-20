@@ -235,12 +235,12 @@ synthetic:
                          # brightfield search loop (render_strategy: brightfield
                          # calibration entry point) has real timing data at this
                          # dataset's actual canvas size and defocus range.
-    intensity_scale: 18000.0   # see config.yaml (20000 before na 1.45 / index 1.59)
-                                # ADU per unit of Brightfield's raw (unitless)
+    intensity_scale: 18000.0   # ADU per unit of Brightfield's raw (unitless)
                                 # intensity output -- maps the optical solve onto
-                                # this pipeline's 16-bit ADU convention. Starting
-                                # point, not calibrated -- see calibrate_psf.py's
-                                # brightfield entry point.
+                                # this pipeline's 16-bit ADU convention. Same value
+                                # and measurement as config.yaml (20000 before
+                                # na 1.45 / index 1.59 pushed too many pixels to
+                                # the PNG white point).
     coherence_blur_sigma_px: 2.0   # Gaussian blur (px) applied to the resolved
                                 # intensity before background/noise, approximating
                                 # partial spatial coherence (real microscope
@@ -251,8 +251,10 @@ synthetic:
                                 # (data-setup/models/lodestar_model_15/crops/,
                                 # lodestar_model_10/crops/) don't show, just one
                                 # soft halo around the core. 2.0px picked by direct
-                                # comparison against those crops; 0 disables it. See
-                                # render_brightfield.py's _apply_partial_coherence_blur.
+                                # comparison against those crops, and re-checked at
+                                # na 1.45 / index 1.59 (see config.yaml); 0 disables
+                                # it. See render_brightfield.py's
+                                # _apply_partial_coherence_blur.
 
     # --- Optics params, passed to deeptrack.Brightfield ---
     na: 1.45                      # oil-immersion objective; the solve uses min(na,

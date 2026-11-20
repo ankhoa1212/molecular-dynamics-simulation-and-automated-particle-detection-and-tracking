@@ -19,6 +19,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -400,9 +401,11 @@ class TestOpticsFaithfulness:
         index_fn = deeptrack_stub.Sphere.call_args.kwargs["refractive_index"]
         assert index_fn(_ID=(0,)) == pytest.approx(1.33 + 0.26 / 1.33)
 
-    def test_mie_path_uses_the_capped_na_and_the_real_index(self):
+    def test_mie_path_stays_below_the_medium_index_and_uses_the_real_index(self):
         # MieSphere's own Mie coefficients use n_p/n_m correctly, so it gets
         # the real index; only Brightfield's beam-propagation phase is mapped.
+        # Its NA stays MIE_MAX_NA_FRACTION below n_m: at NA = n_m deeptrack's
+        # Mie solution is singular (see that constant's comment).
         rbf = _import_with_mock_deeptrack()
         bf = dict(_cfg()["brightfield"], na=1.45, refractive_index_min=1.59)
         bf["refractive_index_max"] = 1.59
@@ -413,9 +416,51 @@ class TestOpticsFaithfulness:
                 _cfg(brightfield=bf), positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
             )
         deeptrack_stub = sys.modules["deeptrack"]
-        assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == 1.33
+        assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == pytest.approx(0.98 * 1.33)
         index_fn = deeptrack_stub.MieSphere.call_args.kwargs["refractive_index"]
         assert index_fn(_ID=(0,)) == pytest.approx(1.59)
+
+    def test_mie_path_keeps_a_lower_na_unchanged(self):
+        rbf = _import_with_mock_deeptrack()
+        bf = dict(_cfg()["brightfield"], na=1.0)
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        rbf.generate_mie_ground_truth(
+            _cfg(brightfield=bf), positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
+        )
+        assert sys.modules["deeptrack"].Brightfield.call_args.kwargs["NA"] == 1.0
+
+    @pytest.mark.parametrize("bad_value", [np.nan, 1e27])
+    def test_mie_path_fails_fast_on_unphysical_intensities(self, bad_value):
+        # What deeptrack 2.0.1's MieSphere returned at NA = n_m (median
+        # ~1e27): calibration must not silently fit candidates to it.
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        cfg = _cfg(brightfield=dict(_cfg()["brightfield"], na=1.0))
+        with mock.patch.object(
+            rbf, "_resolve_brightfield_intensity", return_value=np.full((16, 16), bad_value)
+        ):
+            with pytest.raises(RuntimeError, match="unphysical intensities"):
+                rbf.generate_mie_ground_truth(
+                    cfg, positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
+                )
+
+    def test_defaults_for_missing_keys_match_config_yaml(self):
+        # A config that leaves the optics out renders the production optics,
+        # not stale pre-NA-1.45 values.
+        rbf = _import_with_mock_deeptrack()
+        with open(Path(__file__).resolve().parent.parent / "config.yaml") as f:
+            production = yaml.safe_load(f)["synthetic"]["brightfield"]
+        assert rbf.DEFAULT_NA == production["na"]
+        assert rbf.DEFAULT_REFRACTIVE_INDEX == production["refractive_index_min"]
+        assert rbf.DEFAULT_REFRACTIVE_INDEX == production["refractive_index_max"]
+        assert rbf.DEFAULT_INTENSITY_SCALE == production["intensity_scale"]
+        assert rbf.DEFAULT_Z_MIN_PX == production["z_min_px"]
+        assert rbf.DEFAULT_Z_MAX_PX == production["z_max_px"]
+        _, refractive_indices, z = rbf._sample_particle_properties(50, {}, np.random.default_rng(0))
+        assert np.all(refractive_indices == 1.59)
+        assert np.all((z >= -13.0) & (z <= 0.0))
 
 
 class TestRenderFrameBrightfieldRealPhysics:

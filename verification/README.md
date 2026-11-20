@@ -94,7 +94,7 @@ uv run python calibrate_psf.py \
     --merge-config config.yaml
 ```
 
-**Use `--real-frames`; `--mie-frames` is currently unusable.** With this setup, deeptrack 2.0.1's `MieSphere` returns intensities around 1e26–1e29 instead of ~1 (and the same shape for index 1.45 and 1.59), so the generated ground-truth frames are saturated noise; the unit tests mock deeptrack and don't catch it.
+`--mie-frames` renders with a collection NA of at most 0.98 × `refractive_index_medium` (1.30 in water), even when `na` is 1.45: at NA = `refractive_index_medium` deeptrack 2.0.1's `MieSphere` is singular (intensities ~1e27), and just below it its output is erratic. `generate_mie_ground_truth` raises if the Mie output ever comes back unphysical, rather than letting the search fit noise.
 
 `--real-frames` is optional here (unlike the default mode above) as long as `--mie-frames` is greater than 0 — at least one of the two fitting targets is required. `--merge-config` writes the result under `synthetic.brightfield` the same way the default mode writes `synthetic.psf`/etc.; the same PSD mid-band similarity ≥ 0.85 acceptance criterion applies, checked via `compare_renders.py --strategies brightfield`.
 
