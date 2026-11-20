@@ -5,7 +5,7 @@
     "molecules_end": "1500",
     "molecules_step": "100",
     "var_epsilon": "0.5",
-    "var_epsilon_end": "3.0",
+    "var_epsilon_end": "5.0",
     "var_epsilon_step": "0.1",
     "t_start": "1.0",
     "t_stop": "1.0",
