@@ -1,6 +1,6 @@
 {
     "input_file": "continuous_force.in",
-    "output_dir": "results/simulation/continuous_force",
+    "output_dir": "test_continuous_force_same_temp",
     "molecules": "100",
     "molecules_end": "1500",
     "molecules_step": "100",
@@ -8,7 +8,9 @@
     "var_epsilon_end": "5.0",
     "var_epsilon_step": "0.5",
     "t_start": "1.0",
-    "t_stop": "0.05",
+    "t_stop": "1.0",
     "steps": "15000",
-    "vel_force_scale": "1"
+    "vel_force_scale": "40",
+    "start_shape": "box",
+    "pull_release_fraction": "0.666667"
 }
