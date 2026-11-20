@@ -5,13 +5,21 @@ calculations from trajectory dump files.
 """
 
 import argparse
+import math
 import os
+import re
 import sys
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 from lammps_parser import parse_lammps_dump
+
+# continuous_force.in echoes this line into the LAMMPS log with its values filled in
+PULL_RELEASE_PATTERN = re.compile(
+    r"^variable\s+pull_release_step\s+equal\s+floor\(([0-9.eE+-]+)\*([0-9]+)\)$"
+)
 
 
 def generate_temp_graph_filename(filename, ending, output_dir=None):
@@ -103,8 +111,14 @@ def _process_atom_lines(atom_lines):
     return data_arr[:, 0], data_arr[:, 1], data_arr[:, 2], data_arr[:, 3]
 
 
+# Width of the rings (in sigma) over which the inward collapse flow is averaged.
+# 1-4 sigma give the same temperature within ~0.1; much wider rings start
+# counting the flow's growth with radius as heat.
+RING_WIDTH = 2.0
+
+
 def _compute_radial_projection(x, y, vx, vy):
-    """Computes radial velocity and tangential squared velocity."""
+    """Computes distance from the pull center, radial velocity and tangential squared velocity."""
     center_x = 100.0
     center_y = 100.0
     delta_x = x - center_x
@@ -118,27 +132,28 @@ def _compute_radial_projection(x, y, vx, vy):
     v_rad = vx * unit_radial_x + vy * unit_radial_y
     vel_sq = vx**2 + vy**2
     vel_tan_sq = vel_sq - v_rad**2
-    return v_rad, vel_sq, vel_tan_sq
+    return dist, v_rad, vel_sq, vel_tan_sq
 
 
 def _compute_frame_temperature(x, y, vx, vy, num_atoms):
     """
-    Computes standard and drift-corrected temperatures for a single frame.
+    Computes total and thermal (collapse flow removed) temperatures for a single frame.
     """
-    v_rad, vel_sq, vel_tan_sq = _compute_radial_projection(x, y, vx, vy)
+    dist, v_rad, vel_sq, vel_tan_sq = _compute_radial_projection(x, y, vx, vy)
 
     # Raw KE = 0.5 * m * (vx^2 + vy^2); T = Sum(v^2) / (2 * N) [2 degrees of freedom]
     total_temp = np.sum(vel_sq) / (2.0 * num_atoms)
 
-    # Mean radial velocity is the bulk implosion speed
-    mean_v_rad = np.mean(v_rad)
+    # The pull is a linear spring, so the inward flow grows with distance from
+    # the center. Remove it ring by ring: subtract each ring's mean radial
+    # velocity from the atoms in that ring.
+    _, ring_index = np.unique((dist // RING_WIDTH).astype(int), return_inverse=True)
+    ring_mean_v_rad = np.bincount(ring_index, weights=v_rad) / np.bincount(ring_index)
+    v_rad_fluctuation = v_rad - ring_mean_v_rad[ring_index]
 
-    # Subtract this coherent drift from every atom's radial velocity
-    v_rad_fluctuation = v_rad - mean_v_rad
-
-    # Re-calculate Total Kinetic Energy using the FLUCTUATIONS only
-    corrected_sq_sum = np.sum(vel_tan_sq + v_rad_fluctuation**2)
-    corrected_temp = corrected_sq_sum / (2.0 * num_atoms)
+    # Each ring's mean removes one degree of freedom
+    dof = max(2 * num_atoms - len(ring_mean_v_rad), 1)
+    corrected_temp = np.sum(vel_tan_sq + v_rad_fluctuation**2) / dof
 
     return total_temp, corrected_temp
 
@@ -149,9 +164,44 @@ def _calculate_temps_for_frame(frame):
     return _compute_frame_temperature(x, y, vx, vy, frame["num_atoms"])
 
 
+def _find_pull_release_step(filename):
+    """
+    Returns the step at which continuous_force.in released the pull, read from the
+    run's LAMMPS log (run.py writes it to logs/<name>.log beside the trajectory).
+    Returns None when there is no log or the input has no pull release.
+    """
+    path = Path(filename)
+    log_path = path.parent / "logs" / f"{path.stem}.log"
+    if not log_path.exists():
+        return None
+
+    release_step = None
+    with open(log_path, "r", encoding="utf-8") as log_file:
+        for line in log_file:
+            match = PULL_RELEASE_PATTERN.match(line.strip())
+            if match:
+                release_step = math.floor(float(match.group(1)) * int(match.group(2)))
+    return release_step
+
+
+def _annotate_temperature(step, temp, text, align):
+    """Marks a point on the thermal curve and labels it with its temperature."""
+    plt.scatter([step], [temp], color="blue", s=30, zorder=3)
+    plt.annotate(
+        f"{text}: T = {temp:.2f}",
+        xy=(step, temp),
+        xytext=(8 if align == "left" else -8, 12),
+        textcoords="offset points",
+        ha=align,
+        fontsize=9,
+        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none"},
+    )
+
+
 def plot_temperatures(filename, output_dir=None, no_show=False):
     """
-    Plots drift-corrected temperature from a LAMMPS dump file.
+    Plots total and thermal temperature from a LAMMPS dump file, marking the pull
+    release and labelling the thermal temperature at the start, release and end.
     """
     timesteps = []
     total_temps = []
@@ -186,7 +236,7 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
         color="red",
         linewidth=1.0,
         alpha=0.6,
-        label="Raw Total Temp (Includes Force Work)",
+        label="Temperature (including pull motion)",
     )
 
     plt.plot(
@@ -194,8 +244,39 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
         corrected_temps,
         color="blue",
         linewidth=2.0,
-        label="Corrected Temp (Force Drift Removed)",
+        label="Temperature (pull motion removed)",
     )
+
+    _annotate_temperature(timesteps[0], corrected_temps[0], "Start", "left")
+    _annotate_temperature(timesteps[-1], corrected_temps[-1], "End", "right")
+
+    release_step = _find_pull_release_step(filename)
+    if release_step is not None and timesteps[0] < release_step < timesteps[-1]:
+        plt.axvline(release_step, color="gray", linestyle="--", linewidth=1.2)
+        # Thermal temperature at the first dump frame at or after the release
+        release_index = next(i for i, step in enumerate(timesteps) if step >= release_step)
+        plt.scatter(
+            [timesteps[release_index]],
+            [corrected_temps[release_index]],
+            color="blue",
+            s=30,
+            zorder=3,
+        )
+        # Label at mid-height beside the line, clear of the start/end labels
+        plt.annotate(
+            f"Pull released (step {release_step})\nT = {corrected_temps[release_index]:.2f}",
+            xy=(release_step, 0.5),
+            xycoords=("data", "axes fraction"),
+            xytext=(6, 0),
+            textcoords="offset points",
+            ha="left",
+            va="center",
+            fontsize=9,
+            color="dimgray",
+            bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none"},
+        )
+    else:
+        print("No pull release found in the run's log; not marking it.")
 
     plt.title("Temperature over Time (From LAMMPS dump)")
     plt.xlabel("Timestep")
@@ -223,7 +304,6 @@ if __name__ == "__main__":
     if ARGS.filename.endswith(".log"):
         plot_log_temperature(ARGS.filename, ARGS.output_dir, ARGS.no_show)
     elif ARGS.filename.endswith(".lammpstrj"):
-        print("Note: graphing the .log file will be more accurate")
         plot_temperatures(ARGS.filename, ARGS.output_dir, ARGS.no_show)
     else:
         print("Error: File should be either .log or .lammpstrj")
