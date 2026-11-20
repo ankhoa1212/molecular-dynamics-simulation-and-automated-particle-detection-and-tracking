@@ -74,12 +74,12 @@ def main():
 
         num_molecules, epsilon = extract_epsilon_and_molecules(filename)
 
-        frames, hexatic_order = parse_and_calc_hexatic(filepath)
+        steps, hexatic_order = parse_and_calc_hexatic(filepath)
 
         label_str = f"N={num_molecules}, ε={epsilon}"
-        plt.plot(frames, hexatic_order, label=label_str, alpha=0.7)
+        plt.plot(steps, hexatic_order, label=label_str, alpha=0.7)
 
-        plt.xlabel("Frame")
+        plt.xlabel("Timestep")
         plt.ylabel(r"Global Hexatic Order $|\Psi_6|$")
         plt.title(f"Hexatic Order Parameter: N={num_molecules}, ε={epsilon}")
         plt.legend()
