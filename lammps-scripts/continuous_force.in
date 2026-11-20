@@ -66,8 +66,7 @@ variable        pull_release_fraction index 0.666667
 if "${pull_release_fraction} < 0 || ${pull_release_fraction} > 1" then &
   "print 'ERROR: pull_release_fraction must be between 0 and 1, got ${pull_release_fraction}'" &
   "quit 1"
-# The same release point as a step number, which the per-atom formula below
-# needs. Derived only: set pull_release_fraction instead.
+# Step at which the pull is released
 variable        pull_release_step equal floor(${pull_release_fraction}*${steps})
 variable        pull_strength atom "(v_dist > v_no_pull_radius) * v_vel_force_scale * (step < v_pull_release_step)"
 
