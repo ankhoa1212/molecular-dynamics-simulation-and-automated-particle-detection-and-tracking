@@ -27,9 +27,6 @@ def run_script(script_name, file_path, output_dir=None, no_show=False):
     script_dir = Path(__file__).resolve().parent
     script_path = script_dir / script_name
 
-    # sys.executable, not a bare "python3": the child scripts need this
-    # interpreter's packages (e.g. freud for hexatic_order_graph.py), which a
-    # system python3 outside the venv does not have.
     cmd = [sys.executable, str(script_path)]
 
     if script_name == "hexatic_order_graph.py":
