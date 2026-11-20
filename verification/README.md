@@ -78,6 +78,8 @@ uv run python compare_renders.py \
 
 **Acceptance criterion:** PSD mid-band similarity ≥ 0.85 between a calibrated render and a real reference frame indicates the rendering is well-calibrated for benchmarking.
 
+The production `brightfield_fast` config does not meet it yet: against a 512×512 crop of the real 2 µm video it scores 0.68 (0.69 before the NA 1.45 / index 1.59 change). Bead size is the main gap, not density or optics: synthetic beads are 1 µm (`radius_min/max: 0.5e-6`) while the real ones are 2 µm, and a 21-bead render scores 0.66 at radius 0.5 µm, 0.74 at 0.75 µm and 0.80 at 1.0 µm.
+
 ### Calibrating `brightfield`
 
 The `brightfield` strategy has its own calibration entry point — a bounded random search over `synthetic.brightfield`'s optics/particle parameters, scored against real footage and/or a small set of physically rigorous Mie-scattering ground-truth frames generated on the fly, since `calibrate_from_frames`'s isolated-spot Gaussian fit doesn't apply to this strategy's dense, ring-shaped output:
@@ -91,6 +93,8 @@ uv run python calibrate_psf.py \
     --n-iterations 15 \
     --merge-config config.yaml
 ```
+
+**Use `--real-frames`; `--mie-frames` is currently unusable.** With this setup, deeptrack 2.0.1's `MieSphere` returns intensities around 1e26–1e29 instead of ~1 (and the same shape for index 1.45 and 1.59), so the generated ground-truth frames are saturated noise; the unit tests mock deeptrack and don't catch it.
 
 `--real-frames` is optional here (unlike the default mode above) as long as `--mie-frames` is greater than 0 — at least one of the two fitting targets is required. `--merge-config` writes the result under `synthetic.brightfield` the same way the default mode writes `synthetic.psf`/etc.; the same PSD mid-band similarity ≥ 0.85 acceptance criterion applies, checked via `compare_renders.py --strategies brightfield`.
 
@@ -137,8 +141,8 @@ Key settings in `config.yaml` under `synthetic:`:
 | `background.amplitude` / `.heterogeneity_scale` | Spatially varying background for `brightfield`/`brightfield_fast`'s shared sCMOS camera-noise model |
 | `noise.gain_sigma` / `noise.read_noise` | sCMOS noise model params, shared by `brightfield`/`brightfield_fast` |
 | `brightfield.max_particles` | Safety cap on particles rendered per `brightfield` frame (real per-frame cost is highly variable; see `render_brightfield.py`) |
-| `brightfield.na` / `.wavelength` / `.resolution` / `.refractive_index_medium` | `brightfield` optics params, passed to `deeptrack.Brightfield` |
-| `brightfield.radius_min`/`.radius_max`, `.refractive_index_min`/`.refractive_index_max`, `.z_min_px`/`.z_max_px` | `brightfield` per-particle physical property ranges (single particle type this iteration) |
+| `brightfield.na` / `.wavelength` / `.resolution` / `.refractive_index_medium` | `brightfield` optics params, passed to `deeptrack.Brightfield`. `na` is the objective's (1.45, oil immersion); the solve uses `min(na, refractive_index_medium)`, since light in the water can't travel beyond NA 1.33 (`render_brightfield.effective_collection_na`, which warns when capping) |
+| `brightfield.radius_min`/`.radius_max`, `.refractive_index_min`/`.refractive_index_max`, `.z_min_px`/`.z_max_px` | `brightfield` per-particle physical property ranges (single particle type this iteration). The refractive index is the real one (polystyrene, 1.59); both brightfield paths hand deeptrack `render_brightfield.deeptrack_equivalent_index` of it, so the applied phase matches the physical one (deeptrack 2.0.1's `Brightfield` otherwise overstates it by `refractive_index_medium`) |
 | `brightfield.mie_max_particles` / `.mie_max_frames` | Caps on `brightfield`'s Mie ground-truth calibration tier |
 | `brightfield.coherence_blur_sigma_px` | Gaussian blur (px) applied to resolved intensity to approximate partial spatial coherence, suppressing the unrealistic secondary diffraction ring a fully-coherent solve otherwise produces; `0` disables it. Shared by `brightfield` and `brightfield_fast` |
 | `brightfield_fast.max_particles` | Safety cap on particles rendered per `brightfield_fast` frame; above this, a random subset is rendered and a warning is raised (see `render_brightfield_fast.py`) |
