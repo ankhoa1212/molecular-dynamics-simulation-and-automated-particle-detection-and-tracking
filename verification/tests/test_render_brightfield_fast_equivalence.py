@@ -173,6 +173,40 @@ class TestMultiParticleEquivalence:
         assert ssim >= SSIM_THRESHOLD
 
 
+def _production_optics(cfg):
+    """config.yaml's optics: the real setup's NA 1.45 objective (rendered at
+    the capped NA 1.33, see render_brightfield.effective_collection_na) and
+    polystyrene index 1.59 (applied through deeptrack_equivalent_index)."""
+    cfg["brightfield"].update(
+        na=1.45, refractive_index_min=1.59, refractive_index_max=1.59, intensity_scale=18000.0
+    )
+    return cfg
+
+
+@pytest.mark.filterwarnings("ignore:synthetic.brightfield.na")
+class TestProductionOpticsEquivalence:
+    """The same scenarios at config.yaml's optics and bright-core defocus
+    range (z -13..0). Measured: single bead 0.995-0.998 across z, N=20
+    0.836-0.858, dense N=45 0.798 -- in line with the original optics'
+    0.79-0.87, so the stronger 1.59 phase didn't open a fast/slow gap."""
+
+    @pytest.mark.parametrize("z", [-13.0, -6.0, -1.0])
+    def test_single_particle_across_the_defocus_range(self, z):
+        positions = np.array([[50.37, 50.82]])
+        cfg = _production_optics(_cfg(z_min_px=z, z_max_px=z))
+        assert _ssim_for(positions, cfg, seed=10) >= SSIM_THRESHOLD
+
+    def test_n20_non_overlapping_spanning_the_defocus_range(self):
+        positions = _non_overlapping_positions(20, 15, 85, min_sep=6.0, seed=20)
+        cfg = _production_optics(_cfg(z_min_px=-13.0, z_max_px=0.0))
+        assert _ssim_for(positions, cfg, seed=21) >= SSIM_THRESHOLD
+
+    def test_dense_touching_cluster_n45(self):
+        positions = np.random.default_rng(30).uniform(20, 44, size=(45, 2))
+        cfg = _production_optics(_cfg(image_size=64, z_min_px=-13.0, z_max_px=0.0))
+        assert _ssim_for(positions, cfg, seed=30) >= SSIM_THRESHOLD
+
+
 class TestZBucketGranularityDiagnostic:
     """Diagnostic (not a pass/fail correctness gate): confirms that
     increasing n_z_slices does not blow up the defocused SSIM, i.e. any

@@ -468,7 +468,17 @@ class TestRenderFrameBrightfieldRealPhysics:
         assert frame.shape == (48, 48)
         assert frame.max() > frame.min()  # not a uniform/blank frame
 
-    def test_single_particle_secondary_ring_suppressed_relative_to_primary_feature(self):
+    @pytest.mark.filterwarnings("ignore:synthetic.brightfield.na")
+    @pytest.mark.parametrize(
+        "na, refractive_index",
+        [
+            (1.0, 1.45),  # the original optics
+            (1.45, 1.59),  # config.yaml's: NA 1.45 objective, polystyrene beads
+        ],
+    )
+    def test_single_particle_secondary_ring_suppressed_relative_to_primary_feature(
+        self, na, refractive_index
+    ):
         """Task: suppress the unrealistic outer diffraction ring. A single
         in-focus particle's radially-averaged intensity profile has a
         primary feature (core + first ring) near the particle center and,
@@ -477,8 +487,12 @@ class TestRenderFrameBrightfieldRealPhysics:
         (data-setup/models/lodestar_model_15/, lodestar_model_10/ crops)
         don't show. Asserts the outer secondary-ring deviation from
         background stays small relative to the primary feature's own
-        deviation -- confirmed empirically to separate blurred (~0.11) from
-        unblurred (~0.29) at this dataset's particle scale."""
+        deviation -- confirmed empirically to separate blurred from
+        unblurred at this dataset's particle scale: ~0.04-0.11 vs ~0.30 at
+        the original optics, 0.149-0.160 vs 0.296-0.300 at config.yaml's
+        (3 seeds each). z=0 on purpose: further into the defocus range the
+        unblurred ratio also drops below 0.2 (0.056 at z=-6), so the test
+        would stop telling the two apart."""
         pytest.importorskip("deeptrack")
         for key in list(sys.modules.keys()):
             if "render_brightfield" in key:
@@ -490,15 +504,15 @@ class TestRenderFrameBrightfieldRealPhysics:
             "image_width": 64,
             "image_height": 64,
             "brightfield": {
-                "na": 1.0,
+                "na": na,
                 "wavelength": 550e-9,
                 "resolution": 100e-9,
                 "magnification": 1.0,
                 "refractive_index_medium": 1.33,
                 "radius_min": 0.5e-6,
                 "radius_max": 0.5e-6,
-                "refractive_index_min": 1.45,
-                "refractive_index_max": 1.45,
+                "refractive_index_min": refractive_index,
+                "refractive_index_max": refractive_index,
                 "z_min_px": 0.0,
                 "z_max_px": 0.0,
                 "intensity_scale": 20000.0,

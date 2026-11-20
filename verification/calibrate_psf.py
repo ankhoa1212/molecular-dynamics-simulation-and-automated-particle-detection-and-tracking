@@ -376,7 +376,10 @@ def calibrate_brightfield(
     from render_brightfield import render_frame_brightfield
 
     bounds = param_bounds or {
-        "na": (0.7, 1.4),
+        # Up to the real setup's NA 1.45 oil objective; candidates above
+        # refractive_index_medium render as NA = refractive_index_medium
+        # (render_brightfield.effective_collection_na).
+        "na": (0.7, 1.45),
         "wavelength": (450e-9, 650e-9),
         "resolution": (65e-9, 150e-9),
         "refractive_index_medium": (1.33, 1.40),

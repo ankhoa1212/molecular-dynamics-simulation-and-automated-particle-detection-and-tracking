@@ -21,9 +21,9 @@ synthetic:
 
   brightfield:
     max_particles: 20
-    intensity_scale: 20000.0
+    intensity_scale: 18000.0   # see config.yaml (20000 before na 1.45 / index 1.59)
 
-    na: 1.0
+    na: 1.45   # oil objective; the solve uses min(na, refractive_index_medium), see config.yaml
     wavelength: 550e-9
     resolution: 100e-9
     magnification: 1.0   # see config.yaml's comment: default 10 renders particles ~10x
@@ -32,10 +32,10 @@ synthetic:
 
     radius_min: 0.5e-6
     radius_max: 0.5e-6
-    refractive_index_min: 1.45
-    refractive_index_max: 1.45
-    z_min_px: 0.0
-    z_max_px: 0.0
+    refractive_index_min: 1.59   # polystyrene; see config.yaml
+    refractive_index_max: 1.59
+    z_min_px: -13.0   # config.yaml's bright-core defocus range; at z=0 a bead is a nearly
+    z_max_px: 0.0     # invisible in-focus phase object (core ~1.04x background)
 
     mie_max_particles: 10
     mie_max_frames: 3
