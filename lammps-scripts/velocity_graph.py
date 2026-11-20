@@ -7,9 +7,9 @@ for each timestep and generates a plot.
 import argparse
 import os
 
-import matplotlib.pyplot as plt
 import numpy as np
 
+from graph_style import MAIN_COLOR, finish_and_save, mark_start_release_end, new_figure, run_title
 from lammps_parser import parse_lammps_dump
 
 
@@ -61,37 +61,30 @@ def plot_velocity_over_time(filename, output_dir, no_show=False):
     Orchestrates the reading of data and plotting of the velocity graph.
     """
     timesteps, avg_velocities, std_velocities = _process_velocity_data(filename)
+    mean = np.array(avg_velocities)
+    std = np.array(std_velocities)
 
-    plt.figure(figsize=(10, 6))
-    plt.errorbar(
+    fig, ax = new_figure()
+    ax.plot(timesteps, mean, color=MAIN_COLOR, linewidth=2.0, label="Mean speed", zorder=2)
+    ax.fill_between(
         timesteps,
-        avg_velocities,
-        yerr=std_velocities,
-        marker="o",
-        linestyle="-",
-        color="b",
-        capsize=5,
+        mean - std,
+        mean + std,
+        color=MAIN_COLOR,
+        alpha=0.2,
+        linewidth=0,
+        label="±1 standard deviation across atoms",
+        zorder=1,
     )
-    plt.xlabel("Timestep")
-    plt.ylabel("Mean Velocity Magnitude")
-    plt.title("Average Velocity Magnitude Over Time")
-    plt.grid(True, linestyle="--", alpha=0.7)
+    mark_start_release_end(ax, filename, timesteps, avg_velocities)
 
     base_name = os.path.basename(filename)
     if "." in base_name:
         base_name = base_name[: base_name.rfind(".")]
-
     output_filename = f"{base_name}_velocity_graph.png"
+    output = os.path.join(output_dir, output_filename) if output_dir else output_filename
 
-    if output_dir:
-        output = os.path.join(output_dir, output_filename)
-    else:
-        output = output_filename
-
-    plt.savefig(output)
-    print(f"Graph saved to {output}")
-    if not no_show:
-        plt.show()
+    finish_and_save(fig, ax, run_title("Velocity", filename), "Speed (LJ units)", output, no_show)
 
 
 if __name__ == "__main__":

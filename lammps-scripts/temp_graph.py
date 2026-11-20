@@ -5,21 +5,20 @@ calculations from trajectory dump files.
 """
 
 import argparse
-import math
 import os
-import re
 import sys
-from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 
-from lammps_parser import parse_lammps_dump
-
-# continuous_force.in echoes this line into the LAMMPS log with its values filled in
-PULL_RELEASE_PATTERN = re.compile(
-    r"^variable\s+pull_release_step\s+equal\s+floor\(([0-9.eE+-]+)\*([0-9]+)\)$"
+from graph_style import (
+    MAIN_COLOR,
+    SECONDARY_COLOR,
+    finish_and_save,
+    mark_start_release_end,
+    new_figure,
+    run_title,
 )
+from lammps_parser import parse_lammps_dump
 
 
 def generate_temp_graph_filename(filename, ending, output_dir=None):
@@ -81,20 +80,17 @@ def plot_log_temperature(filename, output_dir=None, no_show=False):
         print("No temperature data found. Did you point to the correct .log file?")
         sys.exit(1)
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(steps, temps, color="blue", linewidth=2.0, label="LAMMPS Temp")
-
-    plt.title("Temperature over Time (From LAMMPS Log)")
-    plt.xlabel("Timestep")
-    plt.ylabel("Temperature (LJ Units)")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-
-    output_img = generate_temp_graph_filename(filename, "log", output_dir)
-    plt.savefig(output_img)
-    print(f"Graph saved to: {output_img}")
-    if not no_show:
-        plt.show()
+    fig, ax = new_figure()
+    ax.plot(steps, temps, color=MAIN_COLOR, linewidth=2.0, label="LAMMPS Temp")
+    mark_start_release_end(ax, filename, steps, temps)
+    finish_and_save(
+        fig,
+        ax,
+        run_title("Temperature (LAMMPS log)", filename),
+        "Temperature (LJ units)",
+        generate_temp_graph_filename(filename, "log", output_dir),
+        no_show,
+    )
 
 
 def _process_atom_lines(atom_lines):
@@ -164,40 +160,6 @@ def _calculate_temps_for_frame(frame):
     return _compute_frame_temperature(x, y, vx, vy, frame["num_atoms"])
 
 
-def _find_pull_release_step(filename):
-    """
-    Returns the step at which continuous_force.in released the pull, read from the
-    run's LAMMPS log (run.py writes it to logs/<name>.log beside the trajectory).
-    Returns None when there is no log or the input has no pull release.
-    """
-    path = Path(filename)
-    log_path = path.parent / "logs" / f"{path.stem}.log"
-    if not log_path.exists():
-        return None
-
-    release_step = None
-    with open(log_path, "r", encoding="utf-8") as log_file:
-        for line in log_file:
-            match = PULL_RELEASE_PATTERN.match(line.strip())
-            if match:
-                release_step = math.floor(float(match.group(1)) * int(match.group(2)))
-    return release_step
-
-
-def _annotate_temperature(step, temp, text, align):
-    """Marks a point on the thermal curve and labels it with its temperature."""
-    plt.scatter([step], [temp], color="blue", s=30, zorder=3)
-    plt.annotate(
-        f"{text}: T = {temp:.2f}",
-        xy=(step, temp),
-        xytext=(8 if align == "left" else -8, 12),
-        textcoords="offset points",
-        ha=align,
-        fontsize=9,
-        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none"},
-    )
-
-
 def plot_temperatures(filename, output_dir=None, no_show=False):
     """
     Plots total and thermal temperature from a LAMMPS dump file, marking the pull
@@ -228,67 +190,30 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
         print("No valid temperature data found.")
         return
 
-    plt.figure(figsize=(10, 6))
-
-    plt.plot(
+    fig, ax = new_figure()
+    ax.plot(
         timesteps,
         total_temps,
-        color="red",
-        linewidth=1.0,
-        alpha=0.6,
+        color=SECONDARY_COLOR,
+        linewidth=1.2,
         label="Temperature (including pull motion)",
     )
-
-    plt.plot(
+    ax.plot(
         timesteps,
         corrected_temps,
-        color="blue",
+        color=MAIN_COLOR,
         linewidth=2.0,
         label="Temperature (pull motion removed)",
     )
-
-    _annotate_temperature(timesteps[0], corrected_temps[0], "Start", "left")
-    _annotate_temperature(timesteps[-1], corrected_temps[-1], "End", "right")
-
-    release_step = _find_pull_release_step(filename)
-    if release_step is not None and timesteps[0] < release_step < timesteps[-1]:
-        plt.axvline(release_step, color="gray", linestyle="--", linewidth=1.2)
-        # Thermal temperature at the first dump frame at or after the release
-        release_index = next(i for i, step in enumerate(timesteps) if step >= release_step)
-        plt.scatter(
-            [timesteps[release_index]],
-            [corrected_temps[release_index]],
-            color="blue",
-            s=30,
-            zorder=3,
-        )
-        # Label at mid-height beside the line, clear of the start/end labels
-        plt.annotate(
-            f"Pull released (step {release_step})\nT = {corrected_temps[release_index]:.2f}",
-            xy=(release_step, 0.5),
-            xycoords=("data", "axes fraction"),
-            xytext=(6, 0),
-            textcoords="offset points",
-            ha="left",
-            va="center",
-            fontsize=9,
-            color="dimgray",
-            bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none"},
-        )
-    else:
-        print("No pull release found in the run's log; not marking it.")
-
-    plt.title("Temperature over Time (From LAMMPS dump)")
-    plt.xlabel("Timestep")
-    plt.ylabel("Temperature (LJ Units)")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-
-    output_img = generate_temp_graph_filename(filename, "lammpstrj", output_dir)
-    print(f"Graph saved to: {output_img}")
-    plt.savefig(output_img)
-    if not no_show:
-        plt.show()
+    mark_start_release_end(ax, filename, timesteps, corrected_temps)
+    finish_and_save(
+        fig,
+        ax,
+        run_title("Temperature", filename),
+        "Temperature (LJ units)",
+        generate_temp_graph_filename(filename, "lammpstrj", output_dir),
+        no_show,
+    )
 
 
 if __name__ == "__main__":

@@ -7,10 +7,11 @@ import argparse
 import os
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import pandas as pd
+from graph_style import MAIN_COLOR, finish_and_save, mark_start_release_end, new_figure, run_title
 from hexatic_order_analysis import calc_hexatic_from_tracks, parse_and_calc_hexatic
-from phase_diagram import extract_epsilon_and_molecules
+
+HEXATIC_YLABEL = r"Global hexatic order $|\Psi_6|$"
 
 
 def main():
@@ -45,65 +46,42 @@ def main():
         df = pd.read_csv(args.tracks_csv)
         frames, hexatic_order = calc_hexatic_from_tracks(df, args.image_width, args.image_height)
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(frames, hexatic_order, alpha=0.7)
-        plt.xlabel("Frame")
-        plt.ylabel(r"Global Hexatic Order $|\Psi_6|$")
-        plt.title("Hexatic Order Parameter — Particle Tracking")
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-
+        fig, ax = new_figure()
+        ax.plot(frames, hexatic_order, color=MAIN_COLOR, linewidth=2.0)
         output_filename = f"{Path(args.tracks_csv).stem}_hexatic_order.png"
-        if args.output_dir:
-            os.makedirs(args.output_dir, exist_ok=True)
-            output_path = os.path.join(args.output_dir, output_filename)
-        else:
-            output_path = output_filename
-
-        plt.savefig(output_path, dpi=300)
-        print(f"Graph saved to {output_path}")
-        if not args.no_show:
-            plt.show()
+        output_path = (
+            os.path.join(args.output_dir, output_filename) if args.output_dir else output_filename
+        )
+        # Video frames from particle tracking: no LAMMPS log, so no pull release to mark
+        finish_and_save(
+            fig,
+            ax,
+            "Hexatic order, particle tracking",
+            HEXATIC_YLABEL,
+            output_path,
+            args.no_show,
+            xlabel="Frame",
+        )
         return
 
     if args.filename:
         filepath = args.filename
-
-        plt.figure(figsize=(10, 6))
         filename = os.path.basename(filepath)
-
-        num_molecules, epsilon = extract_epsilon_and_molecules(filename)
 
         steps, hexatic_order = parse_and_calc_hexatic(filepath)
 
-        label_str = f"N={num_molecules}, ε={epsilon}"
-        plt.plot(steps, hexatic_order, label=label_str, alpha=0.7)
+        fig, ax = new_figure()
+        ax.plot(steps, hexatic_order, color=MAIN_COLOR, linewidth=2.0)
+        mark_start_release_end(ax, filepath, steps, hexatic_order)
 
-        plt.xlabel("Timestep")
-        plt.ylabel(r"Global Hexatic Order $|\Psi_6|$")
-        plt.title(f"Hexatic Order Parameter: N={num_molecules}, ε={epsilon}")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-
-        if "." in filename:
-            base = filename[: filename.rfind(".")]
-        else:
-            base = filename
-
+        base = filename[: filename.rfind(".")] if "." in filename else filename
         output_filename = f"{base}_hexatic_order.png"
-
-        if args.output_dir:
-            if not os.path.exists(args.output_dir):
-                os.makedirs(args.output_dir)
-            output_path = os.path.join(args.output_dir, output_filename)
-        else:
-            output_path = output_filename
-
-        plt.savefig(output_path, dpi=300)
-        print(f"Graph saved to {output_path}")
-        if not args.no_show:
-            plt.show()
+        output_path = (
+            os.path.join(args.output_dir, output_filename) if args.output_dir else output_filename
+        )
+        finish_and_save(
+            fig, ax, run_title("Hexatic order", filepath), HEXATIC_YLABEL, output_path, args.no_show
+        )
 
 
 if __name__ == "__main__":
