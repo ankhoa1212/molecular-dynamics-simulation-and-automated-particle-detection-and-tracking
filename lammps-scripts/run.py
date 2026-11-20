@@ -157,14 +157,14 @@ def setup_arg_parser():
         "(default: the input file's, box)",
     )
     parser.add_argument(
-        "--pull_off_fraction",
+        "--pull_release_fraction",
         type=fraction,
         default=None,
-        help="Fraction of the run after which continuous_force.in's pull switches off "
-        "(default: the input file's, 0.666667)",
+        help="Fraction of the run at which continuous_force.in's pull is released; "
+        "the pull is on from step 0 until then (default: the input file's, 0.666667)",
     )
     parser.add_argument(
-        "--cutoff_radius",
+        "--no_pull_radius",
         type=float,
         default=None,
         help="Radius around the center with no pull in continuous_force.in "
@@ -282,7 +282,7 @@ def generate_commands(config, args, lammps_executable):
                 f'-var steps "{args.steps}" '
                 f'-var vel_force_scale "{config["vel_force_scale"]}"'
             )
-            for name in ("start_shape", "pull_off_fraction", "cutoff_radius"):
+            for name in ("start_shape", "pull_release_fraction", "no_pull_radius"):
                 value = getattr(args, name)
                 if value is not None:
                     cmd += f' -var {name} "{value}"'

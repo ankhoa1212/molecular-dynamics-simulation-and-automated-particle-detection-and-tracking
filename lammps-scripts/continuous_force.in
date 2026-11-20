@@ -50,24 +50,30 @@ set             atom 1 mass 1.0
 # --- Center and Force Variables ---
 variable        center_x equal ${half_box}
 variable        center_y equal ${half_box}
-# No pull within cutoff_radius of the center
-variable        cutoff_radius index 2.0
+# Atoms closer than this to the center feel no pull (separate from the LJ
+# pair cutoff above)
+variable        no_pull_radius index 2.0
 
 # Calculate distance from center
 variable        dist atom sqrt((x-${center_x})^2+(y-${center_y})^2)
 
+# Pull force on an atom at distance box_size from the center
 variable        vel_force_scale index 40
-# Pull switches off after this fraction of the run
-variable        pull_off_fraction index 0.666667
-if "${pull_off_fraction} < 0 || ${pull_off_fraction} > 1" then &
-  "print 'ERROR: pull_off_fraction must be between 0 and 1, got ${pull_off_fraction}'" &
+# Fraction of the run at which the pull is released. The pull is on from
+# step 0 until then; after that only LJ attraction and the thermostat act.
+# 0 = never pull, 1 = pull for the whole run.
+variable        pull_release_fraction index 0.666667
+if "${pull_release_fraction} < 0 || ${pull_release_fraction} > 1" then &
+  "print 'ERROR: pull_release_fraction must be between 0 and 1, got ${pull_release_fraction}'" &
   "quit 1"
-variable        pull_off equal floor(${pull_off_fraction}*${steps})
-variable k_pull atom "(v_dist > v_cutoff_radius) * v_vel_force_scale * (step < v_pull_off)"
+# The same release point as a step number, which the per-atom formula below
+# needs. Derived only: set pull_release_fraction instead.
+variable        pull_release_step equal floor(${pull_release_fraction}*${steps})
+variable        pull_strength atom "(v_dist > v_no_pull_radius) * v_vel_force_scale * (step < v_pull_release_step)"
 
 # Apply force
-variable        fx_pull atom v_k_pull*(${center_x}-x)/${box_size}
-variable        fy_pull atom v_k_pull*(${center_y}-y)/${box_size}
+variable        fx_pull atom v_pull_strength*(${center_x}-x)/${box_size}
+variable        fy_pull atom v_pull_strength*(${center_y}-y)/${box_size}
 
 # --- Interactions ---
 pair_style      lj/expand 2.5
