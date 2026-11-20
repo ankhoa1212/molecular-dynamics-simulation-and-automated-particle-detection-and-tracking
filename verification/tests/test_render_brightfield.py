@@ -339,6 +339,85 @@ class TestGenerateMieGroundTruth:
         assert any(np.allclose(resolved, row) for row in pixel_positions_all)
 
 
+class TestOpticsFaithfulness:
+    """effective_collection_na and deeptrack_equivalent_index: the two
+    places the configured optics are adjusted before they reach deeptrack,
+    so an NA 1.45 objective and a 1.59 bead render with physical values."""
+
+    def test_na_at_or_below_the_medium_index_passes_through(self):
+        rbf = _import_with_mock_deeptrack()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert rbf.effective_collection_na({"na": 1.0, "refractive_index_medium": 1.33}) == 1.0
+            assert (
+                rbf.effective_collection_na({"na": 1.33, "refractive_index_medium": 1.33}) == 1.33
+            )
+
+    def test_na_above_the_medium_index_is_capped_with_a_warning(self):
+        rbf = _import_with_mock_deeptrack()
+        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+            na = rbf.effective_collection_na({"na": 1.45, "refractive_index_medium": 1.33})
+        assert na == 1.33
+
+    def test_equivalent_index_gives_the_physical_phase_delay(self):
+        # deeptrack applies (n - n_m) * dz * 2*pi*n_m/wavelength; with the
+        # mapped index that must equal the physical (n_p - n_m) * dz *
+        # 2*pi/wavelength for the real bead index.
+        rbf = _import_with_mock_deeptrack()
+        n_m, wavelength, dz = 1.33, 550e-9, 100e-9
+        for n_p in (1.45, 1.59):
+            mapped = rbf.deeptrack_equivalent_index(n_p, n_m)
+            deeptrack_phase = (mapped - n_m) * dz * 2 * np.pi * n_m / wavelength
+            physical_phase = (n_p - n_m) * dz * 2 * np.pi / wavelength
+            assert deeptrack_phase == pytest.approx(physical_phase)
+
+    def test_equivalent_index_leaves_an_index_matched_particle_invisible(self):
+        rbf = _import_with_mock_deeptrack()
+        assert rbf.deeptrack_equivalent_index(1.33, 1.33) == pytest.approx(1.33)
+        mapped = rbf.deeptrack_equivalent_index(np.array([1.33, 1.59]), 1.33)
+        assert mapped == pytest.approx([1.33, 1.33 + 0.26 / 1.33])
+
+    def test_installed_deeptrack_is_the_version_the_index_mapping_targets(self):
+        # deeptrack_equivalent_index compensates deeptrack 2.0.1's
+        # Brightfield phase formula; a different version may have fixed it,
+        # and the mapping would then double-correct.
+        pytest.importorskip("deeptrack")
+        from importlib.metadata import version  # noqa: PLC0415
+
+        assert version("deeptrack") == "2.0.1"
+
+    def test_slow_path_hands_deeptrack_the_capped_na_and_mapped_index(self):
+        rbf = _import_with_mock_deeptrack()
+        bf = dict(_cfg()["brightfield"], na=1.45, refractive_index_min=1.59)
+        bf["refractive_index_max"] = 1.59
+        rng = np.random.default_rng(0)
+        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+            rbf.render_frame_brightfield(
+                np.array([[0.5, 0.5]]), (0, 1, 0, 1), _cfg(brightfield=bf), rng
+            )
+        deeptrack_stub = sys.modules["deeptrack"]
+        assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == 1.33
+        index_fn = deeptrack_stub.Sphere.call_args.kwargs["refractive_index"]
+        assert index_fn(_ID=(0,)) == pytest.approx(1.33 + 0.26 / 1.33)
+
+    def test_mie_path_uses_the_capped_na_and_the_real_index(self):
+        # MieSphere's own Mie coefficients use n_p/n_m correctly, so it gets
+        # the real index; only Brightfield's beam-propagation phase is mapped.
+        rbf = _import_with_mock_deeptrack()
+        bf = dict(_cfg()["brightfield"], na=1.45, refractive_index_min=1.59)
+        bf["refractive_index_max"] = 1.59
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+            rbf.generate_mie_ground_truth(
+                _cfg(brightfield=bf), positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
+            )
+        deeptrack_stub = sys.modules["deeptrack"]
+        assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == 1.33
+        index_fn = deeptrack_stub.MieSphere.call_args.kwargs["refractive_index"]
+        assert index_fn(_ID=(0,)) == pytest.approx(1.59)
+
+
 class TestRenderFrameBrightfieldRealPhysics:
     """Genuine deeptrack physics -- skipped (not failed) when deeptrack
     isn't installed, per this file's module docstring."""
