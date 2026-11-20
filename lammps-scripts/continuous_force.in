@@ -4,20 +4,47 @@ atom_style      ellipsoid
 dimension       3
 boundary        s s p
 
+# --- Parameters ---
+# Defaults. Override any of these with -var <name> <value>
+
+# Run size and output
+variable        filename index "test"
+variable        steps index 10000
+variable        molecules index 100
+
+# Initial placement
+variable        seed index 12345            # RNG seed for atom placement and initial velocities
+variable        start_shape index box       # placement region: box or disk
+
+# Interaction and temperature
+variable        var_epsilon index 5.0
+variable        var_tstart index 5.0
+variable        var_tstop index 0.05
+
+# Pull
+variable        vel_force_scale index 40    # pull force scaling
+# Fraction of the run at which the pull is released.
+# 0 = never pull, 1 = pull for the whole run.
+variable        pull_release_fraction index 0.666667
+if "${pull_release_fraction} < 0 || ${pull_release_fraction} > 1" then &
+  "print 'ERROR: pull_release_fraction must be between 0 and 1, got ${pull_release_fraction}'" &
+  "quit 1"
+
+# --- Interaction and temperature values ---
+variable        epsilon equal ${var_epsilon}
+variable        sigma equal 1.0
+variable        delta equal 0.0
+variable        cutoff equal 2.0
+variable        tstart equal ${var_tstart}
+variable        tstop equal ${var_tstop}
+
 # --- Define the box ---
 variable        box_size equal 200
 variable        half_box equal ${box_size}/2
 region          box block 0 ${box_size} 0 ${box_size} -0.5 0.5 units box
 create_box      1 box
 
-# Define default molecule count if not passed via command line
-variable        molecules index 100
-# RNG seed for both atom placement and initial velocities; override via
-# -var seed <N> for cross-seed variance runs (e.g. verification/
-# paper_provenance's trajectory-analysis seed sweep).
-variable        seed index 12345
-# Initial atom placement region: box | disk
-variable        start_shape index box
+# --- Create atoms ---
 if "${start_shape} == box" then &
   "variable start_region string NULL" &
 elif "${start_shape} == disk" &
@@ -28,65 +55,37 @@ else &
   "quit 1"
 create_atoms    1 random ${molecules} ${seed} ${start_region} overlap 3.9 maxtry 50
 
-# --- Variables ---
-# Define default variables if not passed via command line
-variable        var_epsilon index 5.0
-variable        var_tstart index 5.0
-variable        var_tstop index 0.05
-variable        steps index 10000
-variable        filename index "test"
-
-variable        epsilon equal ${var_epsilon}
-variable        sigma equal 1.0
-variable        delta equal 0.0
-variable        cutoff equal 2.0
-variable        tstart equal ${var_tstart}
-variable        tstop equal ${var_tstop}
-
-# Set ellipsoid as a sphere
-set             type 1 shape 0.5 0.5 0.5
+set             type 1 shape 0.5 0.5 0.5    # ellipsoid as a sphere
 set             atom 1 mass 1.0
 
-# --- Center and Force Variables ---
+# --- Interactions ---
+pair_style      lj/expand 2.5
+pair_coeff      1 1 ${epsilon} ${sigma} ${delta} ${cutoff}
+
+# --- Pull force toward the center ---
 variable        center_x equal ${half_box}
 variable        center_y equal ${half_box}
 
 # Calculate distance from center
 variable        dist atom sqrt((x-${center_x})^2+(y-${center_y})^2)
 
-# Pull force on an atom at distance box_size from the center
-variable        vel_force_scale index 40
-# Fraction of the run at which the pull is released. The pull is on from
-# step 0 until then; after that only LJ attraction and the thermostat act.
-# 0 = never pull, 1 = pull for the whole run.
-variable        pull_release_fraction index 0.666667
-if "${pull_release_fraction} < 0 || ${pull_release_fraction} > 1" then &
-  "print 'ERROR: pull_release_fraction must be between 0 and 1, got ${pull_release_fraction}'" &
-  "quit 1"
-# Step at which the pull is released
+# Pull is released at this step onwards
 variable        pull_release_step equal floor(${pull_release_fraction}*${steps})
-# vel_force_scale until the release step, then 0. The pull is a linear
-# spring, so it already falls to zero at the center.
+
+# Set pull_strength once pull_release_step is reached
 variable        pull_strength equal "v_vel_force_scale * (step < v_pull_release_step)"
 
 # Apply force
 variable        fx_pull atom v_pull_strength*(${center_x}-x)/${box_size}
 variable        fy_pull atom v_pull_strength*(${center_y}-y)/${box_size}
 
-# --- Interactions ---
-pair_style      lj/expand 2.5
-pair_coeff      1 1 ${epsilon} ${sigma} ${delta} ${cutoff}
-
 # --- Initialize Velocities ---
 velocity        all create ${tstart} ${seed} dist gaussian mom yes rot yes
 
 # --- Integration and Forces ---
 fix             1 all nve
-
 fix             2 all langevin ${tstart} ${tstop} 1.0 48279
-
-# Apply the pull force
-fix             3 all addforce v_fx_pull v_fy_pull 0.0
+fix             3 all addforce v_fx_pull v_fy_pull 0.0   # pull force
 
 # --- Simulation Settings ---
 timestep        0.002
