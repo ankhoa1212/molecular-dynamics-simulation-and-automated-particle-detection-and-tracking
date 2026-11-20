@@ -37,6 +37,24 @@ import numpy as np
 
 from render import _lj_to_pixels
 
+# Fallbacks for synthetic.brightfield keys a config leaves out: the same
+# values as config.yaml (the real setup -- NA 1.45 oil objective, polystyrene
+# beads -- and the values tuned for it; see the comments there).
+DEFAULT_NA = 1.45
+DEFAULT_REFRACTIVE_INDEX = 1.59
+DEFAULT_INTENSITY_SCALE = 18000.0
+DEFAULT_Z_MIN_PX = -13.0
+DEFAULT_Z_MAX_PX = 0.0
+
+# generate_mie_ground_truth's collection NA stays at or below this fraction of
+# refractive_index_medium. MieSphere collects scattered light up to
+# arcsin(NA / n_m), and at NA = n_m (90 degrees) deeptrack 2.0.1's Mie
+# solution is singular. Measured on a 1 um bead at z=-6, n_m 1.33: background
+# median 1 and peak 2-31 for NA <= 1.30, erratic peaks at 1.32-1.3299, median
+# ~1e27 at 1.33. 0.98 * 1.33 = 1.303 keeps it in the clean range; the 78-90
+# degree band it leaves out carries little light.
+MIE_MAX_NA_FRACTION = 0.98
+
 
 def _import_deeptrack():
     try:
@@ -48,6 +66,63 @@ def _import_deeptrack():
             "See https://github.com/DeepTrackAI/DeepTrack2 for details."
         ) from exc
     return deeptrack
+
+
+def effective_collection_na(bf_cfg):
+    """The NA the optical solve should use: the configured objective NA,
+    capped at the medium's refractive index.
+
+    The particles sit in an aqueous medium (refractive_index_medium, 1.33),
+    and light scattered into that medium can't travel at angles beyond
+    sin(theta) = 1, i.e. NA = refractive_index_medium. An oil-immersion
+    objective rated NA 1.45 therefore collects at most NA 1.33 from a water
+    sample. Passing the rated value straight through is not just a no-op:
+    deeptrack's pupil (optics.py's Optics._pupil, ported in
+    render_brightfield_fast._pupil) zeroes the defocus phase wherever
+    sqrt(1 - (NA/n_m)^2 * rho) turns imaginary, so the NA 1.33-1.45 ring
+    would pass with no defocus at all -- an always-in-focus component on
+    every particle -- and MieSphere's collection angle arcsin(NA/n_m)
+    (scatterers.py) would be NaN. Supercritical-angle coupling for beads
+    resting on the coverslip is a near-field interface effect deeptrack
+    can't model and is left out.
+    """
+    na = float(bf_cfg.get("na", DEFAULT_NA))
+    refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+    if na <= refractive_index_medium:
+        return na
+    warnings.warn(
+        f"synthetic.brightfield.na ({na}) is above refractive_index_medium "
+        f"({refractive_index_medium}); light can't propagate through the medium beyond "
+        f"NA {refractive_index_medium}, so the optical solve uses that instead. See "
+        "render_brightfield.effective_collection_na.",
+        stacklevel=2,
+    )
+    return refractive_index_medium
+
+
+def deeptrack_equivalent_index(refractive_index, refractive_index_medium):
+    """The particle index to hand deeptrack's Brightfield so its phase delay
+    matches the physical one for `refractive_index`.
+
+    deeptrack==2.0.1's Brightfield applies each slice's phase as
+    exp(1j * (n_p - n_m) * dz * K) with K = 2*pi*n_m/wavelength
+    (optics.py:1390, 1401; n_p - n_m from _create_volume, optics.py:1926),
+    while its pupil and MieSphere treat `wavelength` as the vacuum
+    wavelength, for which the physical phase of an index step is
+    2*pi/wavelength * (n_p - n_m) * dz. Brightfield's phase is therefore
+    n_m times too strong (polystyrene 1.59 in water would act like ~1.68).
+    Passing n_m + (n_p - n_m)/n_m makes the applied phase exactly the
+    physical one. Used by both brightfield paths (render_brightfield_fast
+    builds its footprints from the same mapping, keeping the two
+    equivalent); never for MieSphere, whose Mie coefficients already use the
+    relative index n_p/n_m correctly. Tied to deeptrack==2.0.1's formula --
+    tests/test_render_brightfield.py guards the installed version.
+    """
+    return (
+        refractive_index_medium
+        + (np.asarray(refractive_index, dtype=np.float64) - refractive_index_medium)
+        / refractive_index_medium
+    )
 
 
 def _sample_particle_properties(n, bf_cfg, rng, atom_ids=None, state=None):
@@ -78,10 +153,10 @@ def _sample_particle_properties(n, bf_cfg, rng, atom_ids=None, state=None):
     """
     radius_lo = float(bf_cfg.get("radius_min", 0.5e-6))
     radius_hi = float(bf_cfg.get("radius_max", 0.5e-6))
-    ri_lo = float(bf_cfg.get("refractive_index_min", 1.45))
-    ri_hi = float(bf_cfg.get("refractive_index_max", 1.45))
-    z_lo = float(bf_cfg.get("z_min_px", 0.0))
-    z_hi = float(bf_cfg.get("z_max_px", 0.0))
+    ri_lo = float(bf_cfg.get("refractive_index_min", DEFAULT_REFRACTIVE_INDEX))
+    ri_hi = float(bf_cfg.get("refractive_index_max", DEFAULT_REFRACTIVE_INDEX))
+    z_lo = float(bf_cfg.get("z_min_px", DEFAULT_Z_MIN_PX))
+    z_hi = float(bf_cfg.get("z_max_px", DEFAULT_Z_MAX_PX))
 
     if atom_ids is not None and state is not None:
         cache = state.setdefault("particle_properties", {})
@@ -201,7 +276,7 @@ def _resolve_brightfield_intensity(sample, bf_cfg, H, W):
     dt = _import_deeptrack()
 
     optics = dt.Brightfield(
-        NA=float(bf_cfg.get("na", 1.0)),
+        NA=effective_collection_na(bf_cfg),
         wavelength=float(bf_cfg.get("wavelength", 550e-9)),
         resolution=float(bf_cfg.get("resolution", 100e-9)),
         magnification=float(bf_cfg.get("magnification", 10.0)),
@@ -245,7 +320,7 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None, state=N
     W = cfg["image_width"]
     bf_cfg = cfg.get("brightfield", {})
     max_particles = int(bf_cfg.get("max_particles", 50))
-    intensity_scale = float(bf_cfg.get("intensity_scale", 20000.0))
+    intensity_scale = float(bf_cfg.get("intensity_scale", DEFAULT_INTENSITY_SCALE))
 
     if len(positions_lj) == 0:
         frame = np.zeros((H, W), dtype=np.float64)
@@ -257,7 +332,13 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None, state=N
         radii, refractive_indices, z = _sample_particle_properties(
             len(pixel_positions), bf_cfg, rng, atom_ids=kept_atom_ids, state=state
         )
-        sample = _build_sphere_sample(pixel_positions, radii, refractive_indices, z)
+        refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+        sample = _build_sphere_sample(
+            pixel_positions,
+            radii,
+            deeptrack_equivalent_index(refractive_indices, refractive_index_medium),
+            z,
+        )
         intensity = _resolve_brightfield_intensity(sample, bf_cfg, H, W)
         frame = intensity.astype(np.float64) * intensity_scale
         frame = _apply_partial_coherence_blur(frame, bf_cfg)
@@ -340,7 +421,15 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
 
     dt = _import_deeptrack()
     pixel_positions_all = _lj_to_pixels(positions_lj, box, H, W)
-    intensity_scale = float(bf_cfg.get("intensity_scale", 20000.0))
+    intensity_scale = float(bf_cfg.get("intensity_scale", DEFAULT_INTENSITY_SCALE))
+    refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+    mie_bf_cfg = dict(
+        bf_cfg,
+        na=min(
+            effective_collection_na(bf_cfg),
+            MIE_MAX_NA_FRACTION * refractive_index_medium,
+        ),
+    )
 
     frames = []
     for _ in range(n_frames):
@@ -355,7 +444,18 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
             z=lambda _ID: z[_ID[-1]],
         )
         sample = particle ^ n_particles
-        intensity = _resolve_brightfield_intensity(sample, bf_cfg, H, W)
+        intensity = _resolve_brightfield_intensity(sample, mie_bf_cfg, H, W)
+        # Background is ~1 in this unitless intensity; anything far off means
+        # the Mie solve broke (as it does at NA = n_m), and scoring calibration
+        # candidates against it would silently fit noise.
+        if not np.all(np.isfinite(intensity)) or not 0.1 < np.median(intensity) < 10.0:
+            raise RuntimeError(
+                "generate_mie_ground_truth: deeptrack's MieSphere returned unphysical "
+                f"intensities (median {np.median(intensity):.3g}, expected ~1 background) "
+                f"at NA {mie_bf_cfg['na']} and refractive_index_medium "
+                f"{mie_bf_cfg.get('refractive_index_medium', 1.33)}. Calibrate against "
+                "real frames instead (calibrate_psf.py --real-frames)."
+            )
         frame = np.clip(intensity * intensity_scale, 0, 65535).astype(np.uint16)
         frames.append(frame)
 

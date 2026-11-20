@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from render_brightfield import deeptrack_equivalent_index
 from render_brightfield_fast import (
     _particle_footprint_px,
     _pupil,
@@ -138,6 +139,38 @@ class TestPupil:
         assert (np.abs(field) ** 2).mean() == pytest.approx(1.0, rel=1e-6)
 
 
+class TestOpticsFaithfulness:
+    """The fast path applies the same NA cap and index mapping as the slow
+    path (render_brightfield.effective_collection_na /
+    deeptrack_equivalent_index)."""
+
+    def test_na_above_the_medium_index_renders_like_na_at_the_medium_index(self):
+        positions = np.array([[50.0, 50.0], [30.0, 60.0]])
+        cfg_capped = _cfg(z_min_px=-6.0, z_max_px=0.0)
+        cfg_capped["brightfield"]["na"] = 1.45
+        cfg_at_medium = _cfg(z_min_px=-6.0, z_max_px=0.0)
+        cfg_at_medium["brightfield"]["na"] = 1.33
+        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+            capped = render_frame_brightfield_fast(
+                positions, _BOX, cfg_capped, np.random.default_rng(3)
+            )
+        at_medium = render_frame_brightfield_fast(
+            positions, _BOX, cfg_at_medium, np.random.default_rng(3)
+        )
+        assert np.array_equal(capped, at_medium)
+
+    def test_particle_phase_delay_matches_the_physical_optical_path(self):
+        # Center phase = footprint * vz * K (render_frame_brightfield_fast's
+        # phase step, K = 2*pi*n_m/wavelength) must equal the physical
+        # 2*pi/wavelength * (n_p - n_m) * diameter for a 1.59 bead.
+        n_m, n_p, wavelength, radius_m = 1.33, 1.59, 550e-9, 0.5e-6
+        vx, _vy, vz = _voxel_size_m({"resolution": 100e-9, "magnification": 1.0})
+        footprint = _particle_footprint_px(radius_m, deeptrack_equivalent_index(n_p, n_m), n_m, vx)
+        center = footprint[footprint.shape[0] // 2, footprint.shape[1] // 2]
+        phase = center * vz * 2 * np.pi * n_m / wavelength
+        assert phase == pytest.approx(2 * np.pi / wavelength * (n_p - n_m) * 2 * radius_m)
+
+
 class TestRenderFrameBrightfieldFast:
     def test_single_particle_renders_without_error(self):
         frame = render_frame_brightfield_fast(
@@ -147,9 +180,16 @@ class TestRenderFrameBrightfieldFast:
         assert frame.dtype == np.uint16
 
     def test_single_particle_bright_feature_centered_at_true_position(self):
+        # z=-6 sits mid-way through the production defocus range
+        # (config.yaml z_min_px..z_max_px, -13..0), where beads are
+        # bright-centered. At z=0 a bead is a nearly invisible in-focus
+        # phase object (measured core 1.04x background with the physical
+        # phase delay from deeptrack_equivalent_index), so its argmax is
+        # just noise -- that's correct brightfield physics, not something
+        # this test should assert against.
         rng = np.random.default_rng(0)
         frame = render_frame_brightfield_fast(
-            np.array([[50.0, 50.0]]), _BOX, _cfg(image_size=256), rng
+            np.array([[50.0, 50.0]]), _BOX, _cfg(image_size=256, z_min_px=-6.0, z_max_px=-6.0), rng
         ).astype(np.float64)
         # True pixel position: (50/100*256, 50/100*256) = (128, 128). Use
         # the bright-core argmax directly, not |frame - mean()|.argmax() --

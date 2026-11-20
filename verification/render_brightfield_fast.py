@@ -60,7 +60,13 @@ import warnings
 import numpy as np
 
 from render import _lj_to_pixels
-from render_brightfield import _apply_partial_coherence_blur, _sample_particle_properties
+from render_brightfield import (
+    DEFAULT_INTENSITY_SCALE,
+    _apply_partial_coherence_blur,
+    _sample_particle_properties,
+    deeptrack_equivalent_index,
+    effective_collection_na,
+)
 
 
 def _voxel_size_m(bf_cfg):
@@ -247,9 +253,9 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None, st
     bff_cfg = cfg.get("brightfield_fast", {})
     max_particles = int(bff_cfg.get("max_particles", 5000))
     n_z_slices = max(1, int(bff_cfg.get("n_z_slices", 10)))
-    intensity_scale = float(bf_cfg.get("intensity_scale", 20000.0))
+    intensity_scale = float(bf_cfg.get("intensity_scale", DEFAULT_INTENSITY_SCALE))
     refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
-    na = float(bf_cfg.get("na", 1.0))
+    na = effective_collection_na(bf_cfg)
     wavelength = float(bf_cfg.get("wavelength", 550e-9))
 
     if len(positions_lj) == 0:
@@ -296,14 +302,21 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None, st
 
         # Build one footprint per distinct (radius, refractive_index) pair
         # -- a single group in this dataset's monodisperse-particle default,
-        # but grouped generally rather than assumed.
+        # but grouped generally rather than assumed. The index goes through
+        # the same deeptrack_equivalent_index mapping the slow path hands
+        # dt.Sphere, so the phase below (index_map * vz * K) equals the
+        # physical 2*pi/wavelength * (n_p - n_m) * thickness and the two
+        # paths stay equivalent.
         footprint_cache = {}
 
         def _footprint_for(radius_m, ri):
             key = (round(radius_m, 12), round(ri, 9))
             if key not in footprint_cache:
                 footprint_cache[key] = _particle_footprint_px(
-                    radius_m, ri, refractive_index_medium, vx
+                    radius_m,
+                    float(deeptrack_equivalent_index(ri, refractive_index_medium)),
+                    refractive_index_medium,
+                    vx,
                 )
             return footprint_cache[key]
 

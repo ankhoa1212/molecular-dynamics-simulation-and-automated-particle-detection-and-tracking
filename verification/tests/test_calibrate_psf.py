@@ -878,6 +878,41 @@ class TestCalibrateBrightfieldZRange:
         assert any(z_min != z_max for z_min, z_max in seen_z)
         assert all(z_min <= z_max for z_min, z_max in seen_z)
 
+    def test_search_stays_on_the_bright_centered_side_and_below_the_medium_na(self):
+        """Every candidate's z range is at or below 0 (beads turn
+        dark-centered from z = +1, which no real reference crop shows), and
+        its na is at or below its own refractive_index_medium (higher would
+        render identically to NA = refractive_index_medium, and the search
+        could report an na that was never used)."""
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((16, 16)))
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+
+        seen = []
+        import render_brightfield
+
+        original_resolve = render_brightfield._resolve_brightfield_intensity
+
+        def _spy_resolve(sample, bf_cfg, H, W):
+            seen.append(dict(bf_cfg))
+            return original_resolve(sample, bf_cfg, H, W)
+
+        with warnings.catch_warnings():
+            # The NA cap warning would mean a candidate was sampled above its medium
+            warnings.simplefilter("error")
+            with mock.patch.object(
+                render_brightfield, "_resolve_brightfield_intensity", _spy_resolve
+            ):
+                calibrate_psf.calibrate_brightfield(
+                    real_frames, [], positions, (0, 1, 0, 1), 16, 16, rng, n_iterations=40
+                )
+
+        assert len(seen) == 40
+        assert all(c["z_max_px"] <= 0.0 for c in seen)
+        assert all(c["na"] <= c["refractive_index_medium"] for c in seen)
+        assert max(c["na"] for c in seen) > 1.2  # still reaches high-NA candidates
+
     def test_png_real_frames_smaller_than_canvas_score_without_shape_error(self):
         """PNG-format real_frames (the LodeSTAR crop format), smaller than
         and inconsistent in size with the candidate canvas, must load,
