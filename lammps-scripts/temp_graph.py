@@ -193,17 +193,19 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
     fig, ax = new_figure()
     ax.plot(
         timesteps,
-        total_temps,
-        color=SECONDARY_COLOR,
-        linewidth=1.2,
-        label="Temperature (including pull motion)",
-    )
-    ax.plot(
-        timesteps,
         corrected_temps,
         color=MAIN_COLOR,
         linewidth=2.0,
         label="Temperature (pull motion removed)",
+    )
+    # Drawn after (over) the thermal curve, and thinner, so where the two agree
+    # (no pull motion left) the orange line shows on top of the blue one
+    ax.plot(
+        timesteps,
+        total_temps,
+        color=SECONDARY_COLOR,
+        linewidth=1.2,
+        label="Temperature (including pull motion)",
     )
     mark_start_release_end(ax, filename, timesteps, corrected_temps)
     finish_and_save(
