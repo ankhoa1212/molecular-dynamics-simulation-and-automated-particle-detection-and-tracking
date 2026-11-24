@@ -8,9 +8,16 @@ import argparse
 import os
 import sys
 
-import matplotlib.pyplot as plt
 import numpy as np
 
+from graph_style import (
+    MAIN_COLOR,
+    SECONDARY_COLOR,
+    finish_and_save,
+    mark_start_release_end,
+    new_figure,
+    run_title,
+)
 from lammps_parser import parse_lammps_dump
 
 
@@ -73,20 +80,17 @@ def plot_log_temperature(filename, output_dir=None, no_show=False):
         print("No temperature data found. Did you point to the correct .log file?")
         sys.exit(1)
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(steps, temps, color="blue", linewidth=2.0, label="LAMMPS Temp")
-
-    plt.title("Temperature over Time (From LAMMPS Log)")
-    plt.xlabel("Timestep")
-    plt.ylabel("Temperature (LJ Units)")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-
-    output_img = generate_temp_graph_filename(filename, "log", output_dir)
-    plt.savefig(output_img)
-    print(f"Graph saved to: {output_img}")
-    if not no_show:
-        plt.show()
+    fig, ax = new_figure()
+    ax.plot(steps, temps, color=MAIN_COLOR, linewidth=2.0, label="LAMMPS Temp")
+    mark_start_release_end(ax, filename, steps, temps)
+    finish_and_save(
+        fig,
+        ax,
+        run_title("Temperature (LAMMPS log)", filename),
+        "Temperature (LJ units)",
+        generate_temp_graph_filename(filename, "log", output_dir),
+        no_show,
+    )
 
 
 def _process_atom_lines(atom_lines):
@@ -103,8 +107,14 @@ def _process_atom_lines(atom_lines):
     return data_arr[:, 0], data_arr[:, 1], data_arr[:, 2], data_arr[:, 3]
 
 
+# Width of the rings (in sigma) over which the inward collapse flow is averaged.
+# 1-4 sigma give the same temperature within ~0.1; much wider rings start
+# counting the flow's growth with radius as heat.
+RING_WIDTH = 2.0
+
+
 def _compute_radial_projection(x, y, vx, vy):
-    """Computes radial velocity and tangential squared velocity."""
+    """Computes distance from the pull center, radial velocity and tangential squared velocity."""
     center_x = 100.0
     center_y = 100.0
     delta_x = x - center_x
@@ -118,27 +128,28 @@ def _compute_radial_projection(x, y, vx, vy):
     v_rad = vx * unit_radial_x + vy * unit_radial_y
     vel_sq = vx**2 + vy**2
     vel_tan_sq = vel_sq - v_rad**2
-    return v_rad, vel_sq, vel_tan_sq
+    return dist, v_rad, vel_sq, vel_tan_sq
 
 
 def _compute_frame_temperature(x, y, vx, vy, num_atoms):
     """
-    Computes standard and drift-corrected temperatures for a single frame.
+    Computes total and thermal (collapse flow removed) temperatures for a single frame.
     """
-    v_rad, vel_sq, vel_tan_sq = _compute_radial_projection(x, y, vx, vy)
+    dist, v_rad, vel_sq, vel_tan_sq = _compute_radial_projection(x, y, vx, vy)
 
     # Raw KE = 0.5 * m * (vx^2 + vy^2); T = Sum(v^2) / (2 * N) [2 degrees of freedom]
     total_temp = np.sum(vel_sq) / (2.0 * num_atoms)
 
-    # Mean radial velocity is the bulk implosion speed
-    mean_v_rad = np.mean(v_rad)
+    # The pull is a linear spring, so the inward flow grows with distance from
+    # the center. Remove it ring by ring: subtract each ring's mean radial
+    # velocity from the atoms in that ring.
+    _, ring_index = np.unique((dist // RING_WIDTH).astype(int), return_inverse=True)
+    ring_mean_v_rad = np.bincount(ring_index, weights=v_rad) / np.bincount(ring_index)
+    v_rad_fluctuation = v_rad - ring_mean_v_rad[ring_index]
 
-    # Subtract this coherent drift from every atom's radial velocity
-    v_rad_fluctuation = v_rad - mean_v_rad
-
-    # Re-calculate Total Kinetic Energy using the FLUCTUATIONS only
-    corrected_sq_sum = np.sum(vel_tan_sq + v_rad_fluctuation**2)
-    corrected_temp = corrected_sq_sum / (2.0 * num_atoms)
+    # Each ring's mean removes one degree of freedom
+    dof = max(2 * num_atoms - len(ring_mean_v_rad), 1)
+    corrected_temp = np.sum(vel_tan_sq + v_rad_fluctuation**2) / dof
 
     return total_temp, corrected_temp
 
@@ -151,7 +162,8 @@ def _calculate_temps_for_frame(frame):
 
 def plot_temperatures(filename, output_dir=None, no_show=False):
     """
-    Plots drift-corrected temperature from a LAMMPS dump file.
+    Plots total and thermal temperature from a LAMMPS dump file, marking the pull
+    release and labelling the thermal temperature at the start, release and end.
     """
     timesteps = []
     total_temps = []
@@ -178,36 +190,32 @@ def plot_temperatures(filename, output_dir=None, no_show=False):
         print("No valid temperature data found.")
         return
 
-    plt.figure(figsize=(10, 6))
-
-    plt.plot(
-        timesteps,
-        total_temps,
-        color="red",
-        linewidth=1.0,
-        alpha=0.6,
-        label="Raw Total Temp (Includes Force Work)",
-    )
-
-    plt.plot(
+    fig, ax = new_figure()
+    ax.plot(
         timesteps,
         corrected_temps,
-        color="blue",
+        color=MAIN_COLOR,
         linewidth=2.0,
-        label="Corrected Temp (Force Drift Removed)",
+        label="Temperature (pull motion removed)",
     )
-
-    plt.title("Temperature over Time (From LAMMPS dump)")
-    plt.xlabel("Timestep")
-    plt.ylabel("Temperature (LJ Units)")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-
-    output_img = generate_temp_graph_filename(filename, "lammpstrj", output_dir)
-    print(f"Graph saved to: {output_img}")
-    plt.savefig(output_img)
-    if not no_show:
-        plt.show()
+    # Drawn after (over) the thermal curve, and thinner, so where the two agree
+    # (no pull motion left) the orange line shows on top of the blue one
+    ax.plot(
+        timesteps,
+        total_temps,
+        color=SECONDARY_COLOR,
+        linewidth=1.2,
+        label="Temperature (including pull motion)",
+    )
+    mark_start_release_end(ax, filename, timesteps, corrected_temps)
+    finish_and_save(
+        fig,
+        ax,
+        run_title("Temperature", filename),
+        "Temperature (LJ units)",
+        generate_temp_graph_filename(filename, "lammpstrj", output_dir),
+        no_show,
+    )
 
 
 if __name__ == "__main__":
@@ -223,7 +231,6 @@ if __name__ == "__main__":
     if ARGS.filename.endswith(".log"):
         plot_log_temperature(ARGS.filename, ARGS.output_dir, ARGS.no_show)
     elif ARGS.filename.endswith(".lammpstrj"):
-        print("Note: graphing the .log file will be more accurate")
         plot_temperatures(ARGS.filename, ARGS.output_dir, ARGS.no_show)
     else:
         print("Error: File should be either .log or .lammpstrj")
