@@ -714,9 +714,14 @@ class TestDetectorTuningCliFlags:
 def _mock_deeptrack_for_brightfield(resolve_return):
     import types
 
-    fake_resolved = mock.MagicMock()
-    fake_resolved.resolve.return_value = resolve_return
-    fake_optics_instance = mock.MagicMock(return_value=fake_resolved)
+    def _optics(**kwargs):
+        # Like the real Brightfield, the image has the requested output_region's
+        # shape (generate_mie_ground_truth renders on a padded canvas)
+        _, _, height, width = kwargs.get("output_region", (0, 0) + resolve_return.shape)
+        fake_resolved = mock.MagicMock()
+        fake_resolved.resolve.return_value = np.resize(resolve_return, (height, width))
+        return mock.MagicMock(return_value=fake_resolved)
+
     deeptrack_stub = types.ModuleType("deeptrack")
     fake_sphere = mock.MagicMock()
     fake_sphere.__pow__ = mock.MagicMock(return_value=mock.MagicMock())
@@ -724,7 +729,7 @@ def _mock_deeptrack_for_brightfield(resolve_return):
     fake_mie_sphere = mock.MagicMock()
     fake_mie_sphere.__pow__ = mock.MagicMock(return_value=mock.MagicMock())
     deeptrack_stub.MieSphere = mock.MagicMock(return_value=fake_mie_sphere)
-    deeptrack_stub.Brightfield = mock.MagicMock(return_value=fake_optics_instance)
+    deeptrack_stub.Brightfield = mock.MagicMock(side_effect=_optics)
     sys.modules["deeptrack"] = deeptrack_stub
 
 
@@ -914,6 +919,52 @@ class TestCalibrateBrightfieldZRange:
         assert all(c["na"] <= c["refractive_index_medium"] for c in seen)
         assert max(c["na"] for c in seen) > 1.2  # still reaches high-NA candidates
 
+    def test_custom_na_bounds_above_the_medium_still_render_what_they_report(self):
+        """A custom na range above every sampled medium index collapses to the
+        medium's own value instead of reporting an na that was never rendered."""
+        rng = np.random.default_rng(0)
+        _mock_deeptrack_for_brightfield(rng.random((16, 16)))
+        positions = rng.uniform(0.1, 0.9, size=(3, 2))
+        real_frames = [rng.integers(0, 65535, size=(16, 16)).astype(np.uint16)]
+        bounds = {
+            "na": (1.38, 1.45),
+            "wavelength": (450e-9, 650e-9),
+            "resolution": (65e-9, 150e-9),
+            "refractive_index_medium": (1.33, 1.34),
+            "radius": (0.3e-6, 0.8e-6),
+            "refractive_index": (1.40, 1.60),
+            "intensity_scale": (5000.0, 40000.0),
+            "z_range_px": (-15.0, 0.0),
+        }
+        seen = []
+        import render_brightfield
+
+        original_resolve = render_brightfield._resolve_brightfield_intensity
+
+        def _spy_resolve(sample, bf_cfg, H, W):
+            seen.append(dict(bf_cfg))
+            return original_resolve(sample, bf_cfg, H, W)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=r"synthetic\.brightfield\.na")
+            with mock.patch.object(
+                render_brightfield, "_resolve_brightfield_intensity", _spy_resolve
+            ):
+                calibrate_psf.calibrate_brightfield(
+                    real_frames,
+                    [],
+                    positions,
+                    (0, 1, 0, 1),
+                    16,
+                    16,
+                    rng,
+                    n_iterations=10,
+                    param_bounds=bounds,
+                )
+
+        assert len(seen) == 10
+        assert all(c["na"] == c["refractive_index_medium"] for c in seen)
+
     def test_png_real_frames_smaller_than_canvas_score_without_shape_error(self):
         """PNG-format real_frames (the LodeSTAR crop format), smaller than
         and inconsistent in size with the candidate canvas, must load,
@@ -1060,6 +1111,14 @@ class TestMergeConfigBrightfieldSection:
 
 class TestBrightfieldCli:
     """--brightfield CLI mode (calibrate_brightfield's argparse entry point)."""
+
+    def teardown_method(self):
+        # Drop the mocked deeptrack, and render_brightfield bound to it, so a
+        # later real-deeptrack test file doesn't import the stub
+        sys.modules.pop("deeptrack", None)
+        for key in list(sys.modules):
+            if "render_brightfield" in key:
+                del sys.modules[key]
 
     def test_brightfield_without_lammps_exits(self):
         with mock.patch.object(

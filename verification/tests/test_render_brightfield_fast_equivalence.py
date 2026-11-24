@@ -263,6 +263,7 @@ class TestProductionDensitySanity:
         assert np.all(np.isfinite(frame.astype(np.float64)))
 
 
+@pytest.mark.filterwarnings("ignore:synthetic.brightfield.na")
 class TestMieTargetAtTheInstrumentOptics:
     """The calibration Mie target at the real optics (NA 1.45 -> 0.98 * 1.33,
     index 1.59) with the real deeptrack: physical output (no RuntimeError from
@@ -288,6 +289,6 @@ class TestMieTargetAtTheInstrumentOptics:
             centre = frame[size // 2 - 2 : size // 2 + 3, size // 2 - 2 : size // 2 + 3].mean()
             return centre / np.median(frame)
 
-        # Measured: Mie 2.41 / 3.49, Brightfield 2.40 / 1.17 at z -10 / -2
+        # Measured: Mie 3.63 / 3.64 (padded canvas), Brightfield 2.40 / 1.17 at z -10 / -2
         assert centre_over_background(mie) > 1.05
         assert centre_over_background(brightfield) > 1.05

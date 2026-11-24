@@ -422,8 +422,11 @@ def calibrate_brightfield(
         z_a = float(rng.uniform(*bounds["z_range_px"]))
         z_b = float(rng.uniform(*bounds["z_range_px"]))
         refractive_index_medium = float(rng.uniform(*bounds["refractive_index_medium"]))
+        # Never above this candidate's medium index, even when a custom na
+        # lower bound is above it (that na would render as the medium's)
         na_lo, na_hi = bounds["na"]
-        na = float(rng.uniform(na_lo, max(na_lo, min(na_hi, refractive_index_medium))))
+        na_top = min(na_hi, refractive_index_medium)
+        na = float(rng.uniform(min(na_lo, na_top), na_top))
         candidate = {
             "max_particles": search_max_particles,
             "intensity_scale": float(rng.uniform(*bounds["intensity_scale"])),

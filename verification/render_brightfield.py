@@ -62,6 +62,14 @@ DEFAULT_Z_MAX_PX = 0.0
 # degree band it leaves out carries little light.
 MIE_MAX_NA_FRACTION = 0.98
 
+# Margin (px) generate_mie_ground_truth renders around the canvas, then crops
+# off. At NA ~1.30 a bead's scattered field reaches far beyond it, and
+# truncating that field biases the target: one 1 um bead at z=-6, compared
+# with a 1536 px canvas, is 22% off (relative RMS) on 256 px, 8% on 512, 4%
+# on 768 and 1.7% on 1024. A 512 px margin gives every bead at least the
+# surroundings of the 1024 px case, wherever it sits on the canvas.
+MIE_PAD_PX = 512
+
 
 def _import_deeptrack():
     try:
@@ -441,10 +449,13 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
         ),
     )
 
+    # Render on a padded canvas and crop back to (H, W): see MIE_PAD_PX
+    pad = int(bf_cfg.get("mie_pad_px", MIE_PAD_PX))
+
     frames = []
     for _ in range(n_frames):
         keep = np.sort(rng.choice(len(pixel_positions_all), size=n_particles, replace=False))
-        pixel_positions = pixel_positions_all[keep]
+        pixel_positions = pixel_positions_all[keep] + pad
         radii, refractive_indices, z = _sample_particle_properties(n_particles, bf_cfg, rng)
         particle = dt.MieSphere(
             position=lambda _ID: pixel_positions[_ID[-1]],
@@ -454,7 +465,8 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
             z=lambda _ID: z[_ID[-1]],
         )
         sample = particle ^ n_particles
-        intensity = _resolve_brightfield_intensity(sample, mie_bf_cfg, H, W)
+        intensity = _resolve_brightfield_intensity(sample, mie_bf_cfg, H + 2 * pad, W + 2 * pad)
+        intensity = intensity[pad : pad + H, pad : pad + W]
         # Background is ~1 in this unitless intensity; anything far off means
         # the Mie solve broke (as it does at NA = n_m), and scoring calibration
         # candidates against it would silently fit noise.

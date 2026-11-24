@@ -34,9 +34,13 @@ def _import_with_mock_deeptrack(resolve_return=None):
     if resolve_return is None:
         resolve_return = np.ones((8, 8), dtype=np.complex128)
 
-    fake_resolved = mock.MagicMock()
-    fake_resolved.resolve.return_value = resolve_return
-    fake_optics_instance = mock.MagicMock(return_value=fake_resolved)
+    def _optics(**kwargs):
+        # Like the real Brightfield, the image has the requested output_region's
+        # shape (generate_mie_ground_truth renders on a padded canvas)
+        _, _, height, width = kwargs.get("output_region", (0, 0) + resolve_return.shape)
+        fake_resolved = mock.MagicMock()
+        fake_resolved.resolve.return_value = np.resize(resolve_return, (height, width))
+        return mock.MagicMock(return_value=fake_resolved)
 
     deeptrack_stub = types.ModuleType("deeptrack")
     fake_sphere = mock.MagicMock()
@@ -45,7 +49,7 @@ def _import_with_mock_deeptrack(resolve_return=None):
     fake_mie_sphere = mock.MagicMock()
     fake_mie_sphere.__pow__ = mock.MagicMock(return_value=mock.MagicMock())
     deeptrack_stub.MieSphere = mock.MagicMock(return_value=fake_mie_sphere)
-    deeptrack_stub.Brightfield = mock.MagicMock(return_value=fake_optics_instance)
+    deeptrack_stub.Brightfield = mock.MagicMock(side_effect=_optics)
 
     sys.modules["deeptrack"] = deeptrack_stub
 
@@ -329,14 +333,30 @@ class TestGenerateMieGroundTruth:
         # calling that lambda with a fabricated _ID must return a pixel
         # position that traces back to one of the real trajectory rows
         # (converted the same way _lj_to_pixels converts every other
-        # strategy's positions).
+        # strategy's positions), shifted by the padded canvas's margin.
         import render_brightfield as rbf_mod
 
         deeptrack_stub = sys.modules["deeptrack"]
         position_fn = deeptrack_stub.MieSphere.call_args.kwargs["position"]
         pixel_positions_all = rbf_mod._lj_to_pixels(positions, (0, 1, 0, 1), 8, 8)
-        resolved = position_fn(_ID=(0,))
+        resolved = position_fn(_ID=(0,)) - rbf_mod.MIE_PAD_PX
         assert any(np.allclose(resolved, row) for row in pixel_positions_all)
+
+    def test_renders_on_a_padded_canvas_and_crops_it(self):
+        # The bead's far-reaching scattered field isn't cut at the canvas edge
+        # (MIE_PAD_PX): the solve's output region is the canvas plus a margin
+        # on every side, and the frame is its centre
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+
+        frames = rbf.generate_mie_ground_truth(
+            _cfg(), positions, (0, 1, 0, 1), n_frames=1, n_particles=4, rng=rng
+        )
+
+        region = sys.modules["deeptrack"].Brightfield.call_args.kwargs["output_region"]
+        assert region == (0, 0, 8 + 2 * rbf.MIE_PAD_PX, 8 + 2 * rbf.MIE_PAD_PX)
+        assert frames[0].shape == (8, 8)
 
 
 class TestOpticsFaithfulness:
@@ -443,7 +463,9 @@ class TestOpticsFaithfulness:
         positions = rng.uniform(0.1, 0.9, size=(10, 2))
         cfg = _cfg(brightfield=dict(_cfg()["brightfield"], na=1.0))
         with mock.patch.object(
-            rbf, "_resolve_brightfield_intensity", return_value=np.full((16, 16), bad_value)
+            rbf,
+            "_resolve_brightfield_intensity",
+            side_effect=lambda sample, cfg, H, W: np.full((H, W), bad_value),
         ):
             with pytest.raises(RuntimeError, match="unphysical intensities"):
                 rbf.generate_mie_ground_truth(
