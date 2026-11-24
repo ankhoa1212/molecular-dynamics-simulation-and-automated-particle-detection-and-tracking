@@ -292,7 +292,7 @@ def render_frame_brightfield_fast(positions_lj, box, cfg, rng, atom_ids=None, st
 
         # Bucket particles by z into n_z_slices bins spanning their actual
         # sampled range (collapses to one bucket when every particle shares
-        # the same z, e.g. the default z_min_px == z_max_px == 0.0).
+        # the same z, e.g. a config with z_min_px == z_max_px).
         z_lo, z_hi = float(z.min()), float(z.max())
         if z_hi > z_lo:
             edges = np.linspace(z_lo, z_hi, n_z_slices + 1)
