@@ -11,8 +11,12 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-# run.py names runs <script>_<N>_<epsilon>[_seed<seed>].<ext>
-RUN_NAME_PATTERN = re.compile(r"_(\d+)_(\d+(?:\.\d+)?)(?:_seed\d+)?\.(?:lammpstrj|log)$")
+# run.py names runs <script>_<N>_<epsilon>[_seed<seed>].<ext>; old runs used
+# <script>.in_<N>_<epsilon>.<ext>. The one parser for both (phase_diagram uses it too).
+RUN_NAME_PATTERNS = (
+    re.compile(r"_(\d+)_([+-]?\d*\.\d+|\d+)(?:_seed\d+)?\.(?:lammpstrj|log)$"),
+    re.compile(r"\.in_(\d+)_([+-]?\d*\.\d+|\d+)\.(?:lammpstrj|log)"),
+)
 
 FIGSIZE = (10, 6)
 DPI = 300
@@ -65,12 +69,29 @@ def find_pull_release_step(path):
     return release_step
 
 
+def _run_name_fields(path):
+    """N and epsilon as written in a run's filename, or (None, None)."""
+    for pattern in RUN_NAME_PATTERNS:
+        match = pattern.search(os.path.basename(path))
+        if match:
+            return match.group(1), match.group(2)
+    return None, None
+
+
+def extract_epsilon_and_molecules(path):
+    """(molecules, epsilon) from a run's filename, or (None, None)."""
+    molecules, epsilon = _run_name_fields(path)
+    if molecules is None:
+        return None, None
+    return int(molecules), float(epsilon)
+
+
 def run_title(quantity, path):
     """Title naming the quantity and, when the filename gives them, N and epsilon."""
-    match = RUN_NAME_PATTERN.search(os.path.basename(path))
-    if match is None:
+    molecules, epsilon = _run_name_fields(path)
+    if molecules is None:
         return quantity
-    return f"{quantity}, N={match.group(1)}, ε={match.group(2)}"
+    return f"{quantity}, N={molecules}, ε={epsilon}"
 
 
 def new_figure():

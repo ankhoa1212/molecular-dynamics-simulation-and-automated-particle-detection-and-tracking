@@ -5,7 +5,6 @@ import sys
 import numpy as np
 import pytest
 
-import hexatic_order_graph
 from temp_graph import plot_log_temperature, plot_temperatures
 from velocity_graph import plot_velocity_over_time
 
@@ -91,6 +90,8 @@ def test_temperature_plot_of_an_empty_trajectory_writes_nothing(tmp_path, capsys
 
 def test_hexatic_plot_from_a_trajectory(tmp_path, monkeypatch):
     pytest.importorskip("freud")
+    import hexatic_order_graph  # needs freud, so only after the skip check
+
     out = tmp_path / "out"
     monkeypatch.setattr(
         sys,
@@ -103,6 +104,8 @@ def test_hexatic_plot_from_a_trajectory(tmp_path, monkeypatch):
 
 def test_hexatic_plot_from_tracks_csv(tmp_path, monkeypatch):
     pytest.importorskip("freud")
+    import hexatic_order_graph  # needs freud, so only after the skip check
+
     rng = np.random.default_rng(1)
     rows = ["frame,particle,x,y"]
     for frame in range(3):

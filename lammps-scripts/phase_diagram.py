@@ -7,10 +7,10 @@ import argparse
 import csv
 import glob
 import os
-import re
 
 import matplotlib.pyplot as plt
 import numpy as np
+from graph_style import extract_epsilon_and_molecules
 from hexatic_order_analysis import parse_and_calc_hexatic
 
 # Marker area in points^2: MIN_MARKER_SIZE at zero order, growing by
@@ -40,30 +40,6 @@ def _marker_scale(fig, ax, epsilons, num_molecules):
         return 1.0
     max_diameter = 0.9 * min(points_per_unit)
     return min(1.0, max_diameter**2 / (MIN_MARKER_SIZE + MARKER_SIZE_RANGE))
-
-
-def extract_epsilon_and_molecules(filename):
-    """
-    Extracts the epsilon and molecules values from the filename.
-    Expected format:
-      - *.in_{molecules}_{epsilon}.lammpstrj (Old format)
-      - *_{molecules}_{epsilon}.lammpstrj (New format)
-    """
-    # Regex for new format (flexible script name, followed by _NUM_FLOAT.ext)
-    match_new = re.search(r"_(\d+)_([+-]?\d*\.\d+|\d+)\.(lammpstrj|log)$", filename)
-    if match_new:
-        molecules = int(match_new.group(1))
-        epsilon = float(match_new.group(2))
-        return molecules, epsilon
-
-    # Regex for old format (*.in_NUM_FLOAT.ext)
-    match_old = re.search(r"\.in_(\d+)_([+-]?\d*\.\d+|\d+)\.(lammpstrj|log)", filename)
-    if match_old:
-        molecules = int(match_old.group(1))
-        epsilon = float(match_old.group(2))
-        return molecules, epsilon
-
-    return None, None
 
 
 def test_single_file(filename):
