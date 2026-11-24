@@ -253,7 +253,7 @@ def _boxes_frame(centers, box_size=10.0, confidence=0.9):
     return {"xyxy": xyxy, "confidence": np.full(len(centers), confidence, dtype=np.float64)}
 
 
-class TestRunBytetrackMetrics:
+class TestRunBytetrackMetricsSmoke:
     def test_perfect_detection_and_tracking(self, tmp_path):
         gt_rows = []
         for frame in range(5):
