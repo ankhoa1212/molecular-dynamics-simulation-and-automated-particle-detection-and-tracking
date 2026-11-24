@@ -358,6 +358,32 @@ class TestGenerateMieGroundTruth:
         assert region == (0, 0, 8 + 2 * rbf.MIE_PAD_PX, 8 + 2 * rbf.MIE_PAD_PX)
         assert frames[0].shape == (8, 8)
 
+    @pytest.mark.parametrize("pad", [0, 16])
+    def test_a_configured_margin_is_honored(self, pad):
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        cfg = _cfg(brightfield=dict(_cfg()["brightfield"], mie_pad_px=pad))
+
+        frames = rbf.generate_mie_ground_truth(
+            cfg, positions, (0, 1, 0, 1), n_frames=1, n_particles=4, rng=rng
+        )
+
+        region = sys.modules["deeptrack"].Brightfield.call_args.kwargs["output_region"]
+        assert region == (0, 0, 8 + 2 * pad, 8 + 2 * pad)
+        assert frames[0].shape == (8, 8)
+        position_fn = sys.modules["deeptrack"].MieSphere.call_args.kwargs["position"]
+        pixel_positions_all = rbf._lj_to_pixels(positions, (0, 1, 0, 1), 8, 8)
+        assert any(np.allclose(position_fn(_ID=(0,)) - pad, row) for row in pixel_positions_all)
+
+    def test_a_negative_margin_is_rejected(self):
+        rbf = _import_with_mock_deeptrack()
+        cfg = _cfg(brightfield=dict(_cfg()["brightfield"], mie_pad_px=-1))
+        with pytest.raises(ValueError, match="mie_pad_px"):
+            rbf.generate_mie_ground_truth(
+                cfg, np.zeros((4, 2)), (0, 1, 0, 1), 1, 4, np.random.default_rng(0)
+            )
+
 
 class TestOpticsFaithfulness:
     """effective_collection_na and deeptrack_equivalent_index: the two

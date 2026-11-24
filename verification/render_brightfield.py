@@ -44,6 +44,7 @@ from render import _lj_to_pixels
 # truth always renders with INSTRUMENT_OPTICS.
 DEFAULT_NA = 1.45
 DEFAULT_REFRACTIVE_INDEX = 1.59
+DEFAULT_REFRACTIVE_INDEX_MEDIUM = 1.33  # water
 INSTRUMENT_OPTICS = {
     "na": DEFAULT_NA,
     "refractive_index_min": DEFAULT_REFRACTIVE_INDEX,
@@ -102,7 +103,9 @@ def effective_collection_na(bf_cfg):
     can't model and is left out.
     """
     na = float(bf_cfg.get("na", DEFAULT_NA))
-    refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+    refractive_index_medium = float(
+        bf_cfg.get("refractive_index_medium", DEFAULT_REFRACTIVE_INDEX_MEDIUM)
+    )
     if na <= refractive_index_medium:
         return na
     warnings.warn(
@@ -295,7 +298,9 @@ def _resolve_brightfield_intensity(sample, bf_cfg, H, W):
         wavelength=float(bf_cfg.get("wavelength", 550e-9)),
         resolution=float(bf_cfg.get("resolution", 100e-9)),
         magnification=float(bf_cfg.get("magnification", 10.0)),
-        refractive_index_medium=float(bf_cfg.get("refractive_index_medium", 1.33)),
+        refractive_index_medium=float(
+            bf_cfg.get("refractive_index_medium", DEFAULT_REFRACTIVE_INDEX_MEDIUM)
+        ),
         output_region=(0, 0, H, W),
     )
     image = optics(sample).resolve()
@@ -347,7 +352,9 @@ def render_frame_brightfield(positions_lj, box, cfg, rng, atom_ids=None, state=N
         radii, refractive_indices, z = _sample_particle_properties(
             len(pixel_positions), bf_cfg, rng, atom_ids=kept_atom_ids, state=state
         )
-        refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+        refractive_index_medium = float(
+            bf_cfg.get("refractive_index_medium", DEFAULT_REFRACTIVE_INDEX_MEDIUM)
+        )
         sample = _build_sphere_sample(
             pixel_positions,
             radii,
@@ -437,7 +444,9 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
     dt = _import_deeptrack()
     pixel_positions_all = _lj_to_pixels(positions_lj, box, H, W)
     intensity_scale = float(bf_cfg.get("intensity_scale", DEFAULT_INTENSITY_SCALE))
-    refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+    refractive_index_medium = float(
+        bf_cfg.get("refractive_index_medium", DEFAULT_REFRACTIVE_INDEX_MEDIUM)
+    )
     # Not effective_collection_na: its cap (n_m) is above this one, and its
     # warning would name 1.33 when the Mie solve actually collects up to
     # MIE_MAX_NA_FRACTION * n_m (1.30 in water; see that constant and the README)
@@ -451,6 +460,8 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
 
     # Render on a padded canvas and crop back to (H, W): see MIE_PAD_PX
     pad = int(bf_cfg.get("mie_pad_px", MIE_PAD_PX))
+    if pad < 0:
+        raise ValueError(f"synthetic.brightfield.mie_pad_px must be >= 0, got {pad}.")
 
     frames = []
     for _ in range(n_frames):
@@ -475,7 +486,7 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
                 "generate_mie_ground_truth: deeptrack's MieSphere returned unphysical "
                 f"intensities (median {np.median(intensity):.3g}, expected ~1 background) "
                 f"at NA {mie_bf_cfg['na']} and refractive_index_medium "
-                f"{mie_bf_cfg.get('refractive_index_medium', 1.33)}. Calibrate against "
+                f"{mie_bf_cfg.get('refractive_index_medium', DEFAULT_REFRACTIVE_INDEX_MEDIUM)}. Calibrate against "
                 "real frames instead (calibrate_psf.py --real-frames)."
             )
         frame = np.clip(intensity * intensity_scale, 0, 65535).astype(np.uint16)

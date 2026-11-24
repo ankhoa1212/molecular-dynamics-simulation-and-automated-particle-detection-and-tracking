@@ -275,7 +275,8 @@ class TestMieTargetAtTheInstrumentOptics:
     def test_bright_centered_like_the_brightfield_path(self, z):
         size = 64
         optics = dict(INSTRUMENT_OPTICS, magnification=1.0, z_min_px=z, z_max_px=z)
-        optics.update(mie_max_particles=1, mie_max_frames=1)
+        # intensity_scale low enough that neither frame clips at 65535
+        optics.update(mie_max_particles=1, mie_max_frames=1, intensity_scale=1000.0)
         cfg = {"image_height": size, "image_width": size, "brightfield": optics}
         positions, box = np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)
 
@@ -289,6 +290,31 @@ class TestMieTargetAtTheInstrumentOptics:
             centre = frame[size // 2 - 2 : size // 2 + 3, size // 2 - 2 : size // 2 + 3].mean()
             return centre / np.median(frame)
 
-        # Measured: Mie 3.63 / 3.64 (padded canvas), Brightfield 2.40 / 1.17 at z -10 / -2
+        # Measured (unclipped): Mie 10.4 / 9.5, Brightfield 2.2 / 1.1 at z -10 / -2
         assert centre_over_background(mie) > 1.05
         assert centre_over_background(brightfield) > 1.05
+
+    def test_does_not_depend_on_the_canvas_size(self):
+        # MIE_PAD_PX: with the margin, the bead's central window is the same on
+        # a 64 and a 128 px canvas (measured 0.0% relative RMS); without it the
+        # truncated far field shifts it 34.8%
+        def central_window(size):
+            optics = dict(INSTRUMENT_OPTICS, magnification=1.0, z_min_px=-6.0, z_max_px=-6.0)
+            optics.update(mie_max_particles=1, mie_max_frames=1, intensity_scale=1000.0)
+            cfg = {"image_height": size, "image_width": size, "brightfield": optics}
+            frame = (
+                generate_mie_ground_truth(
+                    cfg,
+                    np.array([[5.0, 5.0]]),
+                    (0.0, 10.0, 0.0, 10.0),
+                    1,
+                    1,
+                    np.random.default_rng(0),
+                )[0]
+                / 1000.0
+            )
+            return frame[size // 2 - 8 : size // 2 + 8, size // 2 - 8 : size // 2 + 8]
+
+        small, large = central_window(64), central_window(128)
+        relative_rms = np.sqrt(np.mean((small - large) ** 2)) / np.sqrt(np.mean((large - 1) ** 2))
+        assert relative_rms < 0.02
