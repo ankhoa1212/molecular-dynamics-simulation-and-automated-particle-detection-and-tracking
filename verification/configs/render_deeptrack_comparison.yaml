@@ -3,6 +3,12 @@
 # random-placement (render_random_placement.py) conditions so the comparison
 # is exactly reproducible from the commands below.
 #
+# The optics follow the real microscope (na 1.45, index 1.59, intensity_scale
+# 18000) since PR #61. Results produced before it used na 1.0, index 1.45 (in
+# deeptrack's own phase convention) and intensity_scale 20000: reproduce those
+# from this file as it was before PR #61, and don't mix the two in one table
+# (see compute_placement_ablation_table.py's TRACKPY_BASELINE).
+#
 # Run both conditions in order:
 #
 # Step 1a: Physics-grounded condition (LAMMPS trajectory)

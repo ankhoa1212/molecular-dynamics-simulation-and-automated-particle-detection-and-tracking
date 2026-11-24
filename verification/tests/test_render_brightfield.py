@@ -347,7 +347,8 @@ class TestOpticsFaithfulness:
     def test_na_at_or_below_the_medium_index_passes_through(self):
         rbf = _import_with_mock_deeptrack()
         with warnings.catch_warnings():
-            warnings.simplefilter("error")
+            # No cap warning for an NA the medium can carry
+            warnings.filterwarnings("error", message=r"synthetic\.brightfield\.na")
             assert rbf.effective_collection_na({"na": 1.0, "refractive_index_medium": 1.33}) == 1.0
             assert (
                 rbf.effective_collection_na({"na": 1.33, "refractive_index_medium": 1.33}) == 1.33
@@ -432,7 +433,8 @@ class TestOpticsFaithfulness:
         )
         assert sys.modules["deeptrack"].Brightfield.call_args.kwargs["NA"] == 1.0
 
-    @pytest.mark.parametrize("bad_value", [np.nan, 1e27])
+    # Non-finite, the singular ~1e27 background, and a collapsed near-zero output
+    @pytest.mark.parametrize("bad_value", [np.nan, 1e27, 1e-3])
     def test_mie_path_fails_fast_on_unphysical_intensities(self, bad_value):
         # What deeptrack 2.0.1's MieSphere returned at NA = n_m (median
         # ~1e27): calibration must not silently fit candidates to it.

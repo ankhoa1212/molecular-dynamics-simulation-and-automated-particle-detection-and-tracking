@@ -34,7 +34,11 @@ DEFAULT_RANDOM = _DEEPTRACK_COMPARISON / "random" / "accuracy_metrics_rf-detr.cs
 # Trackpy classical baseline, physics-grounded placement, N~1446
 # (brightfield_fast rendering) -- reused verbatim from tab:synth_results
 # (Table 6) in wacv2027-paper/sec/results.tex. See module docstring: not
-# independently recomputed by this script.
+# independently recomputed by this script. Measured at the renderer's earlier
+# optics (NA 1.0, index 1.45 with deeptrack's own phase, intensity_scale
+# 20000). configs/render_deeptrack_comparison.yaml now renders the real optics
+# (NA 1.45, index 1.59), so rerun trackpy on frames from that config before
+# putting this row in one table with new-optics RF-DETR rows.
 TRACKPY_BASELINE = {"precision": 0.558, "recall": 0.445, "f1": 0.495}
 
 ROWS_ORDER = ["physics", "random", "trackpy"]

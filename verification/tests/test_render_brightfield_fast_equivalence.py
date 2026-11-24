@@ -46,7 +46,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytest.importorskip("deeptrack")
 
 from compare_renders import compute_ssim_similarity  # noqa: E402
-from render_brightfield import render_frame_brightfield  # noqa: E402
+from render_brightfield import (  # noqa: E402
+    INSTRUMENT_OPTICS,
+    generate_mie_ground_truth,
+    render_frame_brightfield,
+)
 from render_brightfield_fast import render_frame_brightfield_fast  # noqa: E402
 
 SSIM_THRESHOLD = 0.7
@@ -257,3 +261,33 @@ class TestProductionDensitySanity:
         assert frame.shape == (512, 512)
         assert frame.dtype == np.uint16
         assert np.all(np.isfinite(frame.astype(np.float64)))
+
+
+class TestMieTargetAtTheInstrumentOptics:
+    """The calibration Mie target at the real optics (NA 1.45 -> 0.98 * 1.33,
+    index 1.59) with the real deeptrack: physical output (no RuntimeError from
+    generate_mie_ground_truth's sanity check), and the same bright-centered
+    polarity as the Brightfield path on the bright side of focus, so PSD
+    scoring (blind to polarity) can't be fitting an inverted target."""
+
+    @pytest.mark.parametrize("z", [-10.0, -2.0])
+    def test_bright_centered_like_the_brightfield_path(self, z):
+        size = 64
+        optics = dict(INSTRUMENT_OPTICS, magnification=1.0, z_min_px=z, z_max_px=z)
+        optics.update(mie_max_particles=1, mie_max_frames=1)
+        cfg = {"image_height": size, "image_width": size, "brightfield": optics}
+        positions, box = np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)
+
+        mie = generate_mie_ground_truth(
+            cfg, positions, box, n_frames=1, n_particles=1, rng=np.random.default_rng(0)
+        )[0]
+        brightfield = render_frame_brightfield(positions, box, cfg, np.random.default_rng(0))
+
+        def centre_over_background(frame):
+            frame = np.asarray(frame, dtype=np.float64)
+            centre = frame[size // 2 - 2 : size // 2 + 3, size // 2 - 2 : size // 2 + 3].mean()
+            return centre / np.median(frame)
+
+        # Measured: Mie 2.41 / 3.49, Brightfield 2.40 / 1.17 at z -10 / -2
+        assert centre_over_background(mie) > 1.05
+        assert centre_over_background(brightfield) > 1.05
