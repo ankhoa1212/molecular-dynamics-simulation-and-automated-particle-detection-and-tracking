@@ -1,0 +1,16 @@
+{
+    "input_file": "continuous_force.in",
+    "output_dir": "phase_boundary",
+    "molecules": "100",
+    "molecules_end": "1500",
+    "molecules_step": "100",
+    "var_epsilon": "0.5",
+    "var_epsilon_end": "5.0",
+    "var_epsilon_step": "0.1",
+    "t_start": "1.0",
+    "t_stop": "1.0",
+    "steps": "15000",
+    "vel_force_scale": "40",
+    "start_shape": "box",
+    "pull_release_fraction": "0.666667"
+}
