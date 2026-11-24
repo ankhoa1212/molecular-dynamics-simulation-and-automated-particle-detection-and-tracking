@@ -3,7 +3,12 @@
 import matplotlib.pyplot as plt
 import pytest
 
-from graph_style import find_pull_release_step, mark_start_release_end, run_title
+from graph_style import (
+    _release_label_height,
+    find_pull_release_step,
+    mark_start_release_end,
+    run_title,
+)
 
 # How continuous_force.in's release step appears in a LAMMPS log: echoed once
 # per substitution pass, and only the last line has every value filled in
@@ -106,4 +111,41 @@ def test_empty_run_draws_nothing(tmp_path):
     mark_start_release_end(ax, _run_with_log(tmp_path, 0.666667, 15000), [], [])
 
     assert len(ax.texts) == 0 and len(ax.lines) == 0
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "curve_height, expected",
+    [(0.75, 0.15), (0.45, 0.15), (0.15, 0.75)],
+)
+def test_release_label_goes_to_the_height_farthest_from_the_curve(curve_height, expected):
+    fig, ax = plt.subplots()
+    ax.set_ylim(0, 1)
+    steps = list(range(0, 101, 10))
+    values = [curve_height] * len(steps)
+
+    assert _release_label_height(ax, steps, values, 20, 60) == expected
+    plt.close(fig)
+
+
+def test_release_label_height_with_no_curve_under_it():
+    fig, ax = plt.subplots()
+    ax.set_ylim(0, 1)
+
+    assert _release_label_height(ax, [0, 10], [0.75, 0.75], 50, 60) == 0.75
+    plt.close(fig)
+
+
+def test_end_label_near_the_top_goes_below_its_point(tmp_path):
+    # Rising curve: the End point is at the top of the plot, Start at the bottom
+    steps = list(range(0, 15001, 100))
+    fig, ax = plt.subplots()
+    values = [0.001 * step for step in steps]
+    ax.plot(steps, values)
+
+    mark_start_release_end(ax, _run_with_log(tmp_path, 0.666667, 15000), steps, values)
+
+    labels = {t.get_text().split(":")[0]: t for t in ax.texts}
+    assert labels["End"].get_verticalalignment() == "top"
+    assert labels["Start"].get_verticalalignment() == "bottom"
     plt.close(fig)
