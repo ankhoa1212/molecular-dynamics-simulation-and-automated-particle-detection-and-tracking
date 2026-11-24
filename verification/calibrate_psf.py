@@ -484,7 +484,7 @@ def _format_yaml_fragment(params: dict) -> str:
     gain_note = params["noise"]["_gain_sigma_note"]
     return "\n".join(
         [
-            f"# Calibrated parameters (paste into config.yaml under synthetic:)",
+            "# Calibrated parameters (paste into config.yaml under synthetic:)",
             f"# Fitted from {meta['n_fits']} particle crops in {meta['n_frames']} frames",
             "psf:",
             f"  sigma_px: {params['psf']['sigma_px']}      # mean fitted PSF sigma in pixels",
@@ -647,7 +647,7 @@ def _run_brightfield_calibration(args):
     from lammps_parser import parse_lammps_dump
 
     from render import _parse_atoms, _parse_box
-    from render_brightfield import generate_mie_ground_truth
+    from render_brightfield import INSTRUMENT_OPTICS, generate_mie_ground_truth
 
     real_frames = []
     if args.real_frames:
@@ -676,7 +676,10 @@ def _run_brightfield_calibration(args):
         cfg = {
             "image_height": args.image_height,
             "image_width": args.image_width,
+            # The real instrument's optics, explicitly: never config.yaml's
+            # fitted values, so a merged calibration can't move its own target
             "brightfield": {
+                **INSTRUMENT_OPTICS,
                 "mie_max_particles": n_particles,
                 "mie_max_frames": args.mie_frames,
                 "magnification": 1.0,

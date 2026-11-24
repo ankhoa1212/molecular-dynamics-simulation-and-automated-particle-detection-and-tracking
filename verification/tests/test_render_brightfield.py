@@ -19,7 +19,6 @@ from unittest import mock
 
 import numpy as np
 import pytest
-import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -446,18 +445,23 @@ class TestOpticsFaithfulness:
                     cfg, positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
                 )
 
-    def test_defaults_for_missing_keys_match_config_yaml(self):
-        # A config that leaves the optics out renders the production optics,
-        # not stale pre-NA-1.45 values.
+    def test_defaults_are_the_instrument_optics(self):
+        # A config that leaves the optics out renders the real instrument (NA
+        # 1.45 objective, index 1.59 beads), not stale pre-NA-1.45 values. Pinned
+        # to the instrument, not to config.yaml, which calibration may rewrite.
         rbf = _import_with_mock_deeptrack()
-        with open(Path(__file__).resolve().parent.parent / "config.yaml") as f:
-            production = yaml.safe_load(f)["synthetic"]["brightfield"]
-        assert rbf.DEFAULT_NA == production["na"]
-        assert rbf.DEFAULT_REFRACTIVE_INDEX == production["refractive_index_min"]
-        assert rbf.DEFAULT_REFRACTIVE_INDEX == production["refractive_index_max"]
-        assert rbf.DEFAULT_INTENSITY_SCALE == production["intensity_scale"]
-        assert rbf.DEFAULT_Z_MIN_PX == production["z_min_px"]
-        assert rbf.DEFAULT_Z_MAX_PX == production["z_max_px"]
+        assert rbf.DEFAULT_NA == 1.45
+        assert rbf.DEFAULT_REFRACTIVE_INDEX == 1.59
+        assert rbf.INSTRUMENT_OPTICS == {
+            "na": 1.45,
+            "refractive_index_min": 1.59,
+            "refractive_index_max": 1.59,
+        }
+        assert (rbf.DEFAULT_INTENSITY_SCALE, rbf.DEFAULT_Z_MIN_PX, rbf.DEFAULT_Z_MAX_PX) == (
+            18000.0,
+            -13.0,
+            0.0,
+        )
         _, refractive_indices, z = rbf._sample_particle_properties(50, {}, np.random.default_rng(0))
         assert np.all(refractive_indices == 1.59)
         assert np.all((z >= -13.0) & (z <= 0.0))

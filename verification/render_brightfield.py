@@ -37,11 +37,18 @@ import numpy as np
 
 from render import _lj_to_pixels
 
-# Fallbacks for synthetic.brightfield keys a config leaves out: the same
-# values as config.yaml (the real setup -- NA 1.45 oil objective, polystyrene
-# beads -- and the values tuned for it; see the comments there).
+# Fallbacks for synthetic.brightfield keys a config leaves out. NA and index
+# are the real instrument (NA 1.45 oil objective, polystyrene beads): fixed
+# physical values, not tuned ones, so `calibrate_psf.py --merge-config` may
+# write fitted values into config.yaml without these drifting. Mie ground
+# truth always renders with INSTRUMENT_OPTICS.
 DEFAULT_NA = 1.45
 DEFAULT_REFRACTIVE_INDEX = 1.59
+INSTRUMENT_OPTICS = {
+    "na": DEFAULT_NA,
+    "refractive_index_min": DEFAULT_REFRACTIVE_INDEX,
+    "refractive_index_max": DEFAULT_REFRACTIVE_INDEX,
+}
 DEFAULT_INTENSITY_SCALE = 18000.0
 DEFAULT_Z_MIN_PX = -13.0
 DEFAULT_Z_MAX_PX = 0.0
