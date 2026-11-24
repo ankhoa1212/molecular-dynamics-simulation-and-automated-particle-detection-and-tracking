@@ -430,10 +430,13 @@ def generate_mie_ground_truth(cfg, positions_lj, box, n_frames, n_particles, rng
     pixel_positions_all = _lj_to_pixels(positions_lj, box, H, W)
     intensity_scale = float(bf_cfg.get("intensity_scale", DEFAULT_INTENSITY_SCALE))
     refractive_index_medium = float(bf_cfg.get("refractive_index_medium", 1.33))
+    # Not effective_collection_na: its cap (n_m) is above this one, and its
+    # warning would name 1.33 when the Mie solve actually collects up to
+    # MIE_MAX_NA_FRACTION * n_m (1.30 in water; see that constant and the README)
     mie_bf_cfg = dict(
         bf_cfg,
         na=min(
-            effective_collection_na(bf_cfg),
+            float(bf_cfg.get("na", DEFAULT_NA)),
             MIE_MAX_NA_FRACTION * refractive_index_medium,
         ),
     )

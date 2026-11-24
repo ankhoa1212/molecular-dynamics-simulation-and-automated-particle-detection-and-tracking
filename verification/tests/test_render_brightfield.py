@@ -410,10 +410,13 @@ class TestOpticsFaithfulness:
         bf["refractive_index_max"] = 1.59
         rng = np.random.default_rng(0)
         positions = rng.uniform(0.1, 0.9, size=(10, 2))
-        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             rbf.generate_mie_ground_truth(
                 _cfg(brightfield=bf), positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
             )
+        # No "capped to n_m" warning: the Mie solve's own cap (0.98 * n_m) applies
+        assert not [w for w in caught if "above refractive_index_medium" in str(w.message)]
         deeptrack_stub = sys.modules["deeptrack"]
         assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == pytest.approx(0.98 * 1.33)
         index_fn = deeptrack_stub.MieSphere.call_args.kwargs["refractive_index"]

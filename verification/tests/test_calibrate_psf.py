@@ -900,7 +900,8 @@ class TestCalibrateBrightfieldZRange:
 
         with warnings.catch_warnings():
             # The NA cap warning would mean a candidate was sampled above its medium
-            warnings.simplefilter("error")
+            # (only that warning: an unrelated dependency warning shouldn't fail this)
+            warnings.filterwarnings("error", message=r"synthetic\.brightfield\.na")
             with mock.patch.object(
                 render_brightfield, "_resolve_brightfield_intensity", _spy_resolve
             ):
@@ -1182,3 +1183,41 @@ class TestBrightfieldCli:
         ]
         assert magnifications
         assert all(m == 1.0 for m in magnifications)
+
+    def test_mie_ground_truth_uses_the_instrument_optics(self):
+        # The Mie target renders the real instrument (render_brightfield.
+        # INSTRUMENT_OPTICS), passed explicitly, so a --merge-config run that
+        # writes fitted na/index into config.yaml can't move the next target.
+        lammps_stub = mock.MagicMock()
+        lammps_stub.parse_lammps_dump.return_value = iter(
+            [
+                {
+                    "box_bounds": ["0.0 10.0", "0.0 10.0"],
+                    "atom_header": "ITEM: ATOMS id xu yu",
+                    "atoms": ["1 5.0 5.0", "2 6.0 6.0", "3 4.0 4.0"],
+                }
+            ]
+        )
+        _mock_deeptrack_for_brightfield(np.random.default_rng(0).random((32, 32)))
+        import render_brightfield
+
+        argv = ["calibrate_psf.py", "--brightfield", "--lammps", "fake.lammpstrj"]
+        argv += ["--mie-frames", "1", "--mie-frames-particles", "2", "--n-iterations", "1"]
+        argv += ["--image-height", "32", "--image-width", "32"]
+        with mock.patch.dict(sys.modules, {"lammps_parser": lammps_stub}):
+            with mock.patch.object(
+                render_brightfield,
+                "generate_mie_ground_truth",
+                wraps=render_brightfield.generate_mie_ground_truth,
+            ) as spy:
+                with mock.patch.object(sys, "argv", argv):
+                    calibrate_psf.main()
+
+        mie_optics = spy.call_args.args[0]["brightfield"]
+        assert render_brightfield.INSTRUMENT_OPTICS == {
+            "na": 1.45,
+            "refractive_index_min": 1.59,
+            "refractive_index_max": 1.59,
+        }
+        for key, value in render_brightfield.INSTRUMENT_OPTICS.items():
+            assert mie_optics[key] == value
