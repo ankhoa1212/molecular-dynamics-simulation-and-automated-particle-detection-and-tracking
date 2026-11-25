@@ -46,7 +46,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytest.importorskip("deeptrack")
 
 from compare_renders import compute_ssim_similarity  # noqa: E402
-from render_brightfield import render_frame_brightfield  # noqa: E402
+from render_brightfield import (  # noqa: E402
+    INSTRUMENT_OPTICS,
+    generate_mie_ground_truth,
+    render_frame_brightfield,
+)
 from render_brightfield_fast import render_frame_brightfield_fast  # noqa: E402
 
 SSIM_THRESHOLD = 0.7
@@ -173,6 +177,40 @@ class TestMultiParticleEquivalence:
         assert ssim >= SSIM_THRESHOLD
 
 
+def _production_optics(cfg):
+    """config.yaml's optics: the real setup's NA 1.45 objective (rendered at
+    the capped NA 1.33, see render_brightfield.effective_collection_na) and
+    polystyrene index 1.59 (applied through deeptrack_equivalent_index)."""
+    cfg["brightfield"].update(
+        na=1.45, refractive_index_min=1.59, refractive_index_max=1.59, intensity_scale=18000.0
+    )
+    return cfg
+
+
+@pytest.mark.filterwarnings("ignore:synthetic.brightfield.na")
+class TestProductionOpticsEquivalence:
+    """The same scenarios at config.yaml's optics and bright-core defocus
+    range (z -13..0). Measured: single bead 0.995-0.998 across z, N=20
+    0.836-0.858, dense N=45 0.798 -- in line with the original optics'
+    0.79-0.87, so the stronger 1.59 phase didn't open a fast/slow gap."""
+
+    @pytest.mark.parametrize("z", [-13.0, -6.0, -1.0])
+    def test_single_particle_across_the_defocus_range(self, z):
+        positions = np.array([[50.37, 50.82]])
+        cfg = _production_optics(_cfg(z_min_px=z, z_max_px=z))
+        assert _ssim_for(positions, cfg, seed=10) >= SSIM_THRESHOLD
+
+    def test_n20_non_overlapping_spanning_the_defocus_range(self):
+        positions = _non_overlapping_positions(20, 15, 85, min_sep=6.0, seed=20)
+        cfg = _production_optics(_cfg(z_min_px=-13.0, z_max_px=0.0))
+        assert _ssim_for(positions, cfg, seed=21) >= SSIM_THRESHOLD
+
+    def test_dense_touching_cluster_n45(self):
+        positions = np.random.default_rng(30).uniform(20, 44, size=(45, 2))
+        cfg = _production_optics(_cfg(image_size=64, z_min_px=-13.0, z_max_px=0.0))
+        assert _ssim_for(positions, cfg, seed=30) >= SSIM_THRESHOLD
+
+
 class TestZBucketGranularityDiagnostic:
     """Diagnostic (not a pass/fail correctness gate): confirms that
     increasing n_z_slices does not blow up the defocused SSIM, i.e. any
@@ -223,3 +261,60 @@ class TestProductionDensitySanity:
         assert frame.shape == (512, 512)
         assert frame.dtype == np.uint16
         assert np.all(np.isfinite(frame.astype(np.float64)))
+
+
+@pytest.mark.filterwarnings("ignore:synthetic.brightfield.na")
+class TestMieTargetAtTheInstrumentOptics:
+    """The calibration Mie target at the real optics (NA 1.45 -> 0.98 * 1.33,
+    index 1.59) with the real deeptrack: physical output (no RuntimeError from
+    generate_mie_ground_truth's sanity check), and the same bright-centered
+    polarity as the Brightfield path on the bright side of focus, so PSD
+    scoring (blind to polarity) can't be fitting an inverted target."""
+
+    @pytest.mark.parametrize("z", [-10.0, -2.0])
+    def test_bright_centered_like_the_brightfield_path(self, z):
+        size = 64
+        optics = dict(INSTRUMENT_OPTICS, magnification=1.0, z_min_px=z, z_max_px=z)
+        # intensity_scale low enough that neither frame clips at 65535
+        optics.update(mie_max_particles=1, mie_max_frames=1, intensity_scale=1000.0)
+        cfg = {"image_height": size, "image_width": size, "brightfield": optics}
+        positions, box = np.array([[5.0, 5.0]]), (0.0, 10.0, 0.0, 10.0)
+
+        mie = generate_mie_ground_truth(
+            cfg, positions, box, n_frames=1, n_particles=1, rng=np.random.default_rng(0)
+        )[0]
+        brightfield = render_frame_brightfield(positions, box, cfg, np.random.default_rng(0))
+
+        def centre_over_background(frame):
+            frame = np.asarray(frame, dtype=np.float64)
+            centre = frame[size // 2 - 2 : size // 2 + 3, size // 2 - 2 : size // 2 + 3].mean()
+            return centre / np.median(frame)
+
+        # Measured (unclipped): Mie 10.4 / 9.5, Brightfield 2.2 / 1.1 at z -10 / -2
+        assert centre_over_background(mie) > 1.05
+        assert centre_over_background(brightfield) > 1.05
+
+    def test_does_not_depend_on_the_canvas_size(self):
+        # MIE_PAD_PX: with the margin, the bead's central window is the same on
+        # a 64 and a 128 px canvas (measured 0.0% relative RMS); without it the
+        # truncated far field shifts it 34.8%
+        def central_window(size):
+            optics = dict(INSTRUMENT_OPTICS, magnification=1.0, z_min_px=-6.0, z_max_px=-6.0)
+            optics.update(mie_max_particles=1, mie_max_frames=1, intensity_scale=1000.0)
+            cfg = {"image_height": size, "image_width": size, "brightfield": optics}
+            frame = (
+                generate_mie_ground_truth(
+                    cfg,
+                    np.array([[5.0, 5.0]]),
+                    (0.0, 10.0, 0.0, 10.0),
+                    1,
+                    1,
+                    np.random.default_rng(0),
+                )[0]
+                / 1000.0
+            )
+            return frame[size // 2 - 8 : size // 2 + 8, size // 2 - 8 : size // 2 + 8]
+
+        small, large = central_window(64), central_window(128)
+        relative_rms = np.sqrt(np.mean((small - large) ** 2)) / np.sqrt(np.mean((large - 1) ** 2))
+        assert relative_rms < 0.02

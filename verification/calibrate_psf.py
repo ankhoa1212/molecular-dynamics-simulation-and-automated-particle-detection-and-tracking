@@ -376,7 +376,13 @@ def calibrate_brightfield(
     from render_brightfield import render_frame_brightfield
 
     bounds = param_bounds or {
-        "na": (0.7, 1.4),
+        # Up to the real setup's NA 1.45 oil objective. Each candidate's
+        # upper bound is further clamped to its own sampled
+        # refractive_index_medium, since a higher NA renders exactly like
+        # NA = refractive_index_medium (render_brightfield.effective_collection_na):
+        # sampling above it would only re-render that boundary value and could
+        # report a fitted na that was never used.
+        "na": (0.7, 1.45),
         "wavelength": (450e-9, 650e-9),
         "resolution": (65e-9, 150e-9),
         "refractive_index_medium": (1.33, 1.40),
@@ -388,8 +394,11 @@ def calibrate_brightfield(
         # intentionally produce one monodisperse value per candidate) --
         # defocus needs a genuine spread for render_strategy: brightfield_fast's
         # z-bucketing to have anything to exercise once this feeds production
-        # config.
-        "z_range_px": (-15.0, 15.0),
+        # config. Upper end 0: from z = +1 a bead turns dark-centered, which
+        # none of the real reference crops show (config.yaml's z_min_px /
+        # z_max_px comment), and PSD similarity can't tell the two polarities
+        # apart, so a positive-z range could otherwise win.
+        "z_range_px": (-15.0, 0.0),
     }
     # LodeSTAR crops (this function's real-world real_frames target) are
     # smaller than and inconsistent in size with the candidate canvas --
@@ -412,10 +421,16 @@ def calibrate_brightfield(
         # use above (see the z_range_px bound's own comment).
         z_a = float(rng.uniform(*bounds["z_range_px"]))
         z_b = float(rng.uniform(*bounds["z_range_px"]))
+        refractive_index_medium = float(rng.uniform(*bounds["refractive_index_medium"]))
+        # Never above this candidate's medium index, even when a custom na
+        # lower bound is above it (that na would render as the medium's)
+        na_lo, na_hi = bounds["na"]
+        na_top = min(na_hi, refractive_index_medium)
+        na = float(rng.uniform(min(na_lo, na_top), na_top))
         candidate = {
             "max_particles": search_max_particles,
             "intensity_scale": float(rng.uniform(*bounds["intensity_scale"])),
-            "na": float(rng.uniform(*bounds["na"])),
+            "na": na,
             "wavelength": float(rng.uniform(*bounds["wavelength"])),
             "resolution": float(rng.uniform(*bounds["resolution"])),
             # Fixed, not searched: deeptrack.Brightfield's own default (10)
@@ -427,7 +442,7 @@ def calibrate_brightfield(
             # search dimension since it's a fixed, decided value, not a
             # free physical parameter to fit against reference imagery.
             "magnification": 1.0,
-            "refractive_index_medium": float(rng.uniform(*bounds["refractive_index_medium"])),
+            "refractive_index_medium": refractive_index_medium,
             "radius_min": radius,
             "radius_max": radius,
             "refractive_index_min": refractive_index,
@@ -472,7 +487,7 @@ def _format_yaml_fragment(params: dict) -> str:
     gain_note = params["noise"]["_gain_sigma_note"]
     return "\n".join(
         [
-            f"# Calibrated parameters (paste into config.yaml under synthetic:)",
+            "# Calibrated parameters (paste into config.yaml under synthetic:)",
             f"# Fitted from {meta['n_fits']} particle crops in {meta['n_frames']} frames",
             "psf:",
             f"  sigma_px: {params['psf']['sigma_px']}      # mean fitted PSF sigma in pixels",
@@ -635,7 +650,7 @@ def _run_brightfield_calibration(args):
     from lammps_parser import parse_lammps_dump
 
     from render import _parse_atoms, _parse_box
-    from render_brightfield import generate_mie_ground_truth
+    from render_brightfield import INSTRUMENT_OPTICS, generate_mie_ground_truth
 
     real_frames = []
     if args.real_frames:
@@ -664,7 +679,10 @@ def _run_brightfield_calibration(args):
         cfg = {
             "image_height": args.image_height,
             "image_width": args.image_width,
+            # The real instrument's optics, explicitly: never config.yaml's
+            # fitted values, so a merged calibration can't move its own target
             "brightfield": {
+                **INSTRUMENT_OPTICS,
                 "mie_max_particles": n_particles,
                 "mie_max_frames": args.mie_frames,
                 "magnification": 1.0,

@@ -34,9 +34,13 @@ def _import_with_mock_deeptrack(resolve_return=None):
     if resolve_return is None:
         resolve_return = np.ones((8, 8), dtype=np.complex128)
 
-    fake_resolved = mock.MagicMock()
-    fake_resolved.resolve.return_value = resolve_return
-    fake_optics_instance = mock.MagicMock(return_value=fake_resolved)
+    def _optics(**kwargs):
+        # Like the real Brightfield, the image has the requested output_region's
+        # shape (generate_mie_ground_truth renders on a padded canvas)
+        _, _, height, width = kwargs.get("output_region", (0, 0) + resolve_return.shape)
+        fake_resolved = mock.MagicMock()
+        fake_resolved.resolve.return_value = np.resize(resolve_return, (height, width))
+        return mock.MagicMock(return_value=fake_resolved)
 
     deeptrack_stub = types.ModuleType("deeptrack")
     fake_sphere = mock.MagicMock()
@@ -45,7 +49,7 @@ def _import_with_mock_deeptrack(resolve_return=None):
     fake_mie_sphere = mock.MagicMock()
     fake_mie_sphere.__pow__ = mock.MagicMock(return_value=mock.MagicMock())
     deeptrack_stub.MieSphere = mock.MagicMock(return_value=fake_mie_sphere)
-    deeptrack_stub.Brightfield = mock.MagicMock(return_value=fake_optics_instance)
+    deeptrack_stub.Brightfield = mock.MagicMock(side_effect=_optics)
 
     sys.modules["deeptrack"] = deeptrack_stub
 
@@ -329,14 +333,191 @@ class TestGenerateMieGroundTruth:
         # calling that lambda with a fabricated _ID must return a pixel
         # position that traces back to one of the real trajectory rows
         # (converted the same way _lj_to_pixels converts every other
-        # strategy's positions).
+        # strategy's positions), shifted by the padded canvas's margin.
         import render_brightfield as rbf_mod
 
         deeptrack_stub = sys.modules["deeptrack"]
         position_fn = deeptrack_stub.MieSphere.call_args.kwargs["position"]
         pixel_positions_all = rbf_mod._lj_to_pixels(positions, (0, 1, 0, 1), 8, 8)
-        resolved = position_fn(_ID=(0,))
+        resolved = position_fn(_ID=(0,)) - rbf_mod.MIE_PAD_PX
         assert any(np.allclose(resolved, row) for row in pixel_positions_all)
+
+    def test_renders_on_a_padded_canvas_and_crops_it(self):
+        # The bead's far-reaching scattered field isn't cut at the canvas edge
+        # (MIE_PAD_PX): the solve's output region is the canvas plus a margin
+        # on every side, and the frame is its centre
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+
+        frames = rbf.generate_mie_ground_truth(
+            _cfg(), positions, (0, 1, 0, 1), n_frames=1, n_particles=4, rng=rng
+        )
+
+        region = sys.modules["deeptrack"].Brightfield.call_args.kwargs["output_region"]
+        assert region == (0, 0, 8 + 2 * rbf.MIE_PAD_PX, 8 + 2 * rbf.MIE_PAD_PX)
+        assert frames[0].shape == (8, 8)
+
+    @pytest.mark.parametrize("pad", [0, 16])
+    def test_a_configured_margin_is_honored(self, pad):
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        cfg = _cfg(brightfield=dict(_cfg()["brightfield"], mie_pad_px=pad))
+
+        frames = rbf.generate_mie_ground_truth(
+            cfg, positions, (0, 1, 0, 1), n_frames=1, n_particles=4, rng=rng
+        )
+
+        region = sys.modules["deeptrack"].Brightfield.call_args.kwargs["output_region"]
+        assert region == (0, 0, 8 + 2 * pad, 8 + 2 * pad)
+        assert frames[0].shape == (8, 8)
+        position_fn = sys.modules["deeptrack"].MieSphere.call_args.kwargs["position"]
+        pixel_positions_all = rbf._lj_to_pixels(positions, (0, 1, 0, 1), 8, 8)
+        assert any(np.allclose(position_fn(_ID=(0,)) - pad, row) for row in pixel_positions_all)
+
+    def test_a_negative_margin_is_rejected(self):
+        rbf = _import_with_mock_deeptrack()
+        cfg = _cfg(brightfield=dict(_cfg()["brightfield"], mie_pad_px=-1))
+        with pytest.raises(ValueError, match="mie_pad_px"):
+            rbf.generate_mie_ground_truth(
+                cfg, np.zeros((4, 2)), (0, 1, 0, 1), 1, 4, np.random.default_rng(0)
+            )
+
+
+class TestOpticsFaithfulness:
+    """effective_collection_na and deeptrack_equivalent_index: the two
+    places the configured optics are adjusted before they reach deeptrack,
+    so an NA 1.45 objective and a 1.59 bead render with physical values."""
+
+    def test_na_at_or_below_the_medium_index_passes_through(self):
+        rbf = _import_with_mock_deeptrack()
+        with warnings.catch_warnings():
+            # No cap warning for an NA the medium can carry
+            warnings.filterwarnings("error", message=r"synthetic\.brightfield\.na")
+            assert rbf.effective_collection_na({"na": 1.0, "refractive_index_medium": 1.33}) == 1.0
+            assert (
+                rbf.effective_collection_na({"na": 1.33, "refractive_index_medium": 1.33}) == 1.33
+            )
+
+    def test_na_above_the_medium_index_is_capped_with_a_warning(self):
+        rbf = _import_with_mock_deeptrack()
+        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+            na = rbf.effective_collection_na({"na": 1.45, "refractive_index_medium": 1.33})
+        assert na == 1.33
+
+    def test_equivalent_index_gives_the_physical_phase_delay(self):
+        # deeptrack applies (n - n_m) * dz * 2*pi*n_m/wavelength; with the
+        # mapped index that must equal the physical (n_p - n_m) * dz *
+        # 2*pi/wavelength for the real bead index.
+        rbf = _import_with_mock_deeptrack()
+        n_m, wavelength, dz = 1.33, 550e-9, 100e-9
+        for n_p in (1.45, 1.59):
+            mapped = rbf.deeptrack_equivalent_index(n_p, n_m)
+            deeptrack_phase = (mapped - n_m) * dz * 2 * np.pi * n_m / wavelength
+            physical_phase = (n_p - n_m) * dz * 2 * np.pi / wavelength
+            assert deeptrack_phase == pytest.approx(physical_phase)
+
+    def test_equivalent_index_leaves_an_index_matched_particle_invisible(self):
+        rbf = _import_with_mock_deeptrack()
+        assert rbf.deeptrack_equivalent_index(1.33, 1.33) == pytest.approx(1.33)
+        mapped = rbf.deeptrack_equivalent_index(np.array([1.33, 1.59]), 1.33)
+        assert mapped == pytest.approx([1.33, 1.33 + 0.26 / 1.33])
+
+    def test_installed_deeptrack_is_the_version_the_index_mapping_targets(self):
+        # deeptrack_equivalent_index compensates deeptrack 2.0.1's
+        # Brightfield phase formula; a different version may have fixed it,
+        # and the mapping would then double-correct.
+        pytest.importorskip("deeptrack")
+        from importlib.metadata import version  # noqa: PLC0415
+
+        assert version("deeptrack") == "2.0.1"
+
+    def test_slow_path_hands_deeptrack_the_capped_na_and_mapped_index(self):
+        rbf = _import_with_mock_deeptrack()
+        bf = dict(_cfg()["brightfield"], na=1.45, refractive_index_min=1.59)
+        bf["refractive_index_max"] = 1.59
+        rng = np.random.default_rng(0)
+        with pytest.warns(UserWarning, match="above refractive_index_medium"):
+            rbf.render_frame_brightfield(
+                np.array([[0.5, 0.5]]), (0, 1, 0, 1), _cfg(brightfield=bf), rng
+            )
+        deeptrack_stub = sys.modules["deeptrack"]
+        assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == 1.33
+        index_fn = deeptrack_stub.Sphere.call_args.kwargs["refractive_index"]
+        assert index_fn(_ID=(0,)) == pytest.approx(1.33 + 0.26 / 1.33)
+
+    def test_mie_path_stays_below_the_medium_index_and_uses_the_real_index(self):
+        # MieSphere's own Mie coefficients use n_p/n_m correctly, so it gets
+        # the real index; only Brightfield's beam-propagation phase is mapped.
+        # Its NA stays MIE_MAX_NA_FRACTION below n_m: at NA = n_m deeptrack's
+        # Mie solution is singular (see that constant's comment).
+        rbf = _import_with_mock_deeptrack()
+        bf = dict(_cfg()["brightfield"], na=1.45, refractive_index_min=1.59)
+        bf["refractive_index_max"] = 1.59
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            rbf.generate_mie_ground_truth(
+                _cfg(brightfield=bf), positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
+            )
+        # No "capped to n_m" warning: the Mie solve's own cap (0.98 * n_m) applies
+        assert not [w for w in caught if "above refractive_index_medium" in str(w.message)]
+        deeptrack_stub = sys.modules["deeptrack"]
+        assert deeptrack_stub.Brightfield.call_args.kwargs["NA"] == pytest.approx(0.98 * 1.33)
+        index_fn = deeptrack_stub.MieSphere.call_args.kwargs["refractive_index"]
+        assert index_fn(_ID=(0,)) == pytest.approx(1.59)
+
+    def test_mie_path_keeps_a_lower_na_unchanged(self):
+        rbf = _import_with_mock_deeptrack()
+        bf = dict(_cfg()["brightfield"], na=1.0)
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        rbf.generate_mie_ground_truth(
+            _cfg(brightfield=bf), positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
+        )
+        assert sys.modules["deeptrack"].Brightfield.call_args.kwargs["NA"] == 1.0
+
+    # Non-finite, the singular ~1e27 background, and a collapsed near-zero output
+    @pytest.mark.parametrize("bad_value", [np.nan, 1e27, 1e-3])
+    def test_mie_path_fails_fast_on_unphysical_intensities(self, bad_value):
+        # What deeptrack 2.0.1's MieSphere returned at NA = n_m (median
+        # ~1e27): calibration must not silently fit candidates to it.
+        rbf = _import_with_mock_deeptrack()
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.1, 0.9, size=(10, 2))
+        cfg = _cfg(brightfield=dict(_cfg()["brightfield"], na=1.0))
+        with mock.patch.object(
+            rbf,
+            "_resolve_brightfield_intensity",
+            side_effect=lambda sample, cfg, H, W: np.full((H, W), bad_value),
+        ):
+            with pytest.raises(RuntimeError, match="unphysical intensities"):
+                rbf.generate_mie_ground_truth(
+                    cfg, positions, (0, 1, 0, 1), n_frames=1, n_particles=3, rng=rng
+                )
+
+    def test_defaults_are_the_instrument_optics(self):
+        # A config that leaves the optics out renders the real instrument (NA
+        # 1.45 objective, index 1.59 beads), not stale pre-NA-1.45 values. Pinned
+        # to the instrument, not to config.yaml, which calibration may rewrite.
+        rbf = _import_with_mock_deeptrack()
+        assert rbf.DEFAULT_NA == 1.45
+        assert rbf.DEFAULT_REFRACTIVE_INDEX == 1.59
+        assert rbf.INSTRUMENT_OPTICS == {
+            "na": 1.45,
+            "refractive_index_min": 1.59,
+            "refractive_index_max": 1.59,
+        }
+        assert (rbf.DEFAULT_INTENSITY_SCALE, rbf.DEFAULT_Z_MIN_PX, rbf.DEFAULT_Z_MAX_PX) == (
+            18000.0,
+            -13.0,
+            0.0,
+        )
+        _, refractive_indices, z = rbf._sample_particle_properties(50, {}, np.random.default_rng(0))
+        assert np.all(refractive_indices == 1.59)
+        assert np.all((z >= -13.0) & (z <= 0.0))
 
 
 class TestRenderFrameBrightfieldRealPhysics:
@@ -389,7 +570,17 @@ class TestRenderFrameBrightfieldRealPhysics:
         assert frame.shape == (48, 48)
         assert frame.max() > frame.min()  # not a uniform/blank frame
 
-    def test_single_particle_secondary_ring_suppressed_relative_to_primary_feature(self):
+    @pytest.mark.filterwarnings("ignore:synthetic.brightfield.na")
+    @pytest.mark.parametrize(
+        "na, refractive_index",
+        [
+            (1.0, 1.45),  # the original optics
+            (1.45, 1.59),  # config.yaml's: NA 1.45 objective, polystyrene beads
+        ],
+    )
+    def test_single_particle_secondary_ring_suppressed_relative_to_primary_feature(
+        self, na, refractive_index
+    ):
         """Task: suppress the unrealistic outer diffraction ring. A single
         in-focus particle's radially-averaged intensity profile has a
         primary feature (core + first ring) near the particle center and,
@@ -398,8 +589,12 @@ class TestRenderFrameBrightfieldRealPhysics:
         (data-setup/models/lodestar_model_15/, lodestar_model_10/ crops)
         don't show. Asserts the outer secondary-ring deviation from
         background stays small relative to the primary feature's own
-        deviation -- confirmed empirically to separate blurred (~0.11) from
-        unblurred (~0.29) at this dataset's particle scale."""
+        deviation -- confirmed empirically to separate blurred from
+        unblurred at this dataset's particle scale: ~0.04-0.11 vs ~0.30 at
+        the original optics, 0.149-0.160 vs 0.296-0.300 at config.yaml's
+        (3 seeds each). z=0 on purpose: further into the defocus range the
+        unblurred ratio also drops below 0.2 (0.056 at z=-6), so the test
+        would stop telling the two apart."""
         pytest.importorskip("deeptrack")
         for key in list(sys.modules.keys()):
             if "render_brightfield" in key:
@@ -411,15 +606,15 @@ class TestRenderFrameBrightfieldRealPhysics:
             "image_width": 64,
             "image_height": 64,
             "brightfield": {
-                "na": 1.0,
+                "na": na,
                 "wavelength": 550e-9,
                 "resolution": 100e-9,
                 "magnification": 1.0,
                 "refractive_index_medium": 1.33,
                 "radius_min": 0.5e-6,
                 "radius_max": 0.5e-6,
-                "refractive_index_min": 1.45,
-                "refractive_index_max": 1.45,
+                "refractive_index_min": refractive_index,
+                "refractive_index_max": refractive_index,
                 "z_min_px": 0.0,
                 "z_max_px": 0.0,
                 "intensity_scale": 20000.0,
