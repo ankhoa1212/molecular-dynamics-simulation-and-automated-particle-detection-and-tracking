@@ -20,8 +20,9 @@ physical units (um), using two different pixel_scale values:
   - synthetic legs (GT-synthetic, tracked-synthetic): the render's own
     px-per-LJ-unit mapping (W / box_width), combined with lj_to_um -- see
     _synth_pixel_scale().
-  - real legs (tracked-real): the confirmed real-video pixel_scale (shared
-    optics with the 2um dataset).
+  - real legs (tracked-real): the real microscope's measured pixel_scale,
+    compare.REAL_PIXEL_SCALE_UM_PER_PX (one objective and camera for the
+    2um and 5um videos).
 GT-synthetic's velocity is derived from position-based finite differences on
 ground_truth_tracks.csv (mirroring _track_velocity_magnitudes), NOT from the
 raw LAMMPS vx/vy columns (compare.py's _sim_velocity_magnitudes) -- the
@@ -40,7 +41,7 @@ Usage (run from verification/, after particle-tracking/'s configs/*trajectory_an
         --yolo-real \\
             ../particle-tracking/output/trajectory_analysis/real_yolo/frames_000-150/tracks.csv \\
         --lammps ../lammps-scripts/results/density_ablation/continuous_force_200_5.0.lammpstrj \\
-        --image-width 512 --lj-to-um 5.0 --pixel-scale-real 0.108 \\
+        --image-width 512 --lj-to-um 5.0 --pixel-scale-real 0.045 \\
         --output-dir verification_output/trajectory_analysis
 """
 import argparse
@@ -53,7 +54,11 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from compare import compute_msd, _track_velocity_magnitudes  # noqa: E402
+from compare import (  # noqa: E402
+    REAL_PIXEL_SCALE_UM_PER_PX,
+    _track_velocity_magnitudes,
+    compute_msd,
+)
 
 MIN_MSD_POINTS = 5  # below this, a log-log fit's R^2 is degenerate (e.g. a
 # 2-point fit always has zero residual, i.e. fit_quality=1.0 regardless of
@@ -316,7 +321,7 @@ def main():
     )
     parser.add_argument("--image-width", type=int, default=512)
     parser.add_argument("--lj-to-um", type=float, default=5.0)
-    parser.add_argument("--pixel-scale-real", type=float, default=0.108)
+    parser.add_argument("--pixel-scale-real", type=float, default=REAL_PIXEL_SCALE_UM_PER_PX)
     parser.add_argument("--max-lag", type=int, default=50)
     parser.add_argument("--output-dir", default="verification_output/trajectory_analysis")
     args = parser.parse_args()

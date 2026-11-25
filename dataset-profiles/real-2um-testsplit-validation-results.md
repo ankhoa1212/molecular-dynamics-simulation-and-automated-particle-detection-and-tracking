@@ -73,9 +73,16 @@ only.
 
 ## pixel_scale
 
-Inherited unchanged: `pixel_scale=0.108um/px` (`verification/config.yaml`),
-same shared microscope/objective as every other real dataset in this repo.
-Not re-measured for this video.
+Measured: `pixel_scale=0.045um/px` (`verification/compare.py`'s
+`REAL_PIXEL_SCALE_UM_PER_PX`). The original recordings' Micro-Manager metadata
+shows an Olympus UPLXAPO100XO (100x) objective onto a SONY IMX428 camera sensor
+(4.5um pixels), binning 1, no magnification changer: 4.5 / 100 = 0.045,
+assuming the usual 1x camera adapter, which isn't recorded. Cross-checked by
+hand in the 2um "Trial 1 Redo" video's close-packed crystal (frame 151): an
+8-bead row measures 47.96px per bead, 2.16um centre to centre at this scale,
+and no two beads come closer than about 42px, one 2um diameter. The 0.108um/px
+used before was inherited, never measured, and ruled out: at 0.108 touching
+2um beads would sit 18.5px apart, narrower than one bead's ~30px bright core.
 
 ## Detection/tracking run
 
@@ -104,9 +111,15 @@ uv run python trajectory_analysis.py \
     --rfdetr-real ../particle-tracking/output/trajectory_analysis/real_2um_test_rfdetr/frames_000-150/tracks.csv \
     --yolo-real ../particle-tracking/output/trajectory_analysis/real_2um_test_yolo/frames_000-150/tracks.csv \
     --lammps ../lammps-scripts/results/density_ablation/continuous_force_200_5.0.lammpstrj \
-    --image-width 512 --lj-to-um 2.0 --pixel-scale-real 0.108 \
+    --image-width 512 --lj-to-um 2.0 --pixel-scale-real 0.045 \
     --output-dir verification_output/trajectory_analysis_2um_testsplit
 ```
+
+The MSD exponents below don't depend on the pixel scale (a scale factor only
+shifts log MSD). The real legs' physical-unit numbers do: this run first used
+0.108um/px, and at the measured 0.045 the tracked-real raw-slope D becomes
+0.0479 (RF-DETR) and 0.0321 (YOLOv12) um^2/frame, and the mean speed 0.101 and
+0.098 um/frame (5.8x and 2.4x smaller than at 0.108).
 
 Single default-seed (12345) result: GT-synthetic α=1.6514, RF-DETR
 tracked-synthetic α=1.6382, RF-DETR tracked-real α=1.5317, YOLOv12

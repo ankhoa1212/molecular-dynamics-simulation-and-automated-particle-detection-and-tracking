@@ -441,18 +441,18 @@ class TestMsdStats:
         csv_path = _write_csv(tmp_path, _multitrack_msd_df())
 
         native_stats = compute_msd_stats(csv_path, verbose=False)
-        scaled_stats = compute_msd_stats(csv_path, pixel_scale=0.108, verbose=False)
+        scaled_stats = compute_msd_stats(csv_path, pixel_scale=0.045, verbose=False)
 
         assert scaled_stats["error"] is None
-        assert scaled_stats["pixel_scale"] == 0.108
+        assert scaled_stats["pixel_scale"] == 0.045
         assert "um" in scaled_stats["units"]
-        assert "0.108" in scaled_stats["units"]  # labels which scale/units were used
+        assert "0.045" in scaled_stats["units"]  # labels which scale/units were used
         assert "native" not in scaled_stats["units"]
 
         # MSD scales with the square of pixel_scale relative to native units.
         if native_stats["msd"] and scaled_stats["msd"]:
             ratio = scaled_stats["msd"][0] / native_stats["msd"][0]
-            assert ratio == pytest.approx(0.108**2, rel=1e-6)
+            assert ratio == pytest.approx(0.045**2, rel=1e-6)
 
     def test_empty_tracks_does_not_crash(self, tmp_path):
         csv_path = tmp_path / "tracks.csv"

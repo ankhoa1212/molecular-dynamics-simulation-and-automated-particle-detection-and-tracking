@@ -45,6 +45,7 @@ description: >
   diameter; not cross-checked against an independent calibration the way
   real-5um.yaml's 6.99px was against config.yaml's 8.21px, since no such
   second measurement exists yet for this dataset.
-  pixel_scale=0.108um/px (verification/config.yaml) is inherited unchanged
-  from the shared microscope/objective used for both the 2um and 5um real
-  datasets (real-5um.yaml's own description note).
+  The real pixel scale is 0.045um/px (100x objective, 4.5um camera pixels,
+  cross-checked against the close-packed crystal's 2um bead spacing): see
+  real-2um-validation-results.md's pixel_scale section. It replaces an
+  inherited, never-measured 0.108.

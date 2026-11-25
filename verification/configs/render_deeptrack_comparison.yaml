@@ -546,7 +546,11 @@ compare:
   tracks_file: null          # path to tracks.csv  (overridden by --tracks flag)
 
   # Unit conversion for MSD (required for µm² output):
-  pixel_scale: 0.108         # µm per pixel — measure from calibration slide for your objective
+  pixel_scale: 0.045         # µm per pixel of the real videos (100x objective, 4.5 µm camera
+                             # pixels; see compare.REAL_PIXEL_SCALE_UM_PER_PX). For tracks of
+                             # synthetic renders use the render's own scale instead:
+                             # lj_to_um * box width / image width (trajectory_analysis.py's
+                             # synth_pixel_scale).
   lj_to_um: 2.0              # µm per LJ unit (= particle diameter; 2 µm PS particles → lj_to_um=2.0)
 
   # For velocity comparison — fill in after calibration:

@@ -24,7 +24,11 @@ scale parameters.
 
 No pixel-scale (um/px) calibration exists anywhere in this repo for this
 specific video -- `verification/config.yaml`'s `pixel_scale: 0.108` is
-explicitly documented as being for a different objective/dataset. Per the
+explicitly documented as being for a different objective/dataset. (Since
+measured: this video's own Micro-Manager metadata shows the same 100x
+objective and 4.5um-pixel IMX428 camera as the 2um videos, so 0.045um/px;
+see `real-2um-validation-results.md`'s pixel_scale section. The size and
+spacing below are in pixels and don't depend on it.) Per the
 plan's guidance, `verification/calibrate_psf.py` is this repo's sanctioned
 one-time offline "measured PSF fit" workflow for real data (distinct from
 the live auto-estimation R3 rules out), so it was used directly:

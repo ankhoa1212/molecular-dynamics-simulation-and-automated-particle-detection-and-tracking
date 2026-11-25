@@ -20,6 +20,17 @@ import numpy as np
 import pandas as pd
 import yaml
 
+# The real 2 um and 5 um videos' pixel scale (um per pixel). Their original
+# Micro-Manager recordings show an Olympus UPLXAPO100XO (100x) objective onto a
+# SONY IMX428 camera sensor (4.5 um pixels), binning 1, no magnification
+# changer: 4.5 / 100 = 0.045, assuming the usual 1x camera adapter (not
+# recorded). Cross-checked by hand in the 2 um video's close-packed crystal:
+# an 8-bead row measures 47.96 px per bead (2.16 um centre to centre at this
+# scale), and no two beads come closer than about 42 px (one 2 um diameter).
+# The older 0.108 was inherited, never measured, and overstated every real
+# length 2.4x and every diffusion coefficient 5.8x.
+REAL_PIXEL_SCALE_UM_PER_PX = 0.045
+
 # ---------------------------------------------------------------------------
 # Dependency injections: freud (lammps-scripts/.venv) + hexatic_order_analysis
 # ---------------------------------------------------------------------------
@@ -386,7 +397,7 @@ def main():
         print("Error: provide --lammps, --tracks, or both.")
         sys.exit(1)
 
-    pixel_scale = float(_cfg_get(cfg, "pixel_scale", default=0.108))
+    pixel_scale = float(_cfg_get(cfg, "pixel_scale", default=REAL_PIXEL_SCALE_UM_PER_PX))
     lj_to_um = float(_cfg_get(cfg, "lj_to_um", default=2.0))
     max_lag = int(_cfg_get(cfg, "max_lag_frames", default=50))
     output_dir = Path(_cfg_get(cfg, "output_dir", default="verification_output/"))
