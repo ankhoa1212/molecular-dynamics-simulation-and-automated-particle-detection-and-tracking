@@ -74,6 +74,44 @@ def _cfg_get(cfg, *keys, default=None):
     return node
 
 
+def _lammps_box_width(lammps_path):
+    """Parse the first frame's x box-bounds width from a .lammpstrj file.
+
+    Mirrors render.py's own box-to-pixel mapping (cx = (x - x_lo) /
+    (x_hi - x_lo) * W) so the derived px-per-LJ-unit scale matches what
+    render.py actually used to produce the synthetic frames.
+    """
+    with open(lammps_path) as f:
+        for line in f:
+            if "ITEM: BOX BOUNDS" in line:
+                x_lo, x_hi = map(float, f.readline().split())
+                return x_hi - x_lo
+    raise ValueError(f"no BOX BOUNDS found in {lammps_path}")
+
+
+def synth_pixel_scale(lammps_path, image_width, lj_to_um):
+    """um per render-pixel, derived from render.py's own box-to-pixel mapping."""
+    box_width = _lammps_box_width(lammps_path)
+    px_per_lj_unit = image_width / box_width
+    return lj_to_um / px_per_lj_unit
+
+
+def _resolve_pixel_scale(value, lammps_path, image_width, lj_to_um):
+    """um per pixel of the tracked positions.
+
+    A number is used as is. "render" means the tracks come from synthetic
+    renders of the --lammps trajectory, whose scale is render.py's own
+    box-to-pixel mapping, not the microscope's.
+    """
+    if value == "render":
+        if not lammps_path:
+            sys.exit(
+                "Error: compare.pixel_scale: render needs --lammps to derive the render's scale."
+            )
+        return synth_pixel_scale(lammps_path, image_width, lj_to_um)
+    return float(value)
+
+
 # ---------------------------------------------------------------------------
 # LAMMPS trajectory loading (inlined from particle-tracking/track.py:310-365)
 # ---------------------------------------------------------------------------
@@ -397,8 +435,13 @@ def main():
         print("Error: provide --lammps, --tracks, or both.")
         sys.exit(1)
 
-    pixel_scale = float(_cfg_get(cfg, "pixel_scale", default=REAL_PIXEL_SCALE_UM_PER_PX))
     lj_to_um = float(_cfg_get(cfg, "lj_to_um", default=2.0))
+    pixel_scale = _resolve_pixel_scale(
+        _cfg_get(cfg, "pixel_scale", default=REAL_PIXEL_SCALE_UM_PER_PX),
+        lammps_path,
+        int(_cfg_get(cfg_full, "synthetic", "image_width", default=512)),
+        lj_to_um,
+    )
     max_lag = int(_cfg_get(cfg, "max_lag_frames", default=50))
     output_dir = Path(_cfg_get(cfg, "output_dir", default="verification_output/"))
     output_dir.mkdir(parents=True, exist_ok=True)

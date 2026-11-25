@@ -19,7 +19,7 @@ velocity are reported per leg as secondary, explicitly-caveated numbers in
 physical units (um), using two different pixel_scale values:
   - synthetic legs (GT-synthetic, tracked-synthetic): the render's own
     px-per-LJ-unit mapping (W / box_width), combined with lj_to_um -- see
-    _synth_pixel_scale().
+    compare.synth_pixel_scale().
   - real legs (tracked-real): the real microscope's measured pixel_scale,
     compare.REAL_PIXEL_SCALE_UM_PER_PX (one objective and camera for the
     2um and 5um videos).
@@ -58,6 +58,7 @@ from compare import (  # noqa: E402
     REAL_PIXEL_SCALE_UM_PER_PX,
     _track_velocity_magnitudes,
     compute_msd,
+    synth_pixel_scale,
 )
 
 MIN_MSD_POINTS = 5  # below this, a log-log fit's R^2 is degenerate (e.g. a
@@ -93,28 +94,6 @@ LEG_STYLES = {
     "yolo_synthetic": ((0, (1, 1)), 2.0),  # densely dotted
     "yolo_real": ((0, (2, 2)), 1.8),  # even dash
 }
-
-
-def _lammps_box_width(lammps_path):
-    """Parse the first frame's x box-bounds width from a .lammpstrj file.
-
-    Mirrors render.py's own box-to-pixel mapping (cx = (x - x_lo) /
-    (x_hi - x_lo) * W) so the derived px-per-LJ-unit scale matches what
-    render.py actually used to produce the synthetic frames.
-    """
-    with open(lammps_path) as f:
-        for line in f:
-            if "ITEM: BOX BOUNDS" in line:
-                x_lo, x_hi = map(float, f.readline().split())
-                return x_hi - x_lo
-    raise ValueError(f"no BOX BOUNDS found in {lammps_path}")
-
-
-def synth_pixel_scale(lammps_path, image_width, lj_to_um):
-    """um per render-pixel, derived from render.py's own box-to-pixel mapping."""
-    box_width = _lammps_box_width(lammps_path)
-    px_per_lj_unit = image_width / box_width
-    return lj_to_um / px_per_lj_unit
 
 
 def load_gt_synthetic(path):

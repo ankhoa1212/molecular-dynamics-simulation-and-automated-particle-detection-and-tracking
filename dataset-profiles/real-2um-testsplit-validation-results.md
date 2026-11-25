@@ -74,15 +74,9 @@ only.
 ## pixel_scale
 
 Measured: `pixel_scale=0.045um/px` (`verification/compare.py`'s
-`REAL_PIXEL_SCALE_UM_PER_PX`). The original recordings' Micro-Manager metadata
-shows an Olympus UPLXAPO100XO (100x) objective onto a SONY IMX428 camera sensor
-(4.5um pixels), binning 1, no magnification changer: 4.5 / 100 = 0.045,
-assuming the usual 1x camera adapter, which isn't recorded. Cross-checked by
-hand in the 2um "Trial 1 Redo" video's close-packed crystal (frame 151): an
-8-bead row measures 47.96px per bead, 2.16um centre to centre at this scale,
-and no two beads come closer than about 42px, one 2um diameter. The 0.108um/px
-used before was inherited, never measured, and ruled out: at 0.108 touching
-2um beads would sit 18.5px apart, narrower than one bead's ~30px bright core.
+`REAL_PIXEL_SCALE_UM_PER_PX`), the same microscope and camera as every real
+video here. See `real-2um-validation-results.md`'s pixel_scale section for the
+measurement.
 
 ## Detection/tracking run
 

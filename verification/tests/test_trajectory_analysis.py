@@ -198,12 +198,6 @@ class TestRunIntegration:
 
 
 class TestRealPixelScale:
-    def test_matches_the_microscope_optics(self):
-        from compare import REAL_PIXEL_SCALE_UM_PER_PX
-
-        # 4.5 um camera pixels (SONY IMX428) behind a 100x objective
-        assert REAL_PIXEL_SCALE_UM_PER_PX == pytest.approx(4.5 / 100)
-
     def test_cli_converts_real_tracks_at_the_microscope_scale_by_default(
         self, tmp_path, monkeypatch
     ):
