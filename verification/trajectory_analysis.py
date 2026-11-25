@@ -19,9 +19,10 @@ velocity are reported per leg as secondary, explicitly-caveated numbers in
 physical units (um), using two different pixel_scale values:
   - synthetic legs (GT-synthetic, tracked-synthetic): the render's own
     px-per-LJ-unit mapping (W / box_width), combined with lj_to_um -- see
-    _synth_pixel_scale().
-  - real legs (tracked-real): the confirmed real-video pixel_scale (shared
-    optics with the 2um dataset).
+    compare.synth_pixel_scale().
+  - real legs (tracked-real): the real microscope's measured pixel_scale,
+    compare.REAL_PIXEL_SCALE_UM_PER_PX (one objective and camera for the
+    2um and 5um videos).
 GT-synthetic's velocity is derived from position-based finite differences on
 ground_truth_tracks.csv (mirroring _track_velocity_magnitudes), NOT from the
 raw LAMMPS vx/vy columns (compare.py's _sim_velocity_magnitudes) -- the
@@ -40,7 +41,7 @@ Usage (run from verification/, after particle-tracking/'s configs/*trajectory_an
         --yolo-real \\
             ../particle-tracking/output/trajectory_analysis/real_yolo/frames_000-150/tracks.csv \\
         --lammps ../lammps-scripts/results/density_ablation/continuous_force_200_5.0.lammpstrj \\
-        --image-width 512 --lj-to-um 5.0 --pixel-scale-real 0.108 \\
+        --image-width 512 --lj-to-um 5.0 --pixel-scale-real 0.045 \\
         --output-dir verification_output/trajectory_analysis
 """
 import argparse
@@ -53,7 +54,12 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from compare import compute_msd, _track_velocity_magnitudes  # noqa: E402
+from compare import (  # noqa: E402
+    REAL_PIXEL_SCALE_UM_PER_PX,
+    _track_velocity_magnitudes,
+    compute_msd,
+    synth_pixel_scale,
+)
 
 MIN_MSD_POINTS = 5  # below this, a log-log fit's R^2 is degenerate (e.g. a
 # 2-point fit always has zero residual, i.e. fit_quality=1.0 regardless of
@@ -88,28 +94,6 @@ LEG_STYLES = {
     "yolo_synthetic": ((0, (1, 1)), 2.0),  # densely dotted
     "yolo_real": ((0, (2, 2)), 1.8),  # even dash
 }
-
-
-def _lammps_box_width(lammps_path):
-    """Parse the first frame's x box-bounds width from a .lammpstrj file.
-
-    Mirrors render.py's own box-to-pixel mapping (cx = (x - x_lo) /
-    (x_hi - x_lo) * W) so the derived px-per-LJ-unit scale matches what
-    render.py actually used to produce the synthetic frames.
-    """
-    with open(lammps_path) as f:
-        for line in f:
-            if "ITEM: BOX BOUNDS" in line:
-                x_lo, x_hi = map(float, f.readline().split())
-                return x_hi - x_lo
-    raise ValueError(f"no BOX BOUNDS found in {lammps_path}")
-
-
-def synth_pixel_scale(lammps_path, image_width, lj_to_um):
-    """um per render-pixel, derived from render.py's own box-to-pixel mapping."""
-    box_width = _lammps_box_width(lammps_path)
-    px_per_lj_unit = image_width / box_width
-    return lj_to_um / px_per_lj_unit
 
 
 def load_gt_synthetic(path):
@@ -316,7 +300,7 @@ def main():
     )
     parser.add_argument("--image-width", type=int, default=512)
     parser.add_argument("--lj-to-um", type=float, default=5.0)
-    parser.add_argument("--pixel-scale-real", type=float, default=0.108)
+    parser.add_argument("--pixel-scale-real", type=float, default=REAL_PIXEL_SCALE_UM_PER_PX)
     parser.add_argument("--max-lag", type=int, default=50)
     parser.add_argument("--output-dir", default="verification_output/trajectory_analysis")
     args = parser.parse_args()

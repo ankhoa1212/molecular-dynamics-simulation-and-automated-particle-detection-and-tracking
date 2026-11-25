@@ -264,6 +264,8 @@ uv run python compare.py \
 
 Writes `hexatic_order.png`, `msd.png`, `velocity_dist.png` to `verification_output/`.
 
+Track positions are converted to µm with `compare.pixel_scale`: 0.045 µm/px by default, the real videos' measured scale (100x objective, 4.5 µm camera pixels; see `compare.REAL_PIXEL_SCALE_UM_PER_PX`). For tracks of synthetic renders, set `pixel_scale: render` to use the render's own scale, derived from the `--lammps` box and `synthetic.image_width`.
+
 ## Full run (end-to-end)
 
 ```bash

@@ -22,9 +22,14 @@ scale parameters.
 
 ## Calibration method (how `dataset-profiles/real-5um.yaml` was built)
 
-No pixel-scale (um/px) calibration exists anywhere in this repo for this
-specific video -- `verification/config.yaml`'s `pixel_scale: 0.108` is
-explicitly documented as being for a different objective/dataset. Per the
+When this profile was built no pixel-scale (um/px) calibration existed for
+this video. It has since been measured: the video's Micro-Manager metadata
+shows the same 100x objective and 4.5um-pixel IMX428 camera as the 2um
+videos, so 0.045um/px (see `real-2um-validation-results.md`'s pixel_scale
+section). Its first frame agrees: bead centres sit a median 111px apart, one
+5um diameter at 0.045um/px. The size and spacing below are in pixels and
+don't depend on the scale; `size_px` is the bright core's fitted Gaussian
+sigma, not the bead's ~111px diameter. Per the
 plan's guidance, `verification/calibrate_psf.py` is this repo's sanctioned
 one-time offline "measured PSF fit" workflow for real data (distinct from
 the live auto-estimation R3 rules out), so it was used directly:

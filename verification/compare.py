@@ -20,6 +20,17 @@ import numpy as np
 import pandas as pd
 import yaml
 
+# The real 2 um and 5 um videos' pixel scale (um per pixel). Their original
+# Micro-Manager recordings show an Olympus UPLXAPO100XO (100x) objective onto a
+# SONY IMX428 camera sensor (4.5 um pixels), binning 1, no magnification
+# changer: 4.5 / 100 = 0.045, assuming the usual 1x camera adapter (not
+# recorded). Cross-checked by hand in the 2 um video's close-packed crystal:
+# an 8-bead row measures 47.96 px per bead (2.16 um centre to centre at this
+# scale), and no two beads come closer than about 42 px (one 2 um diameter).
+# The older 0.108 was inherited, never measured, and overstated every real
+# length 2.4x and every diffusion coefficient 5.8x.
+REAL_PIXEL_SCALE_UM_PER_PX = 0.045
+
 # ---------------------------------------------------------------------------
 # Dependency injections: freud (lammps-scripts/.venv) + hexatic_order_analysis
 # ---------------------------------------------------------------------------
@@ -61,6 +72,44 @@ def _cfg_get(cfg, *keys, default=None):
             return default
         node = node[k]
     return node
+
+
+def _lammps_box_width(lammps_path):
+    """Parse the first frame's x box-bounds width from a .lammpstrj file.
+
+    Mirrors render.py's own box-to-pixel mapping (cx = (x - x_lo) /
+    (x_hi - x_lo) * W) so the derived px-per-LJ-unit scale matches what
+    render.py actually used to produce the synthetic frames.
+    """
+    with open(lammps_path) as f:
+        for line in f:
+            if "ITEM: BOX BOUNDS" in line:
+                x_lo, x_hi = map(float, f.readline().split())
+                return x_hi - x_lo
+    raise ValueError(f"no BOX BOUNDS found in {lammps_path}")
+
+
+def synth_pixel_scale(lammps_path, image_width, lj_to_um):
+    """um per render-pixel, derived from render.py's own box-to-pixel mapping."""
+    box_width = _lammps_box_width(lammps_path)
+    px_per_lj_unit = image_width / box_width
+    return lj_to_um / px_per_lj_unit
+
+
+def _resolve_pixel_scale(value, lammps_path, image_width, lj_to_um):
+    """um per pixel of the tracked positions.
+
+    A number is used as is. "render" means the tracks come from synthetic
+    renders of the --lammps trajectory, whose scale is render.py's own
+    box-to-pixel mapping, not the microscope's.
+    """
+    if value == "render":
+        if not lammps_path:
+            sys.exit(
+                "Error: compare.pixel_scale: render needs --lammps to derive the render's scale."
+            )
+        return synth_pixel_scale(lammps_path, image_width, lj_to_um)
+    return float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +435,13 @@ def main():
         print("Error: provide --lammps, --tracks, or both.")
         sys.exit(1)
 
-    pixel_scale = float(_cfg_get(cfg, "pixel_scale", default=0.108))
     lj_to_um = float(_cfg_get(cfg, "lj_to_um", default=2.0))
+    pixel_scale = _resolve_pixel_scale(
+        _cfg_get(cfg, "pixel_scale", default=REAL_PIXEL_SCALE_UM_PER_PX),
+        lammps_path,
+        int(_cfg_get(cfg_full, "synthetic", "image_width", default=512)),
+        lj_to_um,
+    )
     max_lag = int(_cfg_get(cfg, "max_lag_frames", default=50))
     output_dir = Path(_cfg_get(cfg, "output_dir", default="verification_output/"))
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 """Tests for trajectory_analysis.py."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -91,7 +92,7 @@ class TestFitMsdExponent:
 class TestAnalyzeLeg:
     def test_happy_path_produces_all_fields(self):
         df = _diffusive_track_df()
-        stats, _, _ = analyze_leg(df, id_col="track_id", scale=0.108, max_lag=20)
+        stats, _, _ = analyze_leg(df, id_col="track_id", scale=0.045, max_lag=20)
         assert stats["alpha"] is not None
         assert stats["fit_quality"] is not None
         assert stats["raw_slope_D"] is not None
@@ -101,16 +102,16 @@ class TestAnalyzeLeg:
 
     def test_reliability_flag_gates_on_min_fit_quality(self):
         df = _diffusive_track_df()
-        stats, _, _ = analyze_leg(df, id_col="track_id", scale=0.108, max_lag=20)
+        stats, _, _ = analyze_leg(df, id_col="track_id", scale=0.045, max_lag=20)
         expected = stats["fit_quality"] is not None and stats["fit_quality"] >= 0.90
         assert stats["alpha_reliable"] == expected
 
     def test_scale_applied_to_velocity(self):
         df = _diffusive_track_df()
         stats_px, _, _ = analyze_leg(df, id_col="track_id", scale=1.0, max_lag=20)
-        stats_um, _, _ = analyze_leg(df, id_col="track_id", scale=0.108, max_lag=20)
+        stats_um, _, _ = analyze_leg(df, id_col="track_id", scale=0.045, max_lag=20)
         assert stats_um["velocity_mean"] == pytest.approx(
-            stats_px["velocity_mean"] * 0.108, rel=1e-6
+            stats_px["velocity_mean"] * 0.045, rel=1e-6
         )
 
 
@@ -152,7 +153,7 @@ class TestRunIntegration:
             str(lammps_path),
             image_width=512,
             lj_to_um=5.0,
-            pixel_scale_real=0.108,
+            pixel_scale_real=0.045,
             max_lag=10,
             output_dir=str(out_dir),
         )
@@ -187,10 +188,51 @@ class TestRunIntegration:
             str(lammps_path),
             image_width=512,
             lj_to_um=5.0,
-            pixel_scale_real=0.108,
+            pixel_scale_real=0.045,
             max_lag=10,
             output_dir=str(out_dir),
         )
         assert set(result["legs"].keys()) == {"gt_synthetic", "rfdetr_synthetic"}
         assert (out_dir / "summary.json").exists()
         assert (out_dir / "msd_comparison_legend_alpha.png").exists()
+
+
+class TestRealPixelScale:
+    def test_cli_converts_real_tracks_at_the_microscope_scale_by_default(
+        self, tmp_path, monkeypatch
+    ):
+        import trajectory_analysis
+
+        lammps_path = tmp_path / "sim.lammpstrj"
+        lammps_path.write_text(
+            "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n1\n"
+            "ITEM: BOX BOUNDS ss ss pp\n0.0 100.0\n0.0 100.0\n-0.5 0.5\n"
+            "ITEM: ATOMS id type x y\n1 1 50.0 50.0\n"
+        )
+        real_tracks = _diffusive_track_df(n_particles=5, n_frames=30, seed=3)
+        real_path = tmp_path / "real.csv"
+        real_tracks.to_csv(real_path, index=False)
+        out_dir = tmp_path / "out"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "trajectory_analysis.py",
+                "--rfdetr-real",
+                str(real_path),
+                "--lammps",
+                str(lammps_path),
+                "--max-lag",
+                "10",
+                "--output-dir",
+                str(out_dir),
+            ],
+        )
+        trajectory_analysis.main()
+
+        summary = json.loads((out_dir / "summary.json").read_text())
+        assert summary["meta"]["scale_real_um_per_px"] == pytest.approx(0.045)
+        stats_px, _, _ = analyze_leg(real_tracks, id_col="track_id", scale=1.0, max_lag=10)
+        assert summary["legs"]["rfdetr_real"]["velocity_mean"] == pytest.approx(
+            stats_px["velocity_mean"] * 0.045, rel=1e-6
+        )
